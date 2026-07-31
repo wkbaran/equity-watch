@@ -1,0 +1,7 @@
+Alert ID,Ticker,Name,Description,Time,Webhook status
+5151461291,BATS:GOOG,,GOOG Crossing 350.28,2026-07-31T14:50:24Z,
+5174465207,"BATS:ACHC, 1D",,"Volume Crossing 4.5â¯M on ACHC, 1D",2026-07-29T17:10:34Z,
+4892789161,"BATS:ABNB, 1D",,"Volume Crossing Up 4.5â¯M on ABNB, 1D",2026-07-28T19:10:15Z,
+5150820223,"BATS:SUI, 1D",,"SUI, 1D Crossing trendline",2026-07-28T13:33:35Z,
+4525827308,"BATS:CDRE, 1D",,"20 EMA Daytrading Strategy Crossing Up 50,100,200 Moving Average (50, close, 100, close, 200, close) on CDRE, 1D",2026-07-27T13:30:12Z,
+5123966120,BATS:MKL,,"MKL Crossing 2,003.72",2026-07-27T13:30:20Z,
