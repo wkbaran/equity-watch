@@ -3,8 +3,8 @@
 ## 1. Install dependencies
 
 ```bash
-pip install -r requirements-dev.txt   # includes pytest
-# or just: pip install -r requirements.txt
+npm install
+npm run build
 ```
 
 ## 2. Register a Schwab developer app
@@ -34,7 +34,7 @@ Schwab access tokens last 30 minutes and refresh tokens last 7 days, so
 you'll need to redo this interactive login about once a week:
 
 ```bash
-python -m tv_alerts.cli schwab-login
+node dist/cli.js schwab-login
 ```
 
 This opens (or prints) a Schwab login URL, and after you approve access it
@@ -45,7 +45,7 @@ refreshed automatically after that until they expire.
 ## 4. Run the analysis
 
 ```bash
-python -m tv_alerts.cli analyze --csv path/to/TradingView_Alerts_Log.csv --out breakout_report.csv
+node dist/cli.js analyze --csv path/to/TradingView_Alerts_Log.csv --out breakout_report.csv
 ```
 
 See the README for what the output means and which flags to tune.

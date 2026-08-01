@@ -4,9 +4,6 @@ Turns a raw TradingView "Alerts Log" CSV export into a short list of alerts
 worth actually looking at again, specifically: **confirmed breakouts past
 resistance on rising volume**.
 
-This is the Python implementation. A functionally identical TypeScript/Node
-port lives in `ts/` (see `ts/README.md`).
-
 ## Why
 
 A TradingView price-crossing alert only tells you the price touched a
@@ -29,23 +26,25 @@ See `SETUP.md` for registering a Schwab developer app and the one-time
 OAuth login. Then:
 
 ```bash
-python -m tv_alerts.cli analyze --csv TradingView_Alerts_Log.csv --out breakout_report.csv
+npm install
+npm run build
+node dist/cli.js analyze --csv TradingView_Alerts_Log.csv --out breakout_report.csv
 ```
 
 ## What it does
 
-1. **Parse** (`tv_alerts/parse.py`) — reads the CSV and classifies each
-   row's `Description` into a price-level crossing (`TICKER Crossing
-   123.45`), a trendline crossing, a volume-spike alert, or a moving-average
-   strategy alert. Only price-level crossings carry a numeric level, so
-   only those get run through the breakout check; the rest show up in the
-   report as `SKIPPED` so nothing silently disappears.
+1. **Parse** (`src/parse.ts`) — reads the CSV and classifies each row's
+   `Description` into a price-level crossing (`TICKER Crossing 123.45`), a
+   trendline crossing, a volume-spike alert, or a moving-average strategy
+   alert. Only price-level crossings carry a numeric level, so only those
+   get run through the breakout check; the rest show up in the report as
+   `SKIPPED` so nothing silently disappears.
 
-2. **Fetch** (`tv_alerts/providers/schwab.py`) — one price-history request
-   per symbol (cached to disk under `.cache/bars/` so repeat runs while
-   you're tuning thresholds don't re-hit the API).
+2. **Fetch** (`src/providers/schwab.ts`) — one price-history request per
+   symbol (cached to disk under `.cache/bars/` so repeat runs while you're
+   tuning thresholds don't re-hit the API).
 
-3. **Confirm** (`tv_alerts/analysis.py`) — for each price-crossing alert:
+3. **Confirm** (`src/analysis.ts`) — for each price-crossing alert:
    - **Closed above the level?** Wicking through and closing back below
      doesn't count (`NO_CLOSE_CONFIRM`).
    - **Near a real resistance?** The level must be at/above the highest
@@ -84,7 +83,7 @@ python -m tv_alerts.cli analyze --csv TradingView_Alerts_Log.csv --out breakout_
 ## Useful flags
 
 ```bash
-python -m tv_alerts.cli analyze \
+node dist/cli.js analyze \
   --csv TradingView_Alerts_Log.csv \
   --out breakout_report.csv \
   --symbol AMZN --symbol MU \      # limit to specific tickers (repeatable)
@@ -92,16 +91,26 @@ python -m tv_alerts.cli analyze \
   --hold-days 3                    # demand a longer hold before confirming
 ```
 
+Same flags for everything under the hood: `--baseline-days`,
+`--volume-trend-days`, `--recent-high-lookback-days`,
+`--recent-high-tolerance`, `--no-cache`, `--cache-dir`,
+`--app-key`/`--app-secret`/`--token-path` (or the
+`SCHWAB_APP_KEY`/`SCHWAB_APP_SECRET` env vars).
+
+While iterating, `npm run cli -- analyze ...` (via `tsx`) skips the build
+step.
+
 ## Tests
 
 ```bash
-python -m pytest tests/
+npm test
 ```
 
-Analysis logic is tested against fabricated OHLCV sequences (clean
-breakout, failed breakout/fakeout, no-volume crossing, mid-range crossing,
-etc.) so it doesn't require network access or real credentials. The
-parser is tested against real rows pulled from a TradingView export,
-including the mis-encoded unit separator TradingView emits in its volume
-alerts (`"Volume Crossing 4.5\xc3\xa2\xc2\x80\xc2\xafM on ..."`) and
-comma-formatted price levels (`"MKL Crossing 2,003.72"`).
+Analysis logic (`tests/analysis.test.ts`) is tested against fabricated
+OHLCV sequences (clean breakout, failed breakout/fakeout, no-volume
+crossing, mid-range crossing, etc.) so it doesn't require network access
+or real credentials. The parser (`tests/parse.test.ts`) is tested against
+real rows pulled from a TradingView export, including the mis-encoded
+unit separator TradingView emits in its volume alerts (`"Volume Crossing
+4.5\xc3\xa2\xc2\x80\xc2\xafM on ..."`) and comma-formatted price levels
+(`"MKL Crossing 2,003.72"`).
