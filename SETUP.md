@@ -32,6 +32,10 @@ cp .env.example .env
 
 `.env` is gitignored and loaded automatically by the CLI, so this persists
 across shells (handy on WSL) without re-exporting on every new terminal.
+It also has an optional `SCHWAB_MAX_REQUESTS_PER_MINUTE` (default `120`,
+Schwab's documented cap) if you want to throttle harder or share quota
+with something else calling the API in parallel.
+
 If you'd rather not use a file, exported env vars work the same way and
 take precedence over `.env`:
 

@@ -18,6 +18,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import open from "open";
 import type { PriceBar } from "../models.js";
+import { RateLimiter } from "./rateLimiter.js";
 import type { PriceDataProvider } from "./types.js";
 
 const AUTHORIZE_URL = "https://api.schwabapi.com/v1/oauth/authorize";
@@ -187,8 +188,18 @@ interface PriceHistoryResponse {
   candles: Candle[];
 }
 
+// Schwab's Market Data API is limited to 120 calls/minute per app.
+export const DEFAULT_MAX_REQUESTS_PER_MINUTE = 120;
+
 export class SchwabProvider implements PriceDataProvider {
-  constructor(private auth: SchwabAuth) {}
+  private rateLimiter: RateLimiter;
+
+  constructor(
+    private auth: SchwabAuth,
+    maxRequestsPerMinute: number = DEFAULT_MAX_REQUESTS_PER_MINUTE
+  ) {
+    this.rateLimiter = new RateLimiter(maxRequestsPerMinute, 60_000);
+  }
 
   async getDailyBars(symbol: string, start: Date, end: Date): Promise<PriceBar[]> {
     const params = new URLSearchParams({
@@ -201,6 +212,7 @@ export class SchwabProvider implements PriceDataProvider {
       needExtendedHoursData: "false",
     });
 
+    await this.rateLimiter.acquire();
     const accessToken = await this.auth.getAccessToken();
     const response = await fetch(`${PRICE_HISTORY_URL}?${params}`, {
       headers: { Authorization: `Bearer ${accessToken}` },

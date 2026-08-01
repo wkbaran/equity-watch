@@ -9,7 +9,7 @@ import { analyzeAlert, AnalysisParams, DEFAULT_ANALYSIS_PARAMS } from "./analysi
 import type { Alert, BreakoutVerdict } from "./models.js";
 import { parseAlerts } from "./parse.js";
 import { CachingProvider } from "./providers/cache.js";
-import { SchwabAuth, SchwabProvider } from "./providers/schwab.js";
+import { DEFAULT_MAX_REQUESTS_PER_MINUTE, SchwabAuth, SchwabProvider } from "./providers/schwab.js";
 import type { PriceDataProvider } from "./providers/types.js";
 
 const VERDICT_ORDER: Record<string, number> = {
@@ -86,6 +86,12 @@ interface CommonOpts {
   tokenPath: string;
 }
 
+function resolveMaxRequestsPerMinute(): number {
+  const raw = process.env.SCHWAB_MAX_REQUESTS_PER_MINUTE;
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_REQUESTS_PER_MINUTE;
+}
+
 function buildSchwabProvider(opts: CommonOpts & { noCache?: boolean; cacheDir: string }): PriceDataProvider {
   const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
   const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
@@ -97,7 +103,7 @@ function buildSchwabProvider(opts: CommonOpts & { noCache?: boolean; cacheDir: s
     process.exit(1);
   }
   const auth = new SchwabAuth(appKey, appSecret, opts.tokenPath);
-  const provider = new SchwabProvider(auth);
+  const provider = new SchwabProvider(auth, resolveMaxRequestsPerMinute());
   if (opts.noCache) {
     return provider;
   }
