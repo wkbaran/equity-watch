@@ -4,6 +4,9 @@ Turns a raw TradingView "Alerts Log" CSV export into a short list of alerts
 worth actually looking at again, specifically: **confirmed breakouts past
 resistance on rising volume**.
 
+This is the Python implementation. A functionally identical TypeScript/Node
+port lives in `ts/` (see `ts/README.md`).
+
 ## Why
 
 A TradingView price-crossing alert only tells you the price touched a

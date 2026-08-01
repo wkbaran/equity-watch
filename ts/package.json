@@ -1,0 +1,27 @@
+{
+  "name": "tv-alerts",
+  "version": "1.0.0",
+  "description": "Confirm TradingView breakout alerts against real OHLCV data before you look at them again.",
+  "type": "module",
+  "bin": {
+    "tv-alerts": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "cli": "tsx src/cli.ts"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "csv-parse": "^5.5.6",
+    "csv-stringify": "^6.5.1",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}
