@@ -21,7 +21,19 @@ libraries, which isn't something worth building a real workflow on top of.
    something else).
 4. Once approved, note the **App Key** and **App Secret**.
 
-Export them so the CLI can find them:
+Copy `.env.example` to `.env` and fill them in:
+
+```bash
+cp .env.example .env
+# then edit .env:
+#   SCHWAB_APP_KEY=...
+#   SCHWAB_APP_SECRET=...
+```
+
+`.env` is gitignored and loaded automatically by the CLI, so this persists
+across shells (handy on WSL) without re-exporting on every new terminal.
+If you'd rather not use a file, exported env vars work the same way and
+take precedence over `.env`:
 
 ```bash
 export SCHWAB_APP_KEY=...

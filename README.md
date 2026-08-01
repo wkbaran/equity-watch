@@ -95,7 +95,8 @@ Same flags for everything under the hood: `--baseline-days`,
 `--volume-trend-days`, `--recent-high-lookback-days`,
 `--recent-high-tolerance`, `--no-cache`, `--cache-dir`,
 `--app-key`/`--app-secret`/`--token-path` (or the
-`SCHWAB_APP_KEY`/`SCHWAB_APP_SECRET` env vars).
+`SCHWAB_APP_KEY`/`SCHWAB_APP_SECRET` in a `.env` file or as env vars — see
+SETUP.md).
 
 While iterating, `npm run cli -- analyze ...` (via `tsx`) skips the build
 step.

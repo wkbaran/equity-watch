@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "dotenv/config";
 import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -90,7 +91,7 @@ function buildSchwabProvider(opts: CommonOpts & { noCache?: boolean; cacheDir: s
   const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
   if (!appKey || !appSecret) {
     console.error(
-      "Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET env vars " +
+      "Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET in a .env file (or env vars) " +
         "or pass --app-key/--app-secret. See SETUP.md."
     );
     process.exit(1);
@@ -107,7 +108,7 @@ async function cmdSchwabLogin(opts: CommonOpts): Promise<void> {
   const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
   const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
   if (!appKey || !appSecret) {
-    console.error("Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET env vars or pass --app-key/--app-secret.");
+    console.error("Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET in a .env file (or env vars) or pass --app-key/--app-secret.");
     process.exit(1);
   }
   const auth = new SchwabAuth(appKey, appSecret, opts.tokenPath);
@@ -253,8 +254,8 @@ function buildProgram(): Command {
 
   const withCommon = (cmd: Command): Command =>
     cmd
-      .option("--app-key <key>", "Schwab App Key (or SCHWAB_APP_KEY env var)")
-      .option("--app-secret <secret>", "Schwab App Secret (or SCHWAB_APP_SECRET env var)")
+      .option("--app-key <key>", "Schwab App Key (or SCHWAB_APP_KEY in env/.env)")
+      .option("--app-secret <secret>", "Schwab App Secret (or SCHWAB_APP_SECRET in env/.env)")
       .option("--token-path <path>", "Where to cache Schwab OAuth tokens", join(homedir(), ".tv_alerts", "schwab_tokens.json"));
 
   withCommon(program.command("schwab-login"))
