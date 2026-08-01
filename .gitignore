@@ -1,8 +1,6 @@
-__pycache__/
-*.pyc
-.pytest_cache/
+node_modules/
+dist/
 .cache/
-*.egg-info/
 breakout_report.csv
-.env
 schwab_tokens.json
+.env
