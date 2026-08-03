@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import "dotenv/config";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Command } from "commander";
 import { stringify } from "csv-stringify/sync";
 import { analyzeAlert, AnalysisParams, DEFAULT_ANALYSIS_PARAMS } from "./analysis.js";
+import { updateHistory } from "./history.js";
 import type { Alert, BreakoutVerdict } from "./models.js";
 import { parseAlerts } from "./parse.js";
 import { CachingProvider } from "./providers/cache.js";
@@ -124,10 +125,11 @@ async function cmdSchwabLogin(opts: CommonOpts): Promise<void> {
 
 interface AnalyzeOpts extends CommonOpts {
   csv: string;
-  out: string;
+  out?: string;
   symbol?: string[];
   noCache?: boolean;
   cacheDir: string;
+  historyDir: string;
   baselineDays: number;
   volumeRatioThreshold: number;
   volumeTrendDays: number;
@@ -204,6 +206,17 @@ export async function runAnalyze(opts: AnalyzeOpts, provider: PriceDataProvider)
   return verdicts;
 }
 
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+function defaultReportPath(now: Date): string {
+  const stamp =
+    `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}` +
+    `_${pad2(now.getHours())}-${pad2(now.getMinutes())}-${pad2(now.getSeconds())}`;
+  return join("reports", `breakout_report_${stamp}.csv`);
+}
+
 function writeReport(verdicts: BreakoutVerdict[], outPath: string): void {
   const rows = verdicts.map((v) => ({
     verdict: v.verdict,
@@ -224,6 +237,7 @@ function writeReport(verdicts: BreakoutVerdict[], outPath: string): void {
     alert_id: v.alert.alertId,
   }));
   const csvText = stringify(rows, { header: true, columns: OUTPUT_FIELDS });
+  mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, csvText);
 }
 
@@ -251,8 +265,11 @@ function printSummary(verdicts: BreakoutVerdict[], outPath: string): void {
 async function cmdAnalyze(opts: AnalyzeOpts): Promise<void> {
   const provider = buildSchwabProvider(opts);
   const verdicts = await runAnalyze(opts, provider);
-  writeReport(verdicts, opts.out);
-  printSummary(verdicts, opts.out);
+  const outPath = opts.out ?? defaultReportPath(new Date());
+  writeReport(verdicts, outPath);
+  printSummary(verdicts, outPath);
+  const touched = updateHistory(verdicts, opts.historyDir);
+  console.log(`Updated history for ${touched} ticker(s) in ${opts.historyDir}`);
 }
 
 function buildProgram(): Command {
@@ -271,10 +288,11 @@ function buildProgram(): Command {
   withCommon(program.command("analyze"))
     .description("Analyze an alert CSV for confirmed breakouts")
     .requiredOption("--csv <path>", "Path to the TradingView alerts CSV export")
-    .option("--out <path>", "Output CSV path", "breakout_report.csv")
+    .option("--out <path>", "Output CSV path (default: reports/breakout_report_<timestamp>.csv)")
     .option("--symbol <symbol>", "Only analyze this symbol (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
     .option("--no-cache", "Disable the on-disk bar cache")
     .option("--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars")
+    .option("--history-dir <path>", "Directory for per-ticker historical alert/verdict JSON files", "history")
     .option("--baseline-days <n>", "", (v) => parseInt(v, 10), 20)
     .option("--volume-ratio-threshold <n>", "", (v) => parseFloat(v), 1.5)
     .option("--volume-trend-days <n>", "", (v) => parseInt(v, 10), 3)

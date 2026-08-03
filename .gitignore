@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .cache/
-breakout_report.csv
+reports/
+history/
 schwab_tokens.json
 .env

@@ -28,7 +28,7 @@ OAuth login. Then:
 ```bash
 npm install
 npm run build
-node dist/cli.js analyze --csv TradingView_Alerts_Log.csv --out breakout_report.csv
+node dist/cli.js analyze --csv TradingView_Alerts_Log.csv
 ```
 
 ## What it does
@@ -64,7 +64,9 @@ node dist/cli.js analyze --csv TradingView_Alerts_Log.csv --out breakout_report.
      it.
 
 4. **Report** — one row per alert, sorted so the strongest setups sort to
-   the top:
+   the top, written to a timestamped CSV under `reports/` (e.g.
+   `reports/breakout_report_2026-08-03_14-30-05.csv`, override with
+   `--out`):
 
    | verdict | meaning |
    |---|---|
@@ -80,12 +82,21 @@ node dist/cli.js analyze --csv TradingView_Alerts_Log.csv --out breakout_report.
    Read the `notes` column for the human-readable reasoning behind each
    verdict.
 
+5. **History** (`src/history.ts`) — each run also upserts a per-ticker JSON
+   file under `history/` (e.g. `history/AMZN.json`) with every alert seen
+   for that symbol and its latest verdict, keyed by alert ID. Re-running
+   `analyze` over an overlapping CSV export refreshes an alert's entry
+   in-place (useful since a later run may have more trading days available
+   to judge whether a breakout held) instead of duplicating it — so this
+   accumulates a durable history across runs rather than the one-shot
+   report getting overwritten each time.
+
 ## Useful flags
 
 ```bash
 node dist/cli.js analyze \
   --csv TradingView_Alerts_Log.csv \
-  --out breakout_report.csv \
+  --out reports/custom_name.csv \
   --symbol AMZN --symbol MU \      # limit to specific tickers (repeatable)
   --volume-ratio-threshold 2.0 \   # demand a stronger volume spike
   --hold-days 3                    # demand a longer hold before confirming
@@ -93,7 +104,7 @@ node dist/cli.js analyze \
 
 Same flags for everything under the hood: `--baseline-days`,
 `--volume-trend-days`, `--recent-high-lookback-days`,
-`--recent-high-tolerance`, `--no-cache`, `--cache-dir`,
+`--recent-high-tolerance`, `--no-cache`, `--cache-dir`, `--history-dir`,
 `--app-key`/`--app-secret`/`--token-path` (or the
 `SCHWAB_APP_KEY`/`SCHWAB_APP_SECRET` in a `.env` file or as env vars — see
 SETUP.md).

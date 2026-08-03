@@ -14,7 +14,8 @@
  * changed anything since.
  */
 
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createInterface } from "node:readline/promises";
 import open from "open";
 import type { PriceBar } from "../models.js";
@@ -77,6 +78,7 @@ export class SchwabAuth {
     if (!this.state) {
       return;
     }
+    mkdirSync(dirname(this.tokenPath), { recursive: true });
     writeFileSync(this.tokenPath, JSON.stringify(this.state, null, 2));
     // Token file contains bearer credentials; keep it user-readable only.
     chmodSync(this.tokenPath, 0o600);

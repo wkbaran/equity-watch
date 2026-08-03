@@ -61,7 +61,20 @@ refreshed automatically after that until they expire.
 ## 4. Run the analysis
 
 ```bash
-node dist/cli.js analyze --csv path/to/TradingView_Alerts_Log.csv --out breakout_report.csv
+node dist/cli.js analyze --csv path/to/TradingView_Alerts_Log.csv
 ```
 
-See the README for what the output means and which flags to tune.
+Each run writes a timestamped report to `reports/` and updates a per-ticker
+history under `history/` (see README). See the README for what the output
+means and which flags to tune.
+
+## Note on TradingView automation
+
+The alerts CSV export and TradingView's "pending" (not-yet-triggered)
+alerts have no official API on any plan tier, and scripting the web UI to
+scrape them is explicitly against TradingView's Terms of Use (real
+account-ban risk). TradingView *does* support real-time alert webhooks
+(Essential plan+), which would be the sanctioned alternative to manual CSV
+export, but that requires a public HTTPS endpoint and is out of scope here.
+So for now: exporting the alerts CSV, and re-arming/editing alerts after
+one triggers, both stay manual steps.
