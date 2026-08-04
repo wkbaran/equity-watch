@@ -6,15 +6,15 @@ import { dirname, join } from "node:path";
 import { Command } from "commander";
 import { stringify } from "csv-stringify/sync";
 import { analyzeAlert, AnalysisParams, DEFAULT_ANALYSIS_PARAMS } from "./analysis.js";
-import { addAlert, checkAlerts, type AddAlertInput } from "./alerts/engine.js";
-import { effectiveTrigger } from "./alerts/models.js";
+import { addAlert, checkAlerts, type AddAlertInput, type MarketData } from "./alerts/engine.js";
+import { effectiveTrigger, type VolumeCondition, type VolumePeriodUnit } from "./alerts/models.js";
 import { ConsoleNotifier } from "./alerts/notify.js";
 import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.js";
 import { updateHistory } from "./history.js";
 import type { Alert, BreakoutVerdict } from "./models.js";
 import { parseAlerts } from "./parse.js";
 import { CachingProvider } from "./providers/cache.js";
-import { DEFAULT_MAX_REQUESTS_PER_MINUTE, SchwabAuth, SchwabProvider } from "./providers/schwab.js";
+import { DEFAULT_MAX_REQUESTS_PER_MINUTE, SchwabAuth, SchwabProvider, type Quote } from "./providers/schwab.js";
 import type { PriceDataProvider } from "./providers/types.js";
 
 const VERDICT_ORDER: Record<string, number> = {
@@ -115,7 +115,7 @@ function buildSchwabProvider(opts: CommonOpts & { noCache?: boolean; cacheDir: s
   return new CachingProvider(provider, opts.cacheDir);
 }
 
-function buildQuoteFetcher(opts: CommonOpts): (symbols: string[]) => Promise<Map<string, number>> {
+function buildMarketData(opts: CommonOpts): MarketData {
   const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
   const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
   if (!appKey || !appSecret) {
@@ -127,7 +127,21 @@ function buildQuoteFetcher(opts: CommonOpts): (symbols: string[]) => Promise<Map
   }
   const auth = new SchwabAuth(appKey, appSecret, opts.tokenPath);
   const provider = new SchwabProvider(auth, resolveMaxRequestsPerMinute());
-  return (symbols) => provider.getQuotes(symbols);
+  return {
+    getQuotes: (symbols) => provider.getQuotes(symbols),
+    getIntradayBars: (symbol, daysBack) => provider.getIntradayBars(symbol, daysBack),
+    getDailyBars: (symbol, start, end) => provider.getDailyBars(symbol, start, end),
+  };
+}
+
+/** Parses "30m" / "2h" / "1d" / "45s" into a VolumeCondition's period fields. */
+function parseVolumePeriod(raw: string): { periodValue: number; periodUnit: VolumePeriodUnit } {
+  const match = /^(\d+(?:\.\d+)?)(s|m|h|d)$/.exec(raw.trim());
+  if (!match) {
+    console.error(`Invalid --volume-period "${raw}" — expected a number followed by s, m, h, or d (e.g. "30m").`);
+    process.exit(1);
+  }
+  return { periodValue: parseFloat(match[1]), periodUnit: match[2] as VolumePeriodUnit };
 }
 
 async function cmdSchwabLogin(opts: CommonOpts): Promise<void> {
@@ -301,6 +315,29 @@ interface AlertAddOpts extends AlertCommonOpts {
   near?: string;
   trailPercent?: string;
   trailAmount?: string;
+  volumeAtLeast?: string;
+  volumePeriod?: string;
+}
+
+function formatVolumeCondition(v: VolumeCondition): string {
+  return v.mode === "today" ? `volume >= ${v.threshold} today` : `volume >= ${v.threshold} in last ${v.periodValue}${v.periodUnit}`;
+}
+
+/** Builds the optional VolumeCondition shared by static/trailing/volume alert creation. Exits on bad input. */
+function parseVolumeFlags(opts: { volumeAtLeast?: string; volumePeriod?: string }): VolumeCondition | undefined {
+  if (opts.volumeAtLeast === undefined) {
+    if (opts.volumePeriod !== undefined) {
+      console.error("--volume-period requires --volume-at-least.");
+      process.exit(1);
+    }
+    return undefined;
+  }
+  const threshold = parseFloat(opts.volumeAtLeast);
+  if (opts.volumePeriod === undefined) {
+    return { threshold, mode: "today" };
+  }
+  const { periodValue, periodUnit } = parseVolumePeriod(opts.volumePeriod);
+  return { threshold, mode: "period", periodValue, periodUnit };
 }
 
 interface AlertListOpts extends AlertCommonOpts {
@@ -318,10 +355,16 @@ interface AlertImportOpts extends AlertCommonOpts {
 async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
   const hasLevel = opts.level !== undefined;
   const hasNear = opts.near !== undefined;
-  if (hasLevel === hasNear) {
-    console.error("Specify exactly one of --level (static alert) or --near (trailing alert).");
+  if (hasLevel && hasNear) {
+    console.error("Specify at most one of --level (static alert) or --near (trailing alert).");
     process.exit(1);
   }
+  if (!hasLevel && !hasNear && opts.volumeAtLeast === undefined) {
+    console.error("Specify --level, --near, or --volume-at-least (a standalone volume alert).");
+    process.exit(1);
+  }
+
+  const volume = parseVolumeFlags(opts);
 
   let input: AddAlertInput;
   if (hasLevel) {
@@ -329,8 +372,8 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
       console.error("--trail-percent/--trail-amount only apply to trailing alerts (--near).");
       process.exit(1);
     }
-    input = { kind: "static", symbol: opts.symbol, level: parseFloat(opts.level!) };
-  } else {
+    input = { kind: "static", symbol: opts.symbol, level: parseFloat(opts.level!), volume };
+  } else if (hasNear) {
     const hasPercent = opts.trailPercent !== undefined;
     const hasAmount = opts.trailAmount !== undefined;
     if (hasPercent === hasAmount) {
@@ -343,25 +386,37 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
       near: parseFloat(opts.near!),
       trailType: hasPercent ? "percent" : "amount",
       trailValue: parseFloat((hasPercent ? opts.trailPercent : opts.trailAmount)!),
+      volume,
     };
+  } else {
+    if (opts.trailPercent !== undefined || opts.trailAmount !== undefined) {
+      console.error("--trail-percent/--trail-amount require --near.");
+      process.exit(1);
+    }
+    input = { kind: "volume", symbol: opts.symbol, volume: volume! };
   }
 
-  const getQuotes = buildQuoteFetcher(opts);
-  const result = await addAlert(opts.alertsFile, input, getQuotes);
+  const market = buildMarketData(opts);
+  const result = await addAlert(opts.alertsFile, input, market);
 
   if (result.rejectedReason) {
     console.log(`Not added: ${result.rejectedReason}`);
     return;
   }
   const a = result.added!;
+  if (a.kind === "volume") {
+    console.log(`Added volume alert ${a.id} (${a.symbol}, ${formatVolumeCondition(a.volume)}).`);
+    return;
+  }
   const trigger = effectiveTrigger(a);
+  const andVolume = a.volumeCondition ? ` AND ${formatVolumeCondition(a.volumeCondition)}` : "";
   if (result.replaced) {
     console.log(
       `Replaced ${result.replaced.kind} alert ${result.replaced.id} — added ${a.kind} alert ${a.id} ` +
-        `(${a.symbol}, ${a.side}, trigger ${trigger}).`
+        `(${a.symbol}, ${a.side}, trigger ${trigger}${andVolume}).`
     );
   } else {
-    console.log(`Added ${a.kind} alert ${a.id} (${a.symbol}, ${a.side}, trigger ${trigger}).`);
+    console.log(`Added ${a.kind} alert ${a.id} (${a.symbol}, ${a.side}, trigger ${trigger}${andVolume}).`);
   }
 }
 
@@ -402,14 +457,18 @@ async function cmdAlertImport(opts: AlertImportOpts): Promise<void> {
   // Fetch every symbol's quote once up front rather than once per candidate
   // (addAlert() normally does its own live fetch per call).
   const symbols = [...new Set(candidates.map((c) => c.symbol))];
-  const quotes = await buildQuoteFetcher(opts)(symbols);
-  const cachedGetQuotes = async (syms: string[]): Promise<Map<string, number>> => {
-    const result = new Map<string, number>();
-    for (const s of syms) {
-      const p = quotes.get(s);
-      if (p !== undefined) result.set(s, p);
-    }
-    return result;
+  const rawMarket = buildMarketData(opts);
+  const quotes = await rawMarket.getQuotes(symbols);
+  const cachedMarket: MarketData = {
+    ...rawMarket,
+    getQuotes: async (syms) => {
+      const result = new Map<string, Quote>();
+      for (const s of syms) {
+        const q = quotes.get(s);
+        if (q !== undefined) result.set(s, q);
+      }
+      return result;
+    },
   };
 
   let added = 0;
@@ -427,7 +486,7 @@ async function cmdAlertImport(opts: AlertImportOpts): Promise<void> {
         }
       : { kind: "static", symbol, level };
 
-    const result = await addAlert(opts.alertsFile, input, cachedGetQuotes);
+    const result = await addAlert(opts.alertsFile, input, cachedMarket);
     if (result.rejectedReason) {
       if (result.rejectedReason.startsWith("No quote")) {
         skipped++;
@@ -455,11 +514,16 @@ function cmdAlertList(opts: AlertListOpts): void {
     return;
   }
   for (const a of alerts) {
+    if (a.kind === "volume") {
+      console.log(`${a.id}  volume   ${a.symbol.padEnd(6)}        status=${a.status} ${formatVolumeCondition(a.volume)}`);
+      continue;
+    }
     const anchor = a.kind === "static" ? a.level : a.near;
     const trail = a.kind === "trailing" ? `${a.trailValue}${a.trailType === "percent" ? "%" : "$"}` : "-";
+    const andVolume = a.volumeCondition ? ` AND ${formatVolumeCondition(a.volumeCondition)}` : "";
     console.log(
       `${a.id}  ${a.kind.padEnd(8)} ${a.symbol.padEnd(6)} ${a.side.padEnd(5)} ` +
-        `anchor=${anchor} trail=${trail} status=${a.status} trigger=${effectiveTrigger(a)}`
+        `anchor=${anchor} trail=${trail} status=${a.status} trigger=${effectiveTrigger(a)}${andVolume}`
     );
   }
 }
@@ -471,8 +535,8 @@ function cmdAlertRemove(id: string, opts: AlertCommonOpts): void {
 
 async function cmdAlertCheck(opts: AlertCommonOpts): Promise<void> {
   const alerts = loadAlerts(opts.alertsFile);
-  const getQuotes = buildQuoteFetcher(opts);
-  const { checked, triggered } = await checkAlerts(alerts, getQuotes, [new ConsoleNotifier()]);
+  const market = buildMarketData(opts);
+  const { checked, triggered } = await checkAlerts(alerts, market, [new ConsoleNotifier()]);
   saveAlerts(opts.alertsFile, alerts);
   console.log(`Checked ${checked} alert(s), ${triggered.length} triggered.`);
 }
@@ -511,12 +575,23 @@ function buildProgram(): Command {
     withCommon(cmd).option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json");
 
   withAlertCommon(alertCmd.command("add"))
-    .description("Add a static (--level) or trailing (--near) alert; side is inferred vs. the live price")
+    .description(
+      "Add a static (--level), trailing (--near), or standalone volume (--volume-at-least alone) alert; " +
+        "side is inferred vs. the live price"
+    )
     .requiredOption("--symbol <symbol>", "Ticker symbol")
     .option("--level <price>", "Static alert: fire once when price crosses this level")
     .option("--near <price>", "Trailing alert: reference price used to seed the watermark and infer side")
     .option("--trail-percent <n>", "Trailing alert: trail distance as a percent")
     .option("--trail-amount <n>", "Trailing alert: trail distance as a dollar amount")
+    .option(
+      "--volume-at-least <n>",
+      "Volume threshold; standalone if --level/--near are omitted, otherwise ANDed onto that alert"
+    )
+    .option(
+      "--volume-period <Nunit>",
+      "Look at volume over a trailing window instead of the default 'so far today' (e.g. 30m, 2h, 1d, 45s)"
+    )
     .action((opts: AlertAddOpts) => cmdAlertAdd(opts));
 
   withAlertCommon(alertCmd.command("import"))

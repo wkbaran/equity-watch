@@ -117,7 +117,7 @@ step.
 A separate, lighter-weight `alert` command manages your own price alerts
 directly (no TradingView CSV involved) — useful since TradingView has no
 API to read back your pending alerts, but this tool's own `alerts.json`
-(gitignored, one flat file) does. Two kinds:
+(gitignored, one flat file) does. Three kinds:
 
 - **Static** — fire once when price crosses a fixed level:
   `node dist/cli.js alert add --symbol AAPL --level 150`
@@ -126,14 +126,29 @@ API to read back your pending alerts, but this tool's own `alerts.json`
   (like a trailing-stop-buy, as a notification instead of a trade):
   `node dist/cli.js alert add --symbol AAPL --near 150 --trail-percent 3`
   (or `--trail-amount 2.50`)
+- **Volume** — fire when volume reaches a threshold, either standalone or
+  ANDed onto a static/trailing alert above (so both conditions must hold):
+  `node dist/cli.js alert add --symbol AAPL --volume-at-least 5000000`
+  (standalone), or `--level 150 --volume-at-least 5000000` (AND'd). By
+  default this checks cumulative volume so far in the current session;
+  add `--volume-period 30m` (also `s`/`h`/`d`) to instead sum volume over
+  a trailing window, recomputed fresh every check regardless of your poll
+  cadence. Sub-minute periods round up to a minute — Schwab's REST history
+  doesn't go any finer without the separate streaming API.
 
-For both, whether it's an "above" or "below" alert is *inferred* by
-comparing `--level`/`--near` to the live price at the moment you add it —
-not something you choose. Adding a new alert that's closer to the live
-price than an existing armed one on the same symbol+side replaces it
-(regardless of kind); adding one that's farther is rejected. Above and
+For static/trailing, whether it's an "above" or "below" alert is
+*inferred* by comparing `--level`/`--near` to the live price at the moment
+you add it — not something you choose. Adding a new alert that's closer to
+the live price than an existing armed one on the same symbol+side replaces
+it (regardless of kind); adding one that's farther is rejected. Above and
 below coexist independently, so you can watch both sides of a symbol at
-once.
+once. Standalone volume alerts sit outside this rule entirely (no natural
+"side" to dedup on) and just coexist freely.
+
+For a static alert combined with a volume condition, a price crossing that
+happens before volume catches up isn't lost — it stays "pending" (checked
+again every poll) until either volume qualifies or price fully reverts to
+where it started, whichever comes first.
 
 When an alert fires, its `triggerSnapshot` field captures every attribute
 (level/near/trail settings, extremePrice, etc.) exactly as they were at

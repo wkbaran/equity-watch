@@ -192,7 +192,24 @@ interface PriceHistoryResponse {
 }
 
 interface QuoteResponse {
-  [symbol: string]: { quote?: { lastPrice: number } };
+  [symbol: string]: { quote?: { lastPrice: number; totalVolume: number } };
+}
+
+export interface Quote {
+  lastPrice: number;
+  /** Cumulative shares traded so far in the current session. */
+  totalVolume: number;
+}
+
+function candlesToBars(candles: Candle[]): PriceBar[] {
+  return candles.map((candle) => ({
+    date: new Date(candle.datetime),
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+    volume: candle.volume,
+  }));
 }
 
 // Schwab's Market Data API is limited to 120 calls/minute per app.
@@ -231,18 +248,43 @@ export class SchwabProvider implements PriceDataProvider {
     }
 
     const payload = (await response.json()) as PriceHistoryResponse;
-    return (payload.candles ?? []).map((candle) => ({
-      date: new Date(candle.datetime),
-      open: candle.open,
-      high: candle.high,
-      low: candle.low,
-      close: candle.close,
-      volume: candle.volume,
-    }));
+    return candlesToBars(payload.candles ?? []);
   }
 
-  /** Current last-traded price per symbol, for periodic alert checks. */
-  async getQuotes(symbols: string[]): Promise<Map<string, number>> {
+  /**
+   * Minute-granularity bars covering the last `daysBack` trading sessions
+   * (Schwab's finest available resolution via REST; there's no sub-minute
+   * history short of the separate streaming API). Used for "volume in the
+   * last N seconds/minutes/hours" alerts - callers filter the result down
+   * to the actual window they care about.
+   */
+  async getIntradayBars(symbol: string, daysBack: number): Promise<PriceBar[]> {
+    const params = new URLSearchParams({
+      symbol,
+      periodType: "day",
+      period: String(daysBack),
+      frequencyType: "minute",
+      frequency: "1",
+      needExtendedHoursData: "false",
+    });
+
+    await this.rateLimiter.acquire();
+    const accessToken = await this.auth.getAccessToken();
+    const response = await fetch(`${PRICE_HISTORY_URL}?${params}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Schwab intraday price history request for ${symbol} failed (${response.status}): ${await response.text()}`
+      );
+    }
+
+    const payload = (await response.json()) as PriceHistoryResponse;
+    return candlesToBars(payload.candles ?? []);
+  }
+
+  /** Current last-traded price and cumulative session volume per symbol. */
+  async getQuotes(symbols: string[]): Promise<Map<string, Quote>> {
     if (symbols.length === 0) {
       return new Map();
     }
@@ -258,10 +300,10 @@ export class SchwabProvider implements PriceDataProvider {
     }
 
     const payload = (await response.json()) as QuoteResponse;
-    const result = new Map<string, number>();
+    const result = new Map<string, Quote>();
     for (const [symbol, data] of Object.entries(payload)) {
       if (data.quote?.lastPrice !== undefined) {
-        result.set(symbol, data.quote.lastPrice);
+        result.set(symbol, { lastPrice: data.quote.lastPrice, totalVolume: data.quote.totalVolume ?? 0 });
       }
     }
     return result;
