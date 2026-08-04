@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 import "dotenv/config";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Command } from "commander";
 import { stringify } from "csv-stringify/sync";
-import { analyzeAlert, AnalysisParams, DEFAULT_ANALYSIS_PARAMS } from "./analysis.js";
+import { analyzeAlert, AnalysisParams } from "./analysis.js";
+import { triggeredAlertsToBreakoutAlerts } from "./alerts/bridge.js";
 import { addAlert, checkAlerts, type AddAlertInput, type MarketData } from "./alerts/engine.js";
 import { effectiveTrigger, type VolumeCondition, type VolumePeriodUnit } from "./alerts/models.js";
 import { ConsoleNotifier } from "./alerts/notify.js";
+import { writeAlertTriggerReport } from "./alerts/report.js";
 import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.js";
 import { updateHistory } from "./history.js";
 import type { Alert, BreakoutVerdict } from "./models.js";
@@ -16,6 +18,7 @@ import { parseAlerts } from "./parse.js";
 import { CachingProvider } from "./providers/cache.js";
 import { DEFAULT_MAX_REQUESTS_PER_MINUTE, SchwabAuth, SchwabProvider, type Quote } from "./providers/schwab.js";
 import type { PriceDataProvider } from "./providers/types.js";
+import { loadTuningConfig, resolveParamsForSymbol, type TuningConfig } from "./tuning.js";
 
 const VERDICT_ORDER: Record<string, number> = {
   CONFIRMED_BREAKOUT: 0,
@@ -115,6 +118,36 @@ function buildSchwabProvider(opts: CommonOpts & { noCache?: boolean; cacheDir: s
   return new CachingProvider(provider, opts.cacheDir);
 }
 
+const BETA_CACHE_DIR = join(".cache", "beta");
+
+function buildBetaFetcher(opts: CommonOpts & { noCache?: boolean }): (symbol: string) => Promise<number | null> {
+  const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
+  const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
+  if (!appKey || !appSecret) {
+    console.error(
+      "Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET in a .env file (or env vars) " +
+        "or pass --app-key/--app-secret. See SETUP.md."
+    );
+    process.exit(1);
+  }
+  const auth = new SchwabAuth(appKey, appSecret, opts.tokenPath);
+  const provider = new SchwabProvider(auth, resolveMaxRequestsPerMinute());
+
+  return async (symbol: string) => {
+    if (opts.noCache) {
+      return provider.getBeta(symbol);
+    }
+    const file = join(BETA_CACHE_DIR, `${symbol.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
+    if (existsSync(file)) {
+      return (JSON.parse(readFileSync(file, "utf-8")) as { beta: number | null }).beta;
+    }
+    const beta = await provider.getBeta(symbol);
+    mkdirSync(BETA_CACHE_DIR, { recursive: true });
+    writeFileSync(file, JSON.stringify({ beta }));
+    return beta;
+  };
+}
+
 function buildMarketData(opts: CommonOpts): MarketData {
   const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
   const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
@@ -157,39 +190,54 @@ async function cmdSchwabLogin(opts: CommonOpts): Promise<void> {
 }
 
 interface AnalyzeOpts extends CommonOpts {
-  csv: string;
+  csv?: string;
+  fromAlerts?: string | true;
   out?: string;
   symbol?: string[];
   noCache?: boolean;
   cacheDir: string;
   historyDir: string;
-  baselineDays: number;
-  volumeRatioThreshold: number;
-  volumeTrendDays: number;
-  recentHighLookbackDays: number;
-  recentHighTolerance: number;
-  holdDays: number;
+  config: string;
+  baselineDays?: number;
+  volumeRatioThreshold?: number;
+  volumeTrendDays?: number;
+  recentHighLookbackDays?: number;
+  recentHighTolerance?: number;
+  holdDays?: number;
 }
 
-export async function runAnalyze(opts: AnalyzeOpts, provider: PriceDataProvider): Promise<BreakoutVerdict[]> {
-  let alerts = parseAlerts(opts.csv);
+/** CLI flags, if explicitly passed, override everything else for the whole run. */
+function applyCliOverrides(params: AnalysisParams, opts: AnalyzeOpts): AnalysisParams {
+  return {
+    ...params,
+    baselineDays: opts.baselineDays ?? params.baselineDays,
+    volumeRatioThreshold: opts.volumeRatioThreshold ?? params.volumeRatioThreshold,
+    volumeTrendDays: opts.volumeTrendDays ?? params.volumeTrendDays,
+    recentHighLookbackDays: opts.recentHighLookbackDays ?? params.recentHighLookbackDays,
+    recentHighTolerance: opts.recentHighTolerance ?? params.recentHighTolerance,
+    holdDays: opts.holdDays ?? params.holdDays,
+  };
+}
+
+export async function runAnalyze(
+  opts: AnalyzeOpts,
+  provider: PriceDataProvider,
+  getBeta: (symbol: string) => Promise<number | null>
+): Promise<BreakoutVerdict[]> {
+  let alerts = opts.fromAlerts
+    ? triggeredAlertsToBreakoutAlerts(loadAlerts(opts.fromAlerts === true ? "alerts.json" : opts.fromAlerts))
+    : parseAlerts(opts.csv!);
   if (opts.symbol && opts.symbol.length > 0) {
     const wanted = new Set(opts.symbol.map((s) => s.toUpperCase()));
     alerts = alerts.filter((a) => wanted.has(a.symbol.toUpperCase()));
   }
   if (alerts.length === 0) {
-    throw new Error("No alerts matched (check --csv path / --symbol filters).");
+    throw new Error("No alerts matched (check --csv/--from-alerts path and --symbol filters).");
   }
 
-  const params: AnalysisParams = {
-    baselineDays: opts.baselineDays,
-    volumeRatioThreshold: opts.volumeRatioThreshold,
-    volumeTrendDays: opts.volumeTrendDays,
-    recentHighLookbackDays: opts.recentHighLookbackDays,
-    recentHighTolerance: opts.recentHighTolerance,
-    holdDays: opts.holdDays,
-    minBaselineBars: DEFAULT_ANALYSIS_PARAMS.minBaselineBars,
-  };
+  const rawConfig = loadTuningConfig(opts.config);
+  const config: TuningConfig = rawConfig ?? {};
+  const hasConfigFile = rawConfig !== null;
 
   const bySymbol = new Map<string, Alert[]>();
   for (const alert of alerts) {
@@ -203,6 +251,8 @@ export async function runAnalyze(opts: AnalyzeOpts, provider: PriceDataProvider)
     const symbolAlerts = bySymbol.get(symbol)!;
     const priceCrossAlerts = symbolAlerts.filter((a) => a.level !== null);
     const nonPriceAlerts = symbolAlerts.filter((a) => a.level === null);
+    const params = applyCliOverrides(await resolveParamsForSymbol(symbol, config, hasConfigFile, getBeta), opts);
+
     for (const alert of nonPriceAlerts) {
       verdicts.push(analyzeAlert(alert, [], params));
     }
@@ -243,11 +293,19 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-function defaultReportPath(now: Date): string {
-  const stamp =
+function timestampSuffix(now: Date): string {
+  return (
     `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}` +
-    `_${pad2(now.getHours())}-${pad2(now.getMinutes())}-${pad2(now.getSeconds())}`;
-  return join("reports", `breakout_report_${stamp}.csv`);
+    `_${pad2(now.getHours())}-${pad2(now.getMinutes())}-${pad2(now.getSeconds())}`
+  );
+}
+
+function defaultReportPath(now: Date): string {
+  return join("reports", `breakout_report_${timestampSuffix(now)}.csv`);
+}
+
+function defaultAlertTriggerReportPath(now: Date): string {
+  return join("reports", `alert_triggers_${timestampSuffix(now)}.csv`);
 }
 
 function writeReport(verdicts: BreakoutVerdict[], outPath: string): void {
@@ -296,8 +354,17 @@ function printSummary(verdicts: BreakoutVerdict[], outPath: string): void {
 }
 
 async function cmdAnalyze(opts: AnalyzeOpts): Promise<void> {
+  if (!opts.csv && !opts.fromAlerts) {
+    console.error("Specify --csv <path> (TradingView export) or --from-alerts [path] (this engine's alerts.json).");
+    process.exit(1);
+  }
+  if (opts.csv && opts.fromAlerts) {
+    console.error("Specify only one of --csv or --from-alerts.");
+    process.exit(1);
+  }
   const provider = buildSchwabProvider(opts);
-  const verdicts = await runAnalyze(opts, provider);
+  const getBeta = buildBetaFetcher(opts);
+  const verdicts = await runAnalyze(opts, provider, getBeta);
   const outPath = opts.out ?? defaultReportPath(new Date());
   writeReport(verdicts, outPath);
   printSummary(verdicts, outPath);
@@ -539,6 +606,11 @@ async function cmdAlertCheck(opts: AlertCommonOpts): Promise<void> {
   const { checked, triggered } = await checkAlerts(alerts, market, [new ConsoleNotifier()]);
   saveAlerts(opts.alertsFile, alerts);
   console.log(`Checked ${checked} alert(s), ${triggered.length} triggered.`);
+  if (triggered.length > 0) {
+    const outPath = defaultAlertTriggerReportPath(new Date());
+    writeAlertTriggerReport(triggered, outPath);
+    console.log(`Wrote ${triggered.length} triggered alert(s) to ${outPath}`);
+  }
 }
 
 function buildProgram(): Command {
@@ -555,19 +627,28 @@ function buildProgram(): Command {
     .action((opts: CommonOpts) => cmdSchwabLogin(opts));
 
   withCommon(program.command("analyze"))
-    .description("Analyze an alert CSV for confirmed breakouts")
-    .requiredOption("--csv <path>", "Path to the TradingView alerts CSV export")
+    .description("Confirm breakouts for either a TradingView alerts CSV export or this engine's own triggered alerts")
+    .option("--csv <path>", "Path to a TradingView alerts CSV export")
+    .option(
+      "--from-alerts [path]",
+      "Analyze every triggered alert on record in this engine's alerts.json instead of a CSV (default path: alerts.json)"
+    )
     .option("--out <path>", "Output CSV path (default: reports/breakout_report_<timestamp>.csv)")
     .option("--symbol <symbol>", "Only analyze this symbol (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
     .option("--no-cache", "Disable the on-disk bar cache")
     .option("--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars")
     .option("--history-dir <path>", "Directory for per-ticker historical alert/verdict JSON files", "history")
-    .option("--baseline-days <n>", "", (v) => parseInt(v, 10), 20)
-    .option("--volume-ratio-threshold <n>", "", (v) => parseFloat(v), 1.5)
-    .option("--volume-trend-days <n>", "", (v) => parseInt(v, 10), 3)
-    .option("--recent-high-lookback-days <n>", "", (v) => parseInt(v, 10), 60)
-    .option("--recent-high-tolerance <n>", "", (v) => parseFloat(v), 0.02)
-    .option("--hold-days <n>", "", (v) => parseInt(v, 10), 2)
+    .option(
+      "--config <path>",
+      "Per-ticker tuning config (default/overrides/beta-scaling); missing file just uses built-in defaults",
+      "analysis.config.json"
+    )
+    .option("--baseline-days <n>", "Overrides analysis.config.json and beta-scaling for this run", (v) => parseInt(v, 10))
+    .option("--volume-ratio-threshold <n>", "Overrides analysis.config.json and beta-scaling for this run", (v) => parseFloat(v))
+    .option("--volume-trend-days <n>", "Overrides analysis.config.json and beta-scaling for this run", (v) => parseInt(v, 10))
+    .option("--recent-high-lookback-days <n>", "Overrides analysis.config.json and beta-scaling for this run", (v) => parseInt(v, 10))
+    .option("--recent-high-tolerance <n>", "Overrides analysis.config.json and beta-scaling for this run", (v) => parseFloat(v))
+    .option("--hold-days <n>", "Overrides analysis.config.json and beta-scaling for this run", (v) => parseInt(v, 10))
     .action((opts: AnalyzeOpts) => cmdAnalyze(opts));
 
   const alertCmd = program.command("alert").description("Manage static/trailing price alerts");

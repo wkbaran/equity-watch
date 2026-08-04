@@ -107,10 +107,45 @@ Same flags for everything under the hood: `--baseline-days`,
 `--recent-high-tolerance`, `--no-cache`, `--cache-dir`, `--history-dir`,
 `--app-key`/`--app-secret`/`--token-path` (or the
 `SCHWAB_APP_KEY`/`SCHWAB_APP_SECRET` in a `.env` file or as env vars — see
-SETUP.md).
+SETUP.md). Any of these, if passed, override everything else below for
+that entire run.
 
 While iterating, `npm run cli -- analyze ...` (via `tsx`) skips the build
 step.
+
+## Per-ticker tuning (`src/tuning.ts`)
+
+The six thresholds above are otherwise resolved per-symbol from an
+optional `analysis.config.json` (path overridable with `--config`; no
+file at all is fine — everything just falls back to the built-in
+defaults, identical to not having this feature):
+
+```json
+{
+  "default": { "volumeRatioThreshold": 1.5, "recentHighTolerance": 0.02 },
+  "scaleToleranceByBeta": true,
+  "overrides": {
+    "TSLA": { "volumeRatioThreshold": 2.5 },
+    "KO": { "recentHighTolerance": 0.01 }
+  }
+}
+```
+
+- `default` — any subset of the six params; missing fields keep the
+  built-in defaults.
+- `overrides.<SYMBOL>` — manual per-ticker values that always win, for
+  when you want precise control over a specific name.
+- `scaleToleranceByBeta` (default `true`) — for any symbol *without* a
+  manual `recentHighTolerance` override, multiplies the default tolerance
+  by that symbol's beta (fetched live from Schwab's
+  `/marketdata/v1/instruments?projection=fundamental` — a real,
+  vendor-computed number, not something this tool calculates itself),
+  cached to `.cache/beta/<symbol>.json`. A beta-1.5 stock gets 50% more
+  "near the recent high" slack than the default; a beta-0.5 stock gets
+  half as much. Deliberately scoped to just this one parameter — beta is
+  a price-volatility metric, and scaling the volume/hold-period
+  thresholds by it wasn't a defensible default, so those stay
+  manual-only via `overrides`.
 
 ## Alerts
 
@@ -163,6 +198,36 @@ node dist/cli.js alert check            # one pass against live Schwab quotes;
                                          # point your own cron/Task Scheduler
                                          # at this every ~15 min
 ```
+
+`alerts.json` is always the source of truth for alert state, but `alert
+check` also writes a `reports/alert_triggers_<timestamp>.csv` — same
+`reports/` directory `analyze` uses, distinguished by filename prefix
+(`alert_triggers_...` vs. `breakout_report_...`) so it's clear at a glance
+which command produced which file. Since checks run far more often than
+`analyze` (every 5-15 min vs. once or twice a day) and most find nothing,
+this file is only written when something actually triggered — no empty
+files piling up from routine checks.
+
+### Confirming breakouts for this engine's own triggered alerts
+
+`analyze` isn't limited to a TradingView CSV — `--from-alerts [path]`
+(default `alerts.json`) runs the identical breakout-confirmation pipeline
+against every alert marked `triggered` in this engine's own store instead:
+
+```bash
+node dist/cli.js analyze --from-alerts
+```
+
+Exactly one of `--csv`/`--from-alerts` is required. This pulls in *every*
+triggered alert on record, not just ones from the most recent `alert
+check` — there's no notion yet of "already analyzed" or a time window for
+how soon after a trigger a breakout can be confirmed, so re-running this
+will reprocess the same triggers again (harmless — `history/` upserts by
+alert id, so it just refreshes rather than duplicating). Volume-only
+alerts are skipped (no price level to confirm a breakout against); for
+trailing alerts, the observed `triggerPrice` is used as the level, since
+trailing alerts don't have a single fixed target the way static alerts do
+(`src/alerts/bridge.ts`).
 
 To bootstrap from an existing TradingView setup instead of re-entering
 everything by hand, `alert import` reuses the same CSV parser as `analyze`

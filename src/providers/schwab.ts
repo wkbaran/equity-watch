@@ -26,6 +26,7 @@ const AUTHORIZE_URL = "https://api.schwabapi.com/v1/oauth/authorize";
 const TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token";
 const PRICE_HISTORY_URL = "https://api.schwabapi.com/marketdata/v1/pricehistory";
 const QUOTES_URL = "https://api.schwabapi.com/marketdata/v1/quotes";
+const INSTRUMENTS_URL = "https://api.schwabapi.com/marketdata/v1/instruments";
 
 // Refresh a bit before the access token actually expires to avoid racing a
 // request against expiry.
@@ -195,6 +196,10 @@ interface QuoteResponse {
   [symbol: string]: { quote?: { lastPrice: number; totalVolume: number } };
 }
 
+interface InstrumentsResponse {
+  instruments?: { fundamental?: { beta?: number } }[];
+}
+
 export interface Quote {
   lastPrice: number;
   /** Cumulative shares traded so far in the current session. */
@@ -307,5 +312,26 @@ export class SchwabProvider implements PriceDataProvider {
       }
     }
     return result;
+  }
+
+  /**
+   * A symbol's beta (5-year monthly, vs. the market - Schwab computes this
+   * for us, no need to correlate against a benchmark ourselves). Returns
+   * null if the instrument has no fundamental data rather than throwing,
+   * since a missing beta just means "don't scale" to callers.
+   */
+  async getBeta(symbol: string): Promise<number | null> {
+    await this.rateLimiter.acquire();
+    const accessToken = await this.auth.getAccessToken();
+    const params = new URLSearchParams({ symbol, projection: "fundamental" });
+    const response = await fetch(`${INSTRUMENTS_URL}?${params}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as InstrumentsResponse;
+    const beta = payload.instruments?.[0]?.fundamental?.beta;
+    return typeof beta === "number" ? beta : null;
   }
 }
