@@ -68,6 +68,34 @@ Each run writes a timestamped report to `reports/` and updates a per-ticker
 history under `history/` (see README). See the README for what the output
 means and which flags to tune.
 
+## 5. (Optional) Company sector/profile cache
+
+For sector analysis and custom heatmaps, `profile fetch` caches each
+ticker's sector, industry, and a short description — data Schwab's API
+doesn't provide at all (checked directly against both its quotes and
+instruments endpoints). This comes from
+[Financial Modeling Prep](https://site.financialmodelingprep.com/) instead,
+a free-tier third-party source (not "official" the way Schwab is — pick a
+provider you're comfortable with; see README for why this one was chosen
+over the alternatives).
+
+1. Sign up at https://site.financialmodelingprep.com/ (free, no payment
+   info required) and copy your API key.
+2. Add it to `.env`:
+
+```bash
+# then edit .env:
+#   FMP_API_KEY=...
+```
+
+```bash
+node dist/cli.js profile fetch --all-known --csv path/to/TradingView_Alerts_Log.csv
+```
+
+The free tier caps out at 250 requests/day, tracked across runs in
+`.cache/profiles/_budget.json` — `profile fetch` is resumable, so re-running
+after hitting the cap only fetches what's still missing.
+
 ## Note on TradingView automation
 
 The alerts CSV export and TradingView's "pending" (not-yet-triggered)

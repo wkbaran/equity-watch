@@ -21,8 +21,12 @@ import { updateHistory } from "./history.js";
 import type { Alert, BreakoutVerdict } from "./models.js";
 import { parseAlerts } from "./parse.js";
 import { CachingProvider } from "./providers/cache.js";
+import { FMP_FREE_DAILY_LIMIT, FmpProvider } from "./providers/fmp.js";
 import { DEFAULT_MAX_REQUESTS_PER_MINUTE, SchwabAuth, SchwabProvider, type Quote } from "./providers/schwab.js";
 import type { PriceDataProvider } from "./providers/types.js";
+import { DailyBudget } from "./profiles/budget.js";
+import { loadCachedProfile, listCachedProfiles, saveCachedProfile } from "./profiles/store.js";
+import { gatherKnownSymbols } from "./profiles/universe.js";
 import { loadTuningConfig, resolveParamsForSymbol, type TuningConfig } from "./tuning.js";
 
 const VERDICT_ORDER: Record<string, number> = {
@@ -713,6 +717,121 @@ async function cmdHoldingsCheck(opts: HoldingsCommonOpts): Promise<void> {
   }
 }
 
+interface ProfileCommonOpts {
+  fmpApiKey?: string;
+  cacheDir: string;
+}
+
+function buildFmpProvider(opts: ProfileCommonOpts): FmpProvider {
+  const apiKey = opts.fmpApiKey ?? process.env.FMP_API_KEY;
+  if (!apiKey) {
+    console.error("Missing FMP API key. Set FMP_API_KEY in a .env file (or env var) or pass --fmp-api-key.");
+    process.exit(1);
+  }
+  return new FmpProvider(apiKey);
+}
+
+interface ProfileFetchOpts extends ProfileCommonOpts {
+  symbol?: string[];
+  csv?: string[];
+  allKnown?: boolean;
+  refresh?: boolean;
+  historyDir: string;
+  holdingsFile: string;
+  alertsFile: string;
+}
+
+async function cmdProfileFetch(opts: ProfileFetchOpts): Promise<void> {
+  const symbols = new Set<string>((opts.symbol ?? []).map((s) => s.toUpperCase()));
+  for (const csvPath of opts.csv ?? []) {
+    for (const alert of parseAlerts(csvPath)) {
+      symbols.add(alert.symbol);
+    }
+  }
+  if (opts.allKnown) {
+    for (const s of gatherKnownSymbols({ historyDir: opts.historyDir, holdingsFile: opts.holdingsFile, alertsFile: opts.alertsFile })) {
+      symbols.add(s);
+    }
+  }
+  if (symbols.size === 0) {
+    console.error("Specify --symbol, --csv, and/or --all-known.");
+    process.exit(1);
+  }
+
+  const provider = buildFmpProvider(opts);
+  const budget = new DailyBudget(join(opts.cacheDir, "_budget.json"), FMP_FREE_DAILY_LIMIT);
+
+  let fetched = 0;
+  let skipped = 0;
+  let budgetExhausted = 0;
+  let failed = 0;
+  for (const symbol of [...symbols].sort()) {
+    if (!opts.refresh && loadCachedProfile(opts.cacheDir, symbol) !== null) {
+      skipped++;
+      continue;
+    }
+    if (!budget.consume()) {
+      budgetExhausted++;
+      continue;
+    }
+    try {
+      const profile = await provider.getProfile(symbol);
+      if (profile) {
+        saveCachedProfile(opts.cacheDir, profile);
+        fetched++;
+        console.log(`  ${symbol}: ${profile.sector ?? "?"} / ${profile.industry ?? "?"}`);
+      } else {
+        failed++;
+        console.log(`  ! ${symbol}: no profile data returned`);
+      }
+    } catch (err) {
+      failed++;
+      console.error(`  ! ${symbol}: ${err}`);
+    }
+  }
+
+  console.log(
+    `Fetched ${fetched}, skipped ${skipped} (already cached), ${failed} failed` +
+      (budgetExhausted > 0 ? `, ${budgetExhausted} skipped (today's FMP budget exhausted - rerun tomorrow)` : "") +
+      "."
+  );
+}
+
+interface ProfileListOpts extends ProfileCommonOpts {
+  sector?: string;
+}
+
+function cmdProfileList(opts: ProfileListOpts): void {
+  let profiles = listCachedProfiles(opts.cacheDir);
+  if (opts.sector) {
+    profiles = profiles.filter((p) => (p.sector ?? "").toLowerCase() === opts.sector!.toLowerCase());
+  }
+  if (profiles.length === 0) {
+    console.log("No cached profiles.");
+    return;
+  }
+  profiles.sort((a, b) => (a.sector ?? "").localeCompare(b.sector ?? "") || a.symbol.localeCompare(b.symbol));
+  for (const p of profiles) {
+    console.log(`${(p.sector ?? "-").padEnd(24)} ${(p.industry ?? "-").padEnd(28)} ${p.symbol}`);
+  }
+}
+
+interface ProfileShowOpts extends ProfileCommonOpts {
+  symbol: string;
+}
+
+function cmdProfileShow(opts: ProfileShowOpts): void {
+  const profile = loadCachedProfile(opts.cacheDir, opts.symbol.toUpperCase());
+  if (!profile) {
+    console.log(`No cached profile for ${opts.symbol}.`);
+    return;
+  }
+  console.log(`${profile.symbol} - ${profile.companyName ?? "?"}`);
+  console.log(`Sector:   ${profile.sector ?? "-"}`);
+  console.log(`Industry: ${profile.industry ?? "-"}`);
+  console.log(`\n${profile.description ?? "(no description)"}`);
+}
+
 function buildProgram(): Command {
   const program = new Command("tv-alerts");
 
@@ -835,6 +954,35 @@ function buildProgram(): Command {
   withHoldingsCommon(holdingsCmd.command("check"))
     .description("Check holdings for the 10%-above-basis, month-stagnant, and 3%-appreciation alerts")
     .action((opts: HoldingsCommonOpts) => cmdHoldingsCheck(opts));
+
+  const profileCmd = program
+    .command("profile")
+    .description("Cache ticker sector/industry/description data (Financial Modeling Prep)");
+  const withProfileCommon = (cmd: Command): Command =>
+    cmd
+      .option("--fmp-api-key <key>", "Financial Modeling Prep API key (or FMP_API_KEY in env/.env)")
+      .option("--cache-dir <path>", "Directory for the profile cache", ".cache/profiles");
+
+  withProfileCommon(profileCmd.command("fetch"))
+    .description("Populate the profile cache (250 requests/day free-tier budget, tracked across runs)")
+    .option("--symbol <symbol>", "Fetch this symbol (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
+    .option("--csv <path>", "Also include symbols from this TradingView CSV export (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
+    .option("--all-known", "Also include every symbol seen in history/, holdings.json, and alerts.json")
+    .option("--refresh", "Re-fetch symbols that are already cached")
+    .option("--history-dir <path>", "Directory of per-ticker history JSON files", "history")
+    .option("--holdings-file <path>", "Path to the holdings JSON store", "holdings.json")
+    .option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json")
+    .action((opts: ProfileFetchOpts) => cmdProfileFetch(opts));
+
+  withProfileCommon(profileCmd.command("list"))
+    .description("List cached profiles, sorted by sector")
+    .option("--sector <sector>", "Only show this sector")
+    .action((opts: ProfileListOpts) => cmdProfileList(opts));
+
+  withProfileCommon(profileCmd.command("show"))
+    .description("Show one cached profile in full, including its description")
+    .requiredOption("--symbol <symbol>", "Ticker symbol")
+    .action((opts: ProfileShowOpts) => cmdProfileShow(opts));
 
   return program;
 }

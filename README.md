@@ -295,6 +295,37 @@ directory. None of these three conditions need 5-15-minute resolution the
 way trailing/volume alerts do, so a coarser cron cadence (e.g. daily) is
 reasonable here even if you run `alert check` much more often.
 
+## Sector/profile cache (`src/profiles/`)
+
+For sector analysis and custom heatmaps. Schwab's API has no sector,
+industry, or company-description data at all (checked directly — neither
+its quotes nor instruments endpoints carry it), so this comes from
+[Financial Modeling Prep](https://site.financialmodelingprep.com/) instead
+— a free-tier third-party source, not "official" the way Schwab is. It won
+out over the alternatives: Alpha Vantage has the same data shape (sector,
+industry, description in one call) but only 25 requests/day free, vs. FMP's
+250/day; SEC EDGAR is free with no key and no real limit, but only exposes
+an SIC code (an older, coarser classification than the GICS sectors most
+heatmaps use) and no description text at all. See `SETUP.md` for signing up
+and setting `FMP_API_KEY`.
+
+```bash
+node dist/cli.js profile fetch --all-known --csv TradingView_Alerts_Log.csv
+node dist/cli.js profile list [--sector Technology]
+node dist/cli.js profile show --symbol AAPL
+```
+
+`--all-known` pulls the ticker union from `history/`, `holdings.json`, and
+`alerts.json` (plus any `--csv` paths given) — everything tracked so far,
+without assuming a fixed directory like `alerts_in/` is ever scanned
+automatically (it isn't; CSVs are always opt-in via `--csv`). Cached to
+`.cache/profiles/<symbol>.json`, one file per symbol, no expiry (this data
+barely changes) — `--refresh` forces a re-fetch. The 250/day free-tier cap
+is tracked in `.cache/profiles/_budget.json` **across** invocations (a
+single CLI run can't track a daily quota alone), so `profile fetch` is
+resumable — hit the cap partway through populating ~200 tickers, and
+re-running the next day only fetches what's still missing.
+
 ## Tests
 
 ```bash
