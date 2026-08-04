@@ -25,6 +25,7 @@ import type { PriceDataProvider } from "./types.js";
 const AUTHORIZE_URL = "https://api.schwabapi.com/v1/oauth/authorize";
 const TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token";
 const PRICE_HISTORY_URL = "https://api.schwabapi.com/marketdata/v1/pricehistory";
+const QUOTES_URL = "https://api.schwabapi.com/marketdata/v1/quotes";
 
 // Refresh a bit before the access token actually expires to avoid racing a
 // request against expiry.
@@ -190,6 +191,10 @@ interface PriceHistoryResponse {
   candles: Candle[];
 }
 
+interface QuoteResponse {
+  [symbol: string]: { quote?: { lastPrice: number } };
+}
+
 // Schwab's Market Data API is limited to 120 calls/minute per app.
 export const DEFAULT_MAX_REQUESTS_PER_MINUTE = 120;
 
@@ -234,5 +239,31 @@ export class SchwabProvider implements PriceDataProvider {
       close: candle.close,
       volume: candle.volume,
     }));
+  }
+
+  /** Current last-traded price per symbol, for periodic alert checks. */
+  async getQuotes(symbols: string[]): Promise<Map<string, number>> {
+    if (symbols.length === 0) {
+      return new Map();
+    }
+
+    await this.rateLimiter.acquire();
+    const accessToken = await this.auth.getAccessToken();
+    const params = new URLSearchParams({ symbols: symbols.join(",") });
+    const response = await fetch(`${QUOTES_URL}?${params}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(`Schwab quotes request failed (${response.status}): ${await response.text()}`);
+    }
+
+    const payload = (await response.json()) as QuoteResponse;
+    const result = new Map<string, number>();
+    for (const [symbol, data] of Object.entries(payload)) {
+      if (data.quote?.lastPrice !== undefined) {
+        result.set(symbol, data.quote.lastPrice);
+      }
+    }
+    return result;
   }
 }

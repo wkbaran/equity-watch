@@ -6,6 +6,10 @@ import { dirname, join } from "node:path";
 import { Command } from "commander";
 import { stringify } from "csv-stringify/sync";
 import { analyzeAlert, AnalysisParams, DEFAULT_ANALYSIS_PARAMS } from "./analysis.js";
+import { addAlert, checkAlerts, type AddAlertInput } from "./alerts/engine.js";
+import { effectiveTrigger } from "./alerts/models.js";
+import { ConsoleNotifier } from "./alerts/notify.js";
+import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.js";
 import { updateHistory } from "./history.js";
 import type { Alert, BreakoutVerdict } from "./models.js";
 import { parseAlerts } from "./parse.js";
@@ -109,6 +113,21 @@ function buildSchwabProvider(opts: CommonOpts & { noCache?: boolean; cacheDir: s
     return provider;
   }
   return new CachingProvider(provider, opts.cacheDir);
+}
+
+function buildQuoteFetcher(opts: CommonOpts): (symbols: string[]) => Promise<Map<string, number>> {
+  const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
+  const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
+  if (!appKey || !appSecret) {
+    console.error(
+      "Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET in a .env file (or env vars) " +
+        "or pass --app-key/--app-secret. See SETUP.md."
+    );
+    process.exit(1);
+  }
+  const auth = new SchwabAuth(appKey, appSecret, opts.tokenPath);
+  const provider = new SchwabProvider(auth, resolveMaxRequestsPerMinute());
+  return (symbols) => provider.getQuotes(symbols);
 }
 
 async function cmdSchwabLogin(opts: CommonOpts): Promise<void> {
@@ -272,6 +291,192 @@ async function cmdAnalyze(opts: AnalyzeOpts): Promise<void> {
   console.log(`Updated history for ${touched} ticker(s) in ${opts.historyDir}`);
 }
 
+interface AlertCommonOpts extends CommonOpts {
+  alertsFile: string;
+}
+
+interface AlertAddOpts extends AlertCommonOpts {
+  symbol: string;
+  level?: string;
+  near?: string;
+  trailPercent?: string;
+  trailAmount?: string;
+}
+
+interface AlertListOpts extends AlertCommonOpts {
+  all?: boolean;
+}
+
+interface AlertImportOpts extends AlertCommonOpts {
+  csv: string;
+  symbol?: string[];
+  asTrailing?: boolean;
+  trailPercent?: string;
+  trailAmount?: string;
+}
+
+async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
+  const hasLevel = opts.level !== undefined;
+  const hasNear = opts.near !== undefined;
+  if (hasLevel === hasNear) {
+    console.error("Specify exactly one of --level (static alert) or --near (trailing alert).");
+    process.exit(1);
+  }
+
+  let input: AddAlertInput;
+  if (hasLevel) {
+    if (opts.trailPercent !== undefined || opts.trailAmount !== undefined) {
+      console.error("--trail-percent/--trail-amount only apply to trailing alerts (--near).");
+      process.exit(1);
+    }
+    input = { kind: "static", symbol: opts.symbol, level: parseFloat(opts.level!) };
+  } else {
+    const hasPercent = opts.trailPercent !== undefined;
+    const hasAmount = opts.trailAmount !== undefined;
+    if (hasPercent === hasAmount) {
+      console.error("Specify exactly one of --trail-percent or --trail-amount for a trailing alert.");
+      process.exit(1);
+    }
+    input = {
+      kind: "trailing",
+      symbol: opts.symbol,
+      near: parseFloat(opts.near!),
+      trailType: hasPercent ? "percent" : "amount",
+      trailValue: parseFloat((hasPercent ? opts.trailPercent : opts.trailAmount)!),
+    };
+  }
+
+  const getQuotes = buildQuoteFetcher(opts);
+  const result = await addAlert(opts.alertsFile, input, getQuotes);
+
+  if (result.rejectedReason) {
+    console.log(`Not added: ${result.rejectedReason}`);
+    return;
+  }
+  const a = result.added!;
+  const trigger = effectiveTrigger(a);
+  if (result.replaced) {
+    console.log(
+      `Replaced ${result.replaced.kind} alert ${result.replaced.id} — added ${a.kind} alert ${a.id} ` +
+        `(${a.symbol}, ${a.side}, trigger ${trigger}).`
+    );
+  } else {
+    console.log(`Added ${a.kind} alert ${a.id} (${a.symbol}, ${a.side}, trigger ${trigger}).`);
+  }
+}
+
+async function cmdAlertImport(opts: AlertImportOpts): Promise<void> {
+  const hasPercent = opts.trailPercent !== undefined;
+  const hasAmount = opts.trailAmount !== undefined;
+  if (opts.asTrailing) {
+    if (hasPercent === hasAmount) {
+      console.error("Specify exactly one of --trail-percent or --trail-amount with --as-trailing.");
+      process.exit(1);
+    }
+  } else if (hasPercent || hasAmount) {
+    console.error("--trail-percent/--trail-amount only apply with --as-trailing.");
+    process.exit(1);
+  }
+
+  let tvAlerts = parseAlerts(opts.csv);
+  if (opts.symbol && opts.symbol.length > 0) {
+    const wanted = new Set(opts.symbol.map((s) => s.toUpperCase()));
+    tvAlerts = tvAlerts.filter((a) => wanted.has(a.symbol.toUpperCase()));
+  }
+  const priceCrossAlerts = tvAlerts.filter((a) => a.level !== null);
+
+  const seen = new Set<string>();
+  const candidates: { symbol: string; level: number }[] = [];
+  for (const a of priceCrossAlerts) {
+    const key = `${a.symbol}|${a.level}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ symbol: a.symbol, level: a.level! });
+  }
+
+  if (candidates.length === 0) {
+    console.log("No numeric price-level alerts found to import (only `Crossing <level>` alerts qualify).");
+    return;
+  }
+
+  // Fetch every symbol's quote once up front rather than once per candidate
+  // (addAlert() normally does its own live fetch per call).
+  const symbols = [...new Set(candidates.map((c) => c.symbol))];
+  const quotes = await buildQuoteFetcher(opts)(symbols);
+  const cachedGetQuotes = async (syms: string[]): Promise<Map<string, number>> => {
+    const result = new Map<string, number>();
+    for (const s of syms) {
+      const p = quotes.get(s);
+      if (p !== undefined) result.set(s, p);
+    }
+    return result;
+  };
+
+  let added = 0;
+  let replaced = 0;
+  let rejected = 0;
+  let skipped = 0;
+  for (const { symbol, level } of candidates) {
+    const input: AddAlertInput = opts.asTrailing
+      ? {
+          kind: "trailing",
+          symbol,
+          near: level,
+          trailType: hasPercent ? "percent" : "amount",
+          trailValue: parseFloat((hasPercent ? opts.trailPercent : opts.trailAmount)!),
+        }
+      : { kind: "static", symbol, level };
+
+    const result = await addAlert(opts.alertsFile, input, cachedGetQuotes);
+    if (result.rejectedReason) {
+      if (result.rejectedReason.startsWith("No quote")) {
+        skipped++;
+      } else {
+        rejected++;
+      }
+      continue;
+    }
+    added++;
+    if (result.replaced) {
+      replaced++;
+    }
+  }
+
+  console.log(
+    `Imported ${added} alert(s) from ${candidates.length} candidate(s) ` +
+      `(${replaced} replaced an existing alert, ${rejected} rejected as farther, ${skipped} skipped — no quote).`
+  );
+}
+
+function cmdAlertList(opts: AlertListOpts): void {
+  const alerts = listAlerts(opts.alertsFile, { all: opts.all });
+  if (alerts.length === 0) {
+    console.log("No alerts.");
+    return;
+  }
+  for (const a of alerts) {
+    const anchor = a.kind === "static" ? a.level : a.near;
+    const trail = a.kind === "trailing" ? `${a.trailValue}${a.trailType === "percent" ? "%" : "$"}` : "-";
+    console.log(
+      `${a.id}  ${a.kind.padEnd(8)} ${a.symbol.padEnd(6)} ${a.side.padEnd(5)} ` +
+        `anchor=${anchor} trail=${trail} status=${a.status} trigger=${effectiveTrigger(a)}`
+    );
+  }
+}
+
+function cmdAlertRemove(id: string, opts: AlertCommonOpts): void {
+  const removed = removeAlert(opts.alertsFile, id);
+  console.log(removed ? `Removed alert ${id}.` : `No alert with id ${id}.`);
+}
+
+async function cmdAlertCheck(opts: AlertCommonOpts): Promise<void> {
+  const alerts = loadAlerts(opts.alertsFile);
+  const getQuotes = buildQuoteFetcher(opts);
+  const { checked, triggered } = await checkAlerts(alerts, getQuotes, [new ConsoleNotifier()]);
+  saveAlerts(opts.alertsFile, alerts);
+  console.log(`Checked ${checked} alert(s), ${triggered.length} triggered.`);
+}
+
 function buildProgram(): Command {
   const program = new Command("tv-alerts");
 
@@ -300,6 +505,41 @@ function buildProgram(): Command {
     .option("--recent-high-tolerance <n>", "", (v) => parseFloat(v), 0.02)
     .option("--hold-days <n>", "", (v) => parseInt(v, 10), 2)
     .action((opts: AnalyzeOpts) => cmdAnalyze(opts));
+
+  const alertCmd = program.command("alert").description("Manage static/trailing price alerts");
+  const withAlertCommon = (cmd: Command): Command =>
+    withCommon(cmd).option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json");
+
+  withAlertCommon(alertCmd.command("add"))
+    .description("Add a static (--level) or trailing (--near) alert; side is inferred vs. the live price")
+    .requiredOption("--symbol <symbol>", "Ticker symbol")
+    .option("--level <price>", "Static alert: fire once when price crosses this level")
+    .option("--near <price>", "Trailing alert: reference price used to seed the watermark and infer side")
+    .option("--trail-percent <n>", "Trailing alert: trail distance as a percent")
+    .option("--trail-amount <n>", "Trailing alert: trail distance as a dollar amount")
+    .action((opts: AlertAddOpts) => cmdAlertAdd(opts));
+
+  withAlertCommon(alertCmd.command("import"))
+    .description("Bootstrap alerts from a TradingView triggered-alerts CSV export (one-time migration helper)")
+    .requiredOption("--csv <path>", "Path to the TradingView alerts CSV export")
+    .option("--symbol <symbol>", "Only import this symbol (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
+    .option("--as-trailing", "Import as trailing alerts instead of static level alerts")
+    .option("--trail-percent <n>", "Trail distance as a percent (only with --as-trailing)")
+    .option("--trail-amount <n>", "Trail distance as a dollar amount (only with --as-trailing)")
+    .action((opts: AlertImportOpts) => cmdAlertImport(opts));
+
+  withAlertCommon(alertCmd.command("list"))
+    .description("List alerts (armed only by default)")
+    .option("--all", "Include triggered/cancelled alerts")
+    .action((opts: AlertListOpts) => cmdAlertList(opts));
+
+  withAlertCommon(alertCmd.command("remove <id>"))
+    .description("Remove an alert by id")
+    .action((id: string, opts: AlertCommonOpts) => cmdAlertRemove(id, opts));
+
+  withAlertCommon(alertCmd.command("check"))
+    .description("Check all armed alerts against live Schwab quotes (run this from cron every ~15 min)")
+    .action((opts: AlertCommonOpts) => cmdAlertCheck(opts));
 
   return program;
 }

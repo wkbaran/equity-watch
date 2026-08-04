@@ -112,6 +112,64 @@ SETUP.md).
 While iterating, `npm run cli -- analyze ...` (via `tsx`) skips the build
 step.
 
+## Alerts
+
+A separate, lighter-weight `alert` command manages your own price alerts
+directly (no TradingView CSV involved) — useful since TradingView has no
+API to read back your pending alerts, but this tool's own `alerts.json`
+(gitignored, one flat file) does. Two kinds:
+
+- **Static** — fire once when price crosses a fixed level:
+  `node dist/cli.js alert add --symbol AAPL --level 150`
+- **Trailing** — track a running low/high since armed and fire on a
+  bounce/pullback of a given percent or dollar amount from that extreme
+  (like a trailing-stop-buy, as a notification instead of a trade):
+  `node dist/cli.js alert add --symbol AAPL --near 150 --trail-percent 3`
+  (or `--trail-amount 2.50`)
+
+For both, whether it's an "above" or "below" alert is *inferred* by
+comparing `--level`/`--near` to the live price at the moment you add it —
+not something you choose. Adding a new alert that's closer to the live
+price than an existing armed one on the same symbol+side replaces it
+(regardless of kind); adding one that's farther is rejected. Above and
+below coexist independently, so you can watch both sides of a symbol at
+once.
+
+When an alert fires, its `triggerSnapshot` field captures every attribute
+(level/near/trail settings, extremePrice, etc.) exactly as they were at
+that moment, independent of the live record — so a future edit/rearm of
+the same alert can't retroactively change what it looked like when it
+actually triggered.
+
+```bash
+node dist/cli.js alert list [--all]     # armed only by default
+node dist/cli.js alert remove <id>
+node dist/cli.js alert check            # one pass against live Schwab quotes;
+                                         # point your own cron/Task Scheduler
+                                         # at this every ~15 min
+```
+
+To bootstrap from an existing TradingView setup instead of re-entering
+everything by hand, `alert import` reuses the same CSV parser as `analyze`
+and converts every numeric `Crossing <level>` row into a static alert
+(`--as-trailing` + `--trail-percent`/`--trail-amount` converts them into
+trailing alerts instead):
+
+```bash
+node dist/cli.js alert import --csv TradingView_Alerts_Log.csv
+```
+
+Every candidate row goes through the same side-inference and uniqueness
+rules as `alert add` — a CSV with the same symbol logged at several
+historical levels naturally collapses down to just the closest armed
+alert per symbol+side, with everything farther cancelled along the way.
+
+`alert check` polls Schwab's `/marketdata/v1/quotes` endpoint (already
+covered by the Market Data Production access from SETUP.md — no streaming
+API needed) and prints triggered alerts with a TradingView chart link to
+pull up. Notifications go through a pluggable `Notifier`
+(`src/alerts/notify.ts`) — only a console notifier exists today.
+
 ## Tests
 
 ```bash

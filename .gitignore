@@ -3,5 +3,6 @@ dist/
 .cache/
 reports/
 history/
+alerts.json
 schwab_tokens.json
 .env
