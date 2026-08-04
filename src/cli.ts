@@ -12,6 +12,11 @@ import { effectiveTrigger, type VolumeCondition, type VolumePeriodUnit } from ".
 import { ConsoleNotifier } from "./alerts/notify.js";
 import { writeAlertTriggerReport } from "./alerts/report.js";
 import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.js";
+import { addLot, addStop, checkHoldings } from "./holdings/engine.js";
+import { computeBasis } from "./holdings/models.js";
+import { ConsoleHoldingsNotifier } from "./holdings/notify.js";
+import { writeHoldingsAlertReport } from "./holdings/report.js";
+import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
 import { updateHistory } from "./history.js";
 import type { Alert, BreakoutVerdict } from "./models.js";
 import { parseAlerts } from "./parse.js";
@@ -306,6 +311,10 @@ function defaultReportPath(now: Date): string {
 
 function defaultAlertTriggerReportPath(now: Date): string {
   return join("reports", `alert_triggers_${timestampSuffix(now)}.csv`);
+}
+
+function defaultHoldingsAlertReportPath(now: Date): string {
+  return join("reports", `holdings_alerts_${timestampSuffix(now)}.csv`);
 }
 
 function writeReport(verdicts: BreakoutVerdict[], outPath: string): void {
@@ -613,6 +622,97 @@ async function cmdAlertCheck(opts: AlertCommonOpts): Promise<void> {
   }
 }
 
+interface HoldingsCommonOpts extends CommonOpts {
+  holdingsFile: string;
+}
+
+interface HoldingsAddLotOpts extends HoldingsCommonOpts {
+  symbol: string;
+  count: string;
+  basis: string;
+  date?: string;
+}
+
+interface HoldingsListOpts extends HoldingsCommonOpts {
+  symbol?: string;
+}
+
+interface HoldingsStopAddOpts extends HoldingsCommonOpts {
+  symbol: string;
+  price: string;
+  count?: string;
+}
+
+function cmdHoldingsAddLot(opts: HoldingsAddLotOpts): void {
+  const lot = addLot(opts.holdingsFile, {
+    symbol: opts.symbol,
+    count: parseFloat(opts.count),
+    basisPerShare: parseFloat(opts.basis),
+    purchaseDate: opts.date,
+  });
+  console.log(`Added lot ${lot.id}: ${lot.count} ${lot.symbol} @ ${lot.basisPerShare} on ${lot.purchaseDate}.`);
+}
+
+function cmdHoldingsList(opts: HoldingsListOpts): void {
+  const store = loadHoldingsStore(opts.holdingsFile);
+  const symbols = [...new Set(store.lots.map((l) => l.symbol))]
+    .filter((s) => !opts.symbol || s.toUpperCase() === opts.symbol.toUpperCase())
+    .sort();
+  if (symbols.length === 0) {
+    console.log("No holdings.");
+    return;
+  }
+  for (const symbol of symbols) {
+    const info = computeBasis(store.lots, symbol)!;
+    const stops = store.stops.filter((s) => s.symbol === symbol);
+    const stopSummary =
+      stops.length === 0 ? "no stops" : stops.map((s) => `$${s.stopPrice}(${s.count ?? info.totalCount})`).join(", ");
+    console.log(
+      `${symbol.padEnd(6)} count=${info.totalCount} basis=${info.blendedBasis.toFixed(2)} ` +
+        `last_purchase=${info.lastPurchaseDate} stops=[${stopSummary}]`
+    );
+  }
+}
+
+function cmdHoldingsStopAdd(opts: HoldingsStopAddOpts): void {
+  const stop = addStop(opts.holdingsFile, {
+    symbol: opts.symbol,
+    stopPrice: parseFloat(opts.price),
+    count: opts.count !== undefined ? parseFloat(opts.count) : null,
+  });
+  console.log(`Added stop ${stop.id}: ${stop.symbol} @ ${stop.stopPrice} (${stop.count ?? "all"} shares).`);
+}
+
+function cmdHoldingsStopList(opts: HoldingsListOpts): void {
+  const store = loadHoldingsStore(opts.holdingsFile);
+  const stops = store.stops.filter((s) => !opts.symbol || s.symbol.toUpperCase() === opts.symbol.toUpperCase());
+  if (stops.length === 0) {
+    console.log("No stops.");
+    return;
+  }
+  for (const s of stops) {
+    console.log(`${s.id}  ${s.symbol.padEnd(6)} stop=${s.stopPrice} count=${s.count ?? "all"}`);
+  }
+}
+
+function cmdHoldingsStopRemove(id: string, opts: HoldingsCommonOpts): void {
+  const removed = removeStop(opts.holdingsFile, id);
+  console.log(removed ? `Removed stop ${id}.` : `No stop with id ${id}.`);
+}
+
+async function cmdHoldingsCheck(opts: HoldingsCommonOpts): Promise<void> {
+  const store = loadHoldingsStore(opts.holdingsFile);
+  const market = buildMarketData(opts);
+  const { checked, triggered } = await checkHoldings(store, market, [new ConsoleHoldingsNotifier()]);
+  saveHoldingsStore(opts.holdingsFile, store);
+  console.log(`Checked ${checked} holding(s), ${triggered.length} triggered.`);
+  if (triggered.length > 0) {
+    const outPath = defaultHoldingsAlertReportPath(new Date());
+    writeHoldingsAlertReport(triggered, outPath);
+    console.log(`Wrote ${triggered.length} holdings alert(s) to ${outPath}`);
+  }
+}
+
 function buildProgram(): Command {
   const program = new Command("tv-alerts");
 
@@ -696,6 +796,45 @@ function buildProgram(): Command {
   withAlertCommon(alertCmd.command("check"))
     .description("Check all armed alerts against live Schwab quotes (run this from cron every ~15 min)")
     .action((opts: AlertCommonOpts) => cmdAlertCheck(opts));
+
+  const holdingsCmd = program.command("holdings").description("Track holdings (lots, stops) and basis-relative alerts");
+  const withHoldingsCommon = (cmd: Command): Command =>
+    withCommon(cmd).option("--holdings-file <path>", "Path to the holdings JSON store", "holdings.json");
+
+  withHoldingsCommon(holdingsCmd.command("add-lot"))
+    .description("Record a purchase lot")
+    .requiredOption("--symbol <symbol>", "Ticker symbol")
+    .requiredOption("--count <n>", "Shares purchased")
+    .requiredOption("--basis <price>", "Price paid per share")
+    .option("--date <yyyy-mm-dd>", "Purchase date (default: today)")
+    .action((opts: HoldingsAddLotOpts) => cmdHoldingsAddLot(opts));
+
+  withHoldingsCommon(holdingsCmd.command("list"))
+    .description("List holdings with blended basis, last purchase date, and stops")
+    .option("--symbol <symbol>", "Only show this symbol")
+    .action((opts: HoldingsListOpts) => cmdHoldingsList(opts));
+
+  const stopCmd = holdingsCmd.command("stop").description("Manage stops (record-keeping only, not live-monitored yet)");
+
+  withHoldingsCommon(stopCmd.command("add"))
+    .description("Record a stop")
+    .requiredOption("--symbol <symbol>", "Ticker symbol")
+    .requiredOption("--price <price>", "Stop price")
+    .option("--count <n>", "Shares covered (default: all currently held, tracked dynamically)")
+    .action((opts: HoldingsStopAddOpts) => cmdHoldingsStopAdd(opts));
+
+  withHoldingsCommon(stopCmd.command("list"))
+    .description("List stops")
+    .option("--symbol <symbol>", "Only show this symbol")
+    .action((opts: HoldingsListOpts) => cmdHoldingsStopList(opts));
+
+  withHoldingsCommon(stopCmd.command("remove <id>"))
+    .description("Remove a stop by id")
+    .action((id: string, opts: HoldingsCommonOpts) => cmdHoldingsStopRemove(id, opts));
+
+  withHoldingsCommon(holdingsCmd.command("check"))
+    .description("Check holdings for the 10%-above-basis, month-stagnant, and 3%-appreciation alerts")
+    .action((opts: HoldingsCommonOpts) => cmdHoldingsCheck(opts));
 
   return program;
 }

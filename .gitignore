@@ -4,5 +4,6 @@ dist/
 reports/
 history/
 alerts.json
+holdings.json
 schwab_tokens.json
 .env

@@ -250,6 +250,51 @@ API needed) and prints triggered alerts with a TradingView chart link to
 pull up. Notifications go through a pluggable `Notifier`
 (`src/alerts/notify.ts`) — only a console notifier exists today.
 
+## Holdings (`src/holdings/`)
+
+A separate, related subsystem that tracks actual positions — share count,
+cost basis, and stops — entered manually (no Schwab Accounts API
+involved; that's a different, unregistered product from the Market Data
+access this tool already uses) and stored in `holdings.json` (gitignored,
+same treatment as `alerts.json`):
+
+```bash
+node dist/cli.js holdings add-lot --symbol AAPL --count 100 --basis 150 [--date 2026-01-15]
+node dist/cli.js holdings list [--symbol AAPL]
+node dist/cli.js holdings stop add --symbol AAPL --price 140 [--count 50]
+node dist/cli.js holdings stop list
+node dist/cli.js holdings stop remove <id>
+node dist/cli.js holdings check
+```
+
+Multiple purchase lots per symbol blend into one weighted-average basis
+for alerting purposes (individual lots are still kept for history and for
+"days since last purchase"). A stop's `--count` defaults to `null`,
+meaning "whatever I currently hold" — resolved dynamically each time
+rather than frozen at creation, so it still reads as "all of it" after a
+later purchase. Stops are record-keeping/context only right now — no live
+"price crossed the stop" alert yet, though that would reuse the existing
+static-alert engine if added later.
+
+`holdings check` evaluates three conditions per position, each firing
+once on the crossing (same semantics as static/trailing alerts — quiet
+until the state changes) rather than repeating every check:
+
+- **10% above basis** — consider adding more.
+- **Stagnant** — 30+ days since the last purchase with under 2% profit.
+  A fresh lot resets this immediately, since the day-count is always
+  recomputed from the lots rather than tracked separately.
+- **Every 3% of appreciation** — a suggestion to raise your stop. This one
+  ratchets: it only fires on newly-reached territory, so a pullback into
+  a band you've already been notified about doesn't re-fire.
+
+Like `alert check`, this writes `reports/holdings_alerts_<timestamp>.csv`
+(only when something fires) — a third distinct prefix alongside
+`breakout_report_*` and `alert_triggers_*` in the same `reports/`
+directory. None of these three conditions need 5-15-minute resolution the
+way trailing/volume alerts do, so a coarser cron cadence (e.g. daily) is
+reasonable here even if you run `alert check` much more often.
+
 ## Tests
 
 ```bash
