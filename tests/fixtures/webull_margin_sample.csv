@@ -1,0 +1,13 @@
+Symbol,Name,Quantity,Market Value,Open P&L,Open P&L %,Day's P&L,Last Price,Avg Cost,Total Cost,Position Ratio %,Product Type
+CASHX,Sample Cash ETF,86,7868.14,-1.72,-0.02,-0.17,91.49,91.51,7869.86,44.05,Stock
+QTYB,Quantity Mismatch Ltd,9,379.26,-4.02,-1.05,-0.4,63.21,63.88,383.28,2.12,Stock
+ROUND,Rounding Noise Corp,341,5902.71,1481.42,33.51,148.14,17.32,12.97,4421.29,33.05,Stock
+OPTX $5...,OPTX Option,1,147.5,-302.5,-67.22,-30.25,1.475,4.5,450,0.83,Option
+BIGW,Big Winner Energy,2,550.8,80.18,17.04,8.02,275.4,235.31,470.62,3.08,Stock
+GAINR,Gainer Medical Inc,75,741.0,111.0,17.62,11.1,9.88,8.4,630.0,4.15,Stock
+FLATA,Flat Industries,35,364.7,-0.7,-0.19,-0.07,10.42,10.44,365.4,2.04,Stock
+FLATB,Flat Capital Corp,20,395.4,3.4,0.87,0.34,19.77,19.6,392.0,2.21,Stock
+LOSSA,Laggard Holdings,1,308.87,-33.69,-9.83,-3.37,308.87,342.56,342.56,1.73,Stock
+LOSSB,Laggard Media Inc,40,344.0,-23.2,-6.32,-2.32,8.6,9.18,367.2,1.93,Stock
+NEUTA,Neutral Pharma,18,498.96,37.8,8.2,3.78,27.72,25.62,461.16,2.79,Stock
+NEUTB,Neutral Tech Plc,12,360.0,-7.08,-1.93,-0.71,30.0,30.59,367.08,2.02,Stock

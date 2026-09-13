@@ -5,6 +5,14 @@ export interface Lot {
   basisPerShare: number;
   purchaseDate: string;
   createdAt: string;
+  /**
+   * Which brokerage account holds this lot. Optional and purely descriptive -
+   * computeBasis deliberately blends across accounts, because "am I up 10% on
+   * BIL" is a question about the position, not about where it is custodied.
+   */
+  account?: string;
+  /** Company name from an import, for display. */
+  name?: string;
 }
 
 export interface Stop {

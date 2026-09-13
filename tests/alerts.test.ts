@@ -46,11 +46,16 @@ function makeStatic(overrides: Partial<StaticAlert> = {}): StaticAlert {
     id: "s1",
     symbol: "TEST",
     side: "below",
-    status: "armed",
+    status: "live",
     createdAt: "2026-01-01T00:00:00.000Z",
     livePriceAtCreation: 105,
-    triggeredAt: null,
-    triggerPrice: null,
+    triggerCount: 0,
+    lastTriggeredAt: null,
+    lastTriggerPrice: null,
+    mutedUntil: null,
+    watchingSince: "2026-01-01T00:00:00.000Z",
+    watchingSinceApprox: false,
+    priceAtWatchStart: null,
     triggerSnapshot: null,
     kind: "static",
     level: 100,
@@ -64,11 +69,16 @@ function makeTrailing(overrides: Partial<TrailingAlert> = {}): TrailingAlert {
     id: "t1",
     symbol: "TEST",
     side: "below",
-    status: "armed",
+    status: "live",
     createdAt: "2026-01-01T00:00:00.000Z",
     livePriceAtCreation: 100,
-    triggeredAt: null,
-    triggerPrice: null,
+    triggerCount: 0,
+    lastTriggeredAt: null,
+    lastTriggerPrice: null,
+    mutedUntil: null,
+    watchingSince: "2026-01-01T00:00:00.000Z",
+    watchingSinceApprox: false,
+    priceAtWatchStart: null,
     triggerSnapshot: null,
     kind: "trailing",
     near: 100,
@@ -84,11 +94,16 @@ function makeVolume(overrides: Partial<VolumeAlert> = {}): VolumeAlert {
   return {
     id: "v1",
     symbol: "TEST",
-    status: "armed",
+    status: "live",
     createdAt: "2026-01-01T00:00:00.000Z",
     livePriceAtCreation: 100,
-    triggeredAt: null,
-    triggerPrice: null,
+    triggerCount: 0,
+    lastTriggeredAt: null,
+    lastTriggerPrice: null,
+    mutedUntil: null,
+    watchingSince: "2026-01-01T00:00:00.000Z",
+    watchingSinceApprox: false,
+    priceAtWatchStart: null,
     triggerSnapshot: null,
     kind: "volume",
     volume: { threshold: 1_000_000, mode: "today" },
@@ -101,20 +116,58 @@ describe("checkAlerts", () => {
     const alert = makeStatic({ level: 100, lastKnownSide: "above" });
     const { triggered } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 105 } }), []);
     expect(triggered).toHaveLength(0);
-    expect(alert.status).toBe("armed");
+    expect(alert.status).toBe("live");
   });
 
-  it("triggers a static alert exactly once when price crosses the level", async () => {
+  it("stays live after triggering and does not re-fire while price stays on the far side", async () => {
     const alert = makeStatic({ level: 100, lastKnownSide: "above" });
     const first = await checkAlerts([alert], fakeMarket({ prices: { TEST: 95 } }), []);
     expect(first.triggered).toHaveLength(1);
-    expect(alert.status).toBe("triggered");
-    expect(alert.triggerPrice).toBe(95);
+    expect(first.revisits).toHaveLength(1);
+    expect(alert.status).toBe("live"); // alerts never disarm
+    expect(alert.triggerCount).toBe(1);
+    expect(alert.lastTriggerPrice).toBe(95);
+    expect(alert.lastKnownSide).toBe("below"); // re-armed against the new side
 
-    // Already triggered (no longer armed), so a second check must not re-fire.
+    // Still watched (checked, not skipped), but a further move in the same
+    // direction is not a new crossing, so it must stay quiet.
     const second = await checkAlerts([alert], fakeMarket({ prices: { TEST: 90 } }), []);
-    expect(second.checked).toBe(0);
+    expect(second.checked).toBe(1);
     expect(second.triggered).toHaveLength(0);
+    expect(second.revisits).toHaveLength(0);
+    expect(alert.triggerCount).toBe(1);
+  });
+
+  it("fires again on a genuine re-cross, queueing a second revisit entry", async () => {
+    const alert = makeStatic({ level: 100, lastKnownSide: "above" });
+    await checkAlerts([alert], fakeMarket({ prices: { TEST: 95 } }), []);
+    expect(alert.triggerCount).toBe(1);
+
+    // Back above the level...
+    const back = await checkAlerts([alert], fakeMarket({ prices: { TEST: 104 } }), []);
+    expect(back.triggered).toHaveLength(1); // crossing up is itself a crossing
+    expect(alert.triggerCount).toBe(2);
+
+    // ...and down through it again.
+    const again = await checkAlerts([alert], fakeMarket({ prices: { TEST: 96 } }), []);
+    expect(again.triggered).toHaveLength(1);
+    expect(again.revisits).toHaveLength(1);
+    expect(alert.triggerCount).toBe(3);
+  });
+
+  it("queues a revisit entry carrying the level and price it fired at", async () => {
+    const alert = makeStatic({ level: 100, lastKnownSide: "above" });
+    const { revisits } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 95 } }), []);
+    expect(revisits[0]).toMatchObject({
+      alertId: "s1",
+      symbol: "TEST",
+      kind: "static",
+      levelAtTrigger: 100,
+      triggerPrice: 95,
+      status: "open",
+      suggestedLevel: null, // only a relevel pass fills this in
+      priority: null,
+    });
   });
 
   it("does not immediately false-trigger a freshly created static alert (lastKnownSide regression)", async () => {
@@ -134,7 +187,7 @@ describe("checkAlerts", () => {
     // Price hasn't moved at all - must not trigger.
     const { triggered } = await checkAlerts([alert], market, []);
     expect(triggered).toHaveLength(0);
-    expect(alert.status).toBe("armed");
+    expect(alert.status).toBe("live");
   });
 
   it("snapshots every attribute at trigger time, independent of later mutation", async () => {
@@ -143,11 +196,14 @@ describe("checkAlerts", () => {
 
     expect(alert.triggerSnapshot).not.toBeNull();
     const snapshot = alert.triggerSnapshot!;
-    expect(snapshot.status).toBe("armed"); // pre-trigger state, not "triggered"
-    expect(snapshot.triggeredAt).toBeNull();
-    expect(snapshot.triggerPrice).toBeNull();
+    expect(snapshot.triggerCount).toBe(0); // pre-trigger state
+    expect(snapshot.lastTriggeredAt).toBeNull();
+    expect(snapshot.lastTriggerPrice).toBeNull();
     expect(snapshot.triggerSnapshot).toBeNull();
     expect((snapshot as StaticAlert).level).toBe(100);
+    // Captured before the re-arm, so it records the side price crossed *from*.
+    expect((snapshot as StaticAlert).lastKnownSide).toBe("above");
+    expect(alert.lastKnownSide).toBe("below");
 
     // A later in-place edit of the live record must not retroactively change the snapshot.
     (alert as StaticAlert).level = 50;
@@ -169,8 +225,8 @@ describe("checkAlerts", () => {
     const alert = makeTrailing({ side: "below", extremePrice: 97, trailType: "percent", trailValue: 3 });
     const { triggered } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 100 } }), []); // 97 * 1.03 = 99.91
     expect(triggered).toHaveLength(1);
-    expect(alert.status).toBe("triggered");
-    expect(alert.triggerPrice).toBe(100);
+    expect(alert.status).toBe("live");
+    expect(alert.lastTriggerPrice).toBe(100);
 
     // The snapshot preserves the watermark reached before the bounce, even
     // if a future rearm/edit changes extremePrice on the live record.
@@ -191,7 +247,7 @@ describe("checkAlerts", () => {
 
     const { triggered: t3 } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 101 } }), []); // 103 - 2 = 101
     expect(t3).toHaveLength(1);
-    expect(alert.status).toBe("triggered");
+    expect(alert.status).toBe("live");
   });
 
   describe("volume-only alerts", () => {
@@ -209,7 +265,31 @@ describe("checkAlerts", () => {
         []
       );
       expect(triggered).toHaveLength(1);
-      expect(alert.status).toBe("triggered");
+      expect(alert.status).toBe("live");
+    });
+
+    it("mutes itself for the rest of the day rather than re-firing every check", async () => {
+      // A volume threshold, once crossed, stays crossed for the session. Price
+      // crossings self-limit via lastKnownSide; volume has no such mechanism,
+      // so without the mute this would fire on every poll until midnight.
+      const alert = makeVolume({ volume: { threshold: 1_000_000, mode: "today" } });
+      const market = fakeMarket({ prices: { TEST: 100 }, volumes: { TEST: 1_200_000 } });
+
+      const first = await checkAlerts([alert], market, []);
+      expect(first.triggered).toHaveLength(1);
+      expect(alert.mutedUntil).not.toBeNull();
+      expect(alert.status).toBe("live");
+
+      const second = await checkAlerts([alert], market, []);
+      expect(second.triggered).toHaveLength(0);
+      expect(second.revisits).toHaveLength(0);
+      expect(alert.triggerCount).toBe(1);
+
+      // Once the mute lapses it is eligible again without any manual re-arming.
+      alert.mutedUntil = "2020-01-01T00:00:00.000Z";
+      const third = await checkAlerts([alert], market, []);
+      expect(third.triggered).toHaveLength(1);
+      expect(alert.triggerCount).toBe(2);
     });
 
     it("sums minute bars within the trailing period window and ignores older ones", async () => {
@@ -260,7 +340,7 @@ describe("checkAlerts", () => {
       });
       const { triggered } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 95 }, volumes: { TEST: 200_000 } }), []);
       expect(triggered).toHaveLength(0);
-      expect(alert.status).toBe("armed");
+      expect(alert.status).toBe("live");
       // lastKnownSide must stay stale (not "below") so the crossing stays pending.
       expect(alert.lastKnownSide).toBe("above");
     });
@@ -272,11 +352,11 @@ describe("checkAlerts", () => {
         volumeCondition: { threshold: 1_000_000, mode: "today" },
       });
       await checkAlerts([alert], fakeMarket({ prices: { TEST: 95 }, volumes: { TEST: 200_000 } }), []);
-      expect(alert.status).toBe("armed");
+      expect(alert.status).toBe("live");
 
       const { triggered } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 94 }, volumes: { TEST: 1_500_000 } }), []);
       expect(triggered).toHaveLength(1);
-      expect(alert.status).toBe("triggered");
+      expect(alert.status).toBe("live");
     });
 
     it("cancels a pending static crossing if price reverts before volume catches up", async () => {
@@ -286,12 +366,12 @@ describe("checkAlerts", () => {
         volumeCondition: { threshold: 1_000_000, mode: "today" },
       });
       await checkAlerts([alert], fakeMarket({ prices: { TEST: 95 }, volumes: { TEST: 200_000 } }), []);
-      expect(alert.status).toBe("armed");
+      expect(alert.status).toBe("live");
 
       // Price reverts back above the level before volume ever qualified.
       const { triggered } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 105 }, volumes: { TEST: 300_000 } }), []);
       expect(triggered).toHaveLength(0);
-      expect(alert.status).toBe("armed");
+      expect(alert.status).toBe("live");
 
       // Now it needs a fresh crossing again even with ample volume.
       const { triggered: t2 } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 106 }, volumes: { TEST: 5_000_000 } }), []);
@@ -312,7 +392,7 @@ describe("checkAlerts", () => {
         []
       );
       expect(t1).toHaveLength(0);
-      expect(alert.status).toBe("armed");
+      expect(alert.status).toBe("live");
 
       const { triggered: t2 } = await checkAlerts(
         [alert],
@@ -384,7 +464,7 @@ describe("addAlert", () => {
     const original = stored.find((a) => a.id === first.added!.id)!;
     expect(original.status).toBe("cancelled");
     const replacement = stored.find((a) => a.id === second.added!.id)!;
-    expect(replacement.status).toBe("armed");
+    expect(replacement.status).toBe("live");
   });
 
   it("rejects a new alert that is farther than an existing one on the same side", async () => {
@@ -401,7 +481,7 @@ describe("addAlert", () => {
 
     const stored = loadAlerts(path);
     const untouched = stored.find((a) => a.id === close.added!.id)!;
-    expect(untouched.status).toBe("armed");
+    expect(untouched.status).toBe("live");
   });
 
   it("lets above and below alerts coexist on the same symbol", async () => {
@@ -413,7 +493,7 @@ describe("addAlert", () => {
     expect(above.rejectedReason).toBeNull();
 
     const stored: Alert[] = loadAlerts(path);
-    expect(stored.filter((a) => a.status === "armed")).toHaveLength(2);
+    expect(stored.filter((a) => a.status === "live")).toHaveLength(2);
   });
 
   it("attaches a volume condition to a static alert (AND semantics)", async () => {
@@ -437,7 +517,7 @@ describe("addAlert", () => {
     expect(result.added?.kind).toBe("volume");
 
     const stored = loadAlerts(path);
-    expect(stored.filter((a) => a.status === "armed")).toHaveLength(2);
+    expect(stored.filter((a) => a.status === "live")).toHaveLength(2);
   });
 
   it("lets multiple volume-only alerts coexist on the same symbol regardless of threshold", async () => {
@@ -448,6 +528,6 @@ describe("addAlert", () => {
     expect(second.rejectedReason).toBeNull();
 
     const stored = loadAlerts(path);
-    expect(stored.filter((a) => a.status === "armed")).toHaveLength(2);
+    expect(stored.filter((a) => a.status === "live")).toHaveLength(2);
   });
 });

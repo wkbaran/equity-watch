@@ -16,8 +16,19 @@ import type { Alert, AlertType } from "./models.js";
 
 const TICKER_RE = /^(?:([A-Z_]+):)?([A-Za-z0-9.-]+)(?:,\s*(\S+))?$/;
 
-// "GOOG Crossing 350.28" / "MKL Crossing 2,003.72"
-const PRICE_CROSS_RE = /Crossing\s+([\d,]+\.?\d*)\s*$/;
+// "GOOG Crossing 350.28" / "MKL Crossing 2,003.72" / "ACI Crossing Up 14.10"
+// The Up/Down variants state a direction outright, which is better than the
+// side-inference-from-live-price that addAlert otherwise has to do.
+const PRICE_CROSS_RE = /Crossing\s+(?:(Up|Down)\s+)?([\d,]+\.?\d*)\s*$/i;
+
+// "UNP Crossing 277.50 AND Volume Crossing 3 M on UNP, 1D" - a compound
+// price-AND-volume alert, which maps onto StaticAlert + volumeCondition.
+const COMPOUND_PRICE_VOLUME_RE =
+  /Crossing\s+([\d,]+\.?\d*)\s+AND\s+Volume Crossing(?:\s+Up)?\s+([\d,]+\.?\d*)[^0-9A-Za-z]*([MKB])\b/i;
+
+// "AGNC, 1D Exiting rectangle" - a drawing/pattern alert. Nothing numeric to
+// act on, but worth naming rather than silently landing in "other".
+const PATTERN_RE = /\b(?:Entering|Exiting)\s+(?:rectangle|triangle|channel|wedge|flag)\b/i;
 
 // "SUI, 1D Crossing trendline" / "DEO, 1D Crossing Trend Line"
 const TRENDLINE_RE = /Crossing\s+trend\s*line/i;
@@ -44,28 +55,56 @@ function splitTicker(rawTicker: string): { exchange: string; symbol: string; tim
   return { exchange: exchange ?? "", symbol, timeframe: timeframe ?? null };
 }
 
-export function classifyDescription(description: string): { alertType: AlertType; level: number | null } {
+export interface Classification {
+  alertType: AlertType;
+  level: number | null;
+  /** Set when the alert states its own direction ("Crossing Up 14.10"). */
+  direction: "up" | "down" | null;
+  /** Share count for the volume half of a compound price-AND-volume alert. */
+  andVolume: number | null;
+}
+
+export function classifyDescription(description: string): Classification {
   const volumeMatch = VOLUME_CROSS_RE.exec(description);
   if (volumeMatch) {
     const value = parseNumber(volumeMatch[1]);
     const unit = volumeMatch[2].toUpperCase();
-    return { alertType: "volume_cross", level: value * UNIT_MULTIPLIER[unit] };
+    return { alertType: "volume_cross", level: value * UNIT_MULTIPLIER[unit], direction: null, andVolume: null };
   }
 
   if (MA_STRATEGY_RE.test(description)) {
-    return { alertType: "ma_strategy", level: null };
+    return { alertType: "ma_strategy", level: null, direction: null, andVolume: null };
   }
 
   if (TRENDLINE_RE.test(description)) {
-    return { alertType: "trendline_cross", level: null };
+    return { alertType: "trendline_cross", level: null, direction: null, andVolume: null };
+  }
+
+  if (PATTERN_RE.test(description)) {
+    return { alertType: "pattern", level: null, direction: null, andVolume: null };
+  }
+
+  // Checked before the plain price pattern: a compound description ends with
+  // the chart's "on TICKER, 1D" suffix, so the end-anchored price regex would
+  // miss it entirely and drop the alert. Classified as price_cross so the
+  // breakout pipeline still judges it on its price level.
+  const compoundMatch = COMPOUND_PRICE_VOLUME_RE.exec(description);
+  if (compoundMatch) {
+    return {
+      alertType: "price_cross",
+      level: parseNumber(compoundMatch[1]),
+      direction: null,
+      andVolume: parseNumber(compoundMatch[2]) * UNIT_MULTIPLIER[compoundMatch[3].toUpperCase()],
+    };
   }
 
   const priceMatch = PRICE_CROSS_RE.exec(description);
   if (priceMatch) {
-    return { alertType: "price_cross", level: parseNumber(priceMatch[1]) };
+    const direction = priceMatch[1] ? (priceMatch[1].toLowerCase() as "up" | "down") : null;
+    return { alertType: "price_cross", level: parseNumber(priceMatch[2]), direction, andVolume: null };
   }
 
-  return { alertType: "other", level: null };
+  return { alertType: "other", level: null, direction: null, andVolume: null };
 }
 
 export function parseAlerts(csvPath: string): Alert[] {

@@ -1,24 +1,69 @@
 #!/usr/bin/env node
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Command } from "commander";
 import { stringify } from "csv-stringify/sync";
 import { analyzeAlert, AnalysisParams } from "./analysis.js";
-import { triggeredAlertsToBreakoutAlerts } from "./alerts/bridge.js";
-import { addAlert, checkAlerts, type AddAlertInput, type MarketData } from "./alerts/engine.js";
+import { revisitsToBreakoutAlerts } from "./alerts/bridge.js";
+import { suggestLevel } from "./alerts/relevel.js";
+import { buildSeedPlan, closeOnOrAfter, resolveLevel } from "./alerts/seed.js";
+import {
+  addAlert,
+  checkAlerts,
+  type AddAlertInput,
+  type BaselineResolver,
+  type MarketData,
+  type WatchOrigin,
+} from "./alerts/engine.js";
+import { baselineKey, computeBaseline } from "./alerts/volumeBaseline.js";
 import { effectiveTrigger, type VolumeCondition, type VolumePeriodUnit } from "./alerts/models.js";
 import { ConsoleNotifier } from "./alerts/notify.js";
 import { writeAlertTriggerReport } from "./alerts/report.js";
+import {
+  DEFAULT_REVISIT_WEIGHTS,
+  daysBetween,
+  explainPriority,
+  scoreRevisit,
+  type RevisitEntry,
+} from "./alerts/revisit.js";
+import {
+  appendRevisits,
+  listRevisits,
+  loadRevisits,
+  resolveRevisit,
+  saveRevisits,
+  sortByPriority,
+} from "./alerts/revisitStore.js";
 import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.js";
 import { addLot, addStop, checkHoldings } from "./holdings/engine.js";
+import { coverLevel } from "./holdings/cover.js";
 import { computeBasis } from "./holdings/models.js";
 import { ConsoleHoldingsNotifier } from "./holdings/notify.js";
 import { writeHoldingsAlertReport } from "./holdings/report.js";
+import {
+  mergeImportPlans,
+  parseWebullHoldings,
+  type HoldingsImportPlan,
+} from "./holdings/import.js";
 import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
+import { buildDashboard, renderDashboard } from "./dashboard.js";
+import {
+  EXTENDED_SESSIONS,
+  REGULAR_SESSIONS,
+  describeSession,
+  isPollable,
+  marketDate,
+  msUntilNextSession,
+  reviveMarketHours,
+  sessionAt,
+  type MarketHours,
+  type Session,
+} from "./marketHours.js";
 import { updateHistory } from "./history.js";
-import type { Alert, BreakoutVerdict } from "./models.js";
+import type { Alert, BreakoutVerdict, PriceBar } from "./models.js";
 import { parseAlerts } from "./parse.js";
 import { CachingProvider } from "./providers/cache.js";
 import { FMP_FREE_DAILY_LIMIT, FmpProvider } from "./providers/fmp.js";
@@ -27,7 +72,7 @@ import type { PriceDataProvider } from "./providers/types.js";
 import { DailyBudget } from "./profiles/budget.js";
 import { loadCachedProfile, listCachedProfiles, saveCachedProfile } from "./profiles/store.js";
 import { gatherKnownSymbols } from "./profiles/universe.js";
-import { loadTuningConfig, resolveParamsForSymbol, type TuningConfig } from "./tuning.js";
+import { ignoredSymbols, isIgnored, loadTuningConfig, resolveParamsForSymbol, type TuningConfig } from "./tuning.js";
 
 const VERDICT_ORDER: Record<string, number> = {
   CONFIRMED_BREAKOUT: 0,
@@ -157,6 +202,76 @@ function buildBetaFetcher(opts: CommonOpts & { noCache?: boolean }): (symbol: st
   };
 }
 
+const VOLUME_BASELINE_CACHE_DIR = join(".cache", "volume-baseline");
+
+/**
+ * Typical-volume lookups, cached per symbol+window and keyed to the market
+ * date. Checks run every few minutes; recomputing would mean a bar fetch per
+ * volume alert per poll, while the answer only meaningfully changes once a
+ * day. A cached zero is not stored - it usually means a failed fetch rather
+ * than a symbol that genuinely doesn't trade.
+ */
+function buildBaselineResolver(market: MarketData, now: Date = new Date()): BaselineResolver {
+  const today = marketDate(now);
+  const memo = new Map<string, number | null>();
+
+  return async (symbol, condition) => {
+    const key = baselineKey(symbol, condition);
+    if (memo.has(key)) {
+      return memo.get(key)!;
+    }
+    const file = join(VOLUME_BASELINE_CACHE_DIR, `${key}.json`);
+    if (existsSync(file)) {
+      const cached = JSON.parse(readFileSync(file, "utf-8")) as { baseline: number; date: string };
+      if (cached.date === today && cached.baseline > 0) {
+        memo.set(key, cached.baseline);
+        return cached.baseline;
+      }
+    }
+    try {
+      const baseline = await computeBaseline(symbol, condition, market, now);
+      if (baseline > 0) {
+        mkdirSync(VOLUME_BASELINE_CACHE_DIR, { recursive: true });
+        writeFileSync(file, JSON.stringify({ baseline, date: today, computedAt: now.toISOString() }));
+      }
+      memo.set(key, baseline > 0 ? baseline : null);
+      return memo.get(key)!;
+    } catch (err) {
+      console.error(`  ! ${symbol}: volume baseline unavailable (${err})`);
+      memo.set(key, null);
+      return null;
+    }
+  };
+}
+
+const HOURS_CACHE_DIR = join(".cache", "hours");
+
+/**
+ * Market hours for a past or present date never change once published, so
+ * they cache to disk permanently. This keeps a 15-minute poller from spending
+ * a request per check just to ask whether the market is open.
+ */
+async function getMarketHoursCached(opts: CommonOpts, date: string): Promise<MarketHours> {
+  const file = join(HOURS_CACHE_DIR, `${date}.json`);
+  if (existsSync(file)) {
+    const revived = reviveMarketHours(JSON.parse(readFileSync(file, "utf-8")));
+    if (revived !== null) {
+      return revived;
+    }
+  }
+  const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
+  const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
+  if (!appKey || !appSecret) {
+    throw new Error("Missing Schwab credentials.");
+  }
+  const auth = new SchwabAuth(appKey, appSecret, opts.tokenPath);
+  const provider = new SchwabProvider(auth, resolveMaxRequestsPerMinute());
+  const hours = await provider.getMarketHours(date);
+  mkdirSync(HOURS_CACHE_DIR, { recursive: true });
+  writeFileSync(file, JSON.stringify(hours));
+  return hours;
+}
+
 function buildMarketData(opts: CommonOpts): MarketData {
   const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
   const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
@@ -233,8 +348,8 @@ export async function runAnalyze(
   provider: PriceDataProvider,
   getBeta: (symbol: string) => Promise<number | null>
 ): Promise<BreakoutVerdict[]> {
-  let alerts = opts.fromAlerts
-    ? triggeredAlertsToBreakoutAlerts(loadAlerts(opts.fromAlerts === true ? "alerts.json" : opts.fromAlerts))
+  let alerts: Alert[] = opts.fromAlerts
+    ? revisitsToBreakoutAlerts(listRevisits(opts.fromAlerts === true ? "revisits.json" : opts.fromAlerts, { status: "all" }))
     : parseAlerts(opts.csv!);
   if (opts.symbol && opts.symbol.length > 0) {
     const wanted = new Set(opts.symbol.map((s) => s.toUpperCase()));
@@ -368,7 +483,7 @@ function printSummary(verdicts: BreakoutVerdict[], outPath: string): void {
 
 async function cmdAnalyze(opts: AnalyzeOpts): Promise<void> {
   if (!opts.csv && !opts.fromAlerts) {
-    console.error("Specify --csv <path> (TradingView export) or --from-alerts [path] (this engine's alerts.json).");
+    console.error("Specify --csv <path> (TradingView export) or --from-alerts [path] (this engine's revisits.json).");
     process.exit(1);
   }
   if (opts.csv && opts.fromAlerts) {
@@ -387,6 +502,7 @@ async function cmdAnalyze(opts: AnalyzeOpts): Promise<void> {
 
 interface AlertCommonOpts extends CommonOpts {
   alertsFile: string;
+  revisitsFile: string;
 }
 
 interface AlertAddOpts extends AlertCommonOpts {
@@ -396,18 +512,37 @@ interface AlertAddOpts extends AlertCommonOpts {
   trailPercent?: string;
   trailAmount?: string;
   volumeAtLeast?: string;
+  volumeRatio?: string;
   volumePeriod?: string;
 }
 
 function formatVolumeCondition(v: VolumeCondition): string {
-  return v.mode === "today" ? `volume >= ${v.threshold} today` : `volume >= ${v.threshold} in last ${v.periodValue}${v.periodUnit}`;
+  const amount = v.threshold !== undefined ? String(v.threshold) : `${v.ratio}x normal`;
+  return v.mode === "today" ? `volume >= ${amount} today` : `volume >= ${amount} in last ${v.periodValue}${v.periodUnit}`;
 }
 
 /** Builds the optional VolumeCondition shared by static/trailing/volume alert creation. Exits on bad input. */
-function parseVolumeFlags(opts: { volumeAtLeast?: string; volumePeriod?: string }): VolumeCondition | undefined {
+function parseVolumeFlags(opts: {
+  volumeAtLeast?: string;
+  volumeRatio?: string;
+  volumePeriod?: string;
+}): VolumeCondition | undefined {
+  if (opts.volumeAtLeast !== undefined && opts.volumeRatio !== undefined) {
+    console.error("Specify --volume-at-least (absolute shares) or --volume-ratio (multiple of normal), not both.");
+    process.exit(1);
+  }
+  if (opts.volumeRatio !== undefined) {
+    const ratio = parseFloat(opts.volumeRatio);
+    if (!Number.isFinite(ratio) || ratio <= 0) {
+      console.error(`Invalid --volume-ratio "${opts.volumeRatio}" — expected a positive multiple, e.g. 1.5.`);
+      process.exit(1);
+    }
+    const period = opts.volumePeriod === undefined ? undefined : parseVolumePeriod(opts.volumePeriod);
+    return period === undefined ? { ratio, mode: "today" } : { ratio, mode: "period", ...period };
+  }
   if (opts.volumeAtLeast === undefined) {
     if (opts.volumePeriod !== undefined) {
-      console.error("--volume-period requires --volume-at-least.");
+      console.error("--volume-period requires --volume-at-least or --volume-ratio.");
       process.exit(1);
     }
     return undefined;
@@ -424,14 +559,6 @@ interface AlertListOpts extends AlertCommonOpts {
   all?: boolean;
 }
 
-interface AlertImportOpts extends AlertCommonOpts {
-  csv: string;
-  symbol?: string[];
-  asTrailing?: boolean;
-  trailPercent?: string;
-  trailAmount?: string;
-}
-
 async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
   const hasLevel = opts.level !== undefined;
   const hasNear = opts.near !== undefined;
@@ -439,12 +566,13 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
     console.error("Specify at most one of --level (static alert) or --near (trailing alert).");
     process.exit(1);
   }
-  if (!hasLevel && !hasNear && opts.volumeAtLeast === undefined) {
-    console.error("Specify --level, --near, or --volume-at-least (a standalone volume alert).");
+  // Parse the volume flags first: they decide whether a bare `alert add` is a
+  // standalone volume alert, and they own their own validation messages.
+  const volume = parseVolumeFlags(opts);
+  if (!hasLevel && !hasNear && volume === undefined) {
+    console.error("Specify --level, --near, or --volume-at-least/--volume-ratio (a standalone volume alert).");
     process.exit(1);
   }
-
-  const volume = parseVolumeFlags(opts);
 
   let input: AddAlertInput;
   if (hasLevel) {
@@ -500,91 +628,230 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
   }
 }
 
-async function cmdAlertImport(opts: AlertImportOpts): Promise<void> {
-  const hasPercent = opts.trailPercent !== undefined;
-  const hasAmount = opts.trailAmount !== undefined;
-  if (opts.asTrailing) {
-    if (hasPercent === hasAmount) {
-      console.error("Specify exactly one of --trail-percent or --trail-amount with --as-trailing.");
-      process.exit(1);
-    }
-  } else if (hasPercent || hasAmount) {
-    console.error("--trail-percent/--trail-amount only apply with --as-trailing.");
-    process.exit(1);
-  }
+interface AlertSeedOpts extends AlertCommonOpts {
+  list: string;
+  log?: string;
+  cacheDir: string;
+  noCache?: boolean;
+  config: string;
+  dryRun?: boolean;
+  symbol?: string[];
+}
 
-  let tvAlerts = parseAlerts(opts.csv);
+/**
+ * Backdates a seeded alert to when the ticker was really first watched.
+ *
+ * TradingView's exports carry no creation date, so the oldest trigger on
+ * record is the best available lower bound - marked approximate so the
+ * narrative says "at least since July" rather than asserting a start date it
+ * doesn't have. The price at that date comes out of the bars already fetched
+ * for re-levelling; when the date predates that window the price is left null
+ * and the narrative simply omits the percentage.
+ */
+function watchOriginFor(
+  candidate: { firstSeenAt: string | null },
+  bars: { date: Date; close: number }[]
+): { watching?: WatchOrigin } {
+  if (candidate.firstSeenAt === null) {
+    return {};
+  }
+  return {
+    watching: {
+      since: candidate.firstSeenAt,
+      approximate: true,
+      priceAtStart: closeOnOrAfter(bars, candidate.firstSeenAt),
+    },
+  };
+}
+
+/**
+ * One-time migration of the TradingView exports into this engine's store.
+ *
+ * Every candidate's level is re-derived against real bars: a level price has
+ * already run past is replaced with the current resistance, while a level
+ * still ahead of price is kept as-is (it is a perfectly good target and
+ * re-deriving would throw it away).
+ */
+async function cmdAlertSeed(opts: AlertSeedOpts): Promise<void> {
+  const plan = buildSeedPlan(opts.list, opts.log ?? null);
+  let candidates = plan.candidates;
   if (opts.symbol && opts.symbol.length > 0) {
     const wanted = new Set(opts.symbol.map((s) => s.toUpperCase()));
-    tvAlerts = tvAlerts.filter((a) => wanted.has(a.symbol.toUpperCase()));
-  }
-  const priceCrossAlerts = tvAlerts.filter((a) => a.level !== null);
-
-  const seen = new Set<string>();
-  const candidates: { symbol: string; level: number }[] = [];
-  for (const a of priceCrossAlerts) {
-    const key = `${a.symbol}|${a.level}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    candidates.push({ symbol: a.symbol, level: a.level! });
+    candidates = candidates.filter((c) => wanted.has(c.symbol));
   }
 
-  if (candidates.length === 0) {
-    console.log("No numeric price-level alerts found to import (only `Crossing <level>` alerts qualify).");
-    return;
-  }
+  console.log(
+    `Read ${plan.rowsRead.list} configured alert(s) and ${plan.rowsRead.log} log event(s) ` +
+      `→ ${candidates.length} candidate(s), ${plan.skipped.length} skipped.`
+  );
 
-  // Fetch every symbol's quote once up front rather than once per candidate
-  // (addAlert() normally does its own live fetch per call).
-  const symbols = [...new Set(candidates.map((c) => c.symbol))];
+  const provider = buildSchwabProvider(opts);
+  const getBeta = buildBetaFetcher(opts);
+  const rawConfig = loadTuningConfig(opts.config);
+  const config: TuningConfig = rawConfig ?? {};
+  const hasConfigFile = rawConfig !== null;
+  const ignored = ignoredSymbols(rawConfig);
+
+  // addAlert fetches a quote per call to infer the alert's side. Seeding
+  // hundreds of symbols one at a time would be hundreds of separate requests;
+  // Schwab takes them all in one, so prefetch and serve addAlert from that.
   const rawMarket = buildMarketData(opts);
-  const quotes = await rawMarket.getQuotes(symbols);
-  const cachedMarket: MarketData = {
+  const seedSymbols = [...new Set(candidates.map((c) => c.symbol))];
+  const prefetched = opts.dryRun ? new Map<string, Quote>() : await rawMarket.getQuotes(seedSymbols);
+  const market: MarketData = {
     ...rawMarket,
     getQuotes: async (syms) => {
       const result = new Map<string, Quote>();
-      for (const s of syms) {
-        const q = quotes.get(s);
-        if (q !== undefined) result.set(s, q);
+      for (const sym of syms) {
+        const quote = prefetched.get(sym);
+        if (quote !== undefined) result.set(sym, quote);
       }
       return result;
     },
   };
 
-  let added = 0;
-  let replaced = 0;
-  let rejected = 0;
-  let skipped = 0;
-  for (const { symbol, level } of candidates) {
-    const input: AddAlertInput = opts.asTrailing
-      ? {
-          kind: "trailing",
-          symbol,
-          near: level,
-          trailType: hasPercent ? "percent" : "amount",
-          trailValue: parseFloat((hasPercent ? opts.trailPercent : opts.trailAmount)!),
-        }
-      : { kind: "static", symbol, level };
+  let created = 0;
+  let relevelled = 0;
+  let kept = 0;
+  let dropped = 0;
+  let failed = 0;
 
-    const result = await addAlert(opts.alertsFile, input, cachedMarket);
-    if (result.rejectedReason) {
-      if (result.rejectedReason.startsWith("No quote")) {
-        skipped++;
-      } else {
-        rejected++;
-      }
+  let skippedIgnored = 0;
+  for (const candidate of candidates) {
+    if (isIgnored(candidate.symbol, ignored)) {
+      skippedIgnored++;
       continue;
     }
-    added++;
-    if (result.replaced) {
-      replaced++;
+    const params = await resolveParamsForSymbol(candidate.symbol, config, hasConfigFile, getBeta);
+
+    // Volume-only candidate: nothing to re-level, no bars needed.
+    if (candidate.levelsSeen.length === 0 && candidate.volume !== null) {
+      if (opts.dryRun) {
+        console.log(`  ${candidate.symbol.padEnd(6)} volume-only  ${JSON.stringify(candidate.volume)}`);
+      } else {
+        await addAlert(
+          opts.alertsFile,
+          {
+            kind: "volume",
+            symbol: candidate.symbol,
+            volume: candidate.volume,
+            ...watchOriginFor(candidate, []),
+          },
+          market
+        );
+      }
+      created++;
+      continue;
     }
+
+    const end = new Date();
+    const start = new Date(end.getTime() - (params.recentHighLookbackDays + params.baselineDays + 30) * 86_400_000);
+    let bars;
+    try {
+      bars = await provider.getDailyBars(candidate.symbol, start, end);
+    } catch (err) {
+      console.error(`  ! ${candidate.symbol}: failed to fetch price history (${err})`);
+      failed++;
+      continue;
+    }
+    if (bars.length === 0) {
+      console.error(`  ! ${candidate.symbol}: no bars returned`);
+      failed++;
+      continue;
+    }
+
+    const lastClose = bars[bars.length - 1].close;
+    const { level: baseLevel, discarded } = resolveLevel(candidate, lastClose);
+    if (discarded.length > 0) {
+      console.log(
+        `  ~ ${candidate.symbol}: dropped level(s) ${discarded.join(", ")} as a different instrument ` +
+          `on the same ticker (price is ${lastClose}).`
+      );
+    }
+    if (baseLevel === null) {
+      // Every price level belonged to another instrument. If the ticker also
+      // carried a volume alert, that part is still perfectly good on its own -
+      // don't throw it away along with the bad levels.
+      if (candidate.volume !== null) {
+        console.log(
+          `  - ${candidate.symbol}: no plausible price level against a price of ${lastClose}; ` +
+            `seeding the volume alert alone.`
+        );
+        if (!opts.dryRun) {
+          await addAlert(opts.alertsFile, { kind: "volume", symbol: candidate.symbol, volume: candidate.volume }, market);
+        }
+        created++;
+      } else {
+        console.log(`  - ${candidate.symbol}: no plausible level against a price of ${lastClose}; skipped.`);
+      }
+      dropped++;
+      continue;
+    }
+
+    // suggestLevel is resistance-oriented: it proposes the level price would
+    // have to break *up* through. Applying it to a stated downside alert would
+    // invert the alert's meaning - CHEF's "Crossing Down 91.00" would become a
+    // breakout target at the 60d high. A support level that price has since
+    // risen above is still exactly the level you want to be warned about, so
+    // downside candidates keep theirs.
+    const suggestion = candidate.side === "below" ? null : suggestLevel(bars, baseLevel, params);
+    const level = suggestion?.suggestedLevel ?? baseLevel;
+    if (suggestion?.suggestedLevel != null) {
+      relevelled++;
+    } else {
+      kept++;
+    }
+
+    if (opts.dryRun) {
+      const note =
+        suggestion === null
+          ? `${level}  (unchanged — downside alert, level kept as support)`
+          : suggestion.suggestedLevel !== null
+            ? `${baseLevel} → ${level}  (${suggestion.basis})`
+            : `${level}  (unchanged — ${suggestion.basis})`;
+      const vol = candidate.volume ? ` AND ${formatVolumeCondition(candidate.volume)}` : "";
+      console.log(`  ${candidate.symbol.padEnd(6)} ${note}${vol}`);
+      created++;
+      continue;
+    }
+
+    const result = await addAlert(
+      opts.alertsFile,
+      {
+        kind: "static",
+        symbol: candidate.symbol,
+        level,
+        ...(candidate.volume ? { volume: candidate.volume } : {}),
+        ...watchOriginFor(candidate, bars),
+      },
+      market
+    );
+    if (result.rejectedReason) {
+      console.error(`  ! ${candidate.symbol}: ${result.rejectedReason}`);
+      failed++;
+      continue;
+    }
+    created++;
   }
 
   console.log(
-    `Imported ${added} alert(s) from ${candidates.length} candidate(s) ` +
-      `(${replaced} replaced an existing alert, ${rejected} rejected as farther, ${skipped} skipped — no quote).`
+    `\n${opts.dryRun ? "Would create" : "Created"} ${created} alert(s): ` +
+      `${relevelled} re-levelled to current resistance, ${kept} kept at their TradingView level` +
+      (dropped > 0 ? `, ${dropped} dropped (implausible level)` : "") +
+      (failed > 0 ? `, ${failed} failed` : "") +
+      (skippedIgnored > 0 ? `, ${skippedIgnored} on the ignore list` : "") +
+      "."
   );
+  if (plan.skipped.length > 0) {
+    const byReason = new Map<string, number>();
+    for (const s of plan.skipped) {
+      byReason.set(s.reason, (byReason.get(s.reason) ?? 0) + 1);
+    }
+    console.log("\nNot seeded:");
+    for (const [reason, count] of byReason) {
+      console.log(`  ${String(count).padStart(3)}  ${reason}`);
+    }
+  }
 }
 
 function cmdAlertList(opts: AlertListOpts): void {
@@ -613,17 +880,245 @@ function cmdAlertRemove(id: string, opts: AlertCommonOpts): void {
   console.log(removed ? `Removed alert ${id}.` : `No alert with id ${id}.`);
 }
 
-async function cmdAlertCheck(opts: AlertCommonOpts): Promise<void> {
+interface AlertCheckOpts extends AlertCommonOpts {
+  regularOnly?: boolean;
+  ignoreHours?: boolean;
+  cacheDir: string;
+  config: string;
+}
+
+async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
+  const now = new Date();
+  const allowed = opts.regularOnly ? REGULAR_SESSIONS : EXTENDED_SESSIONS;
+
+  // Establish the session before spending any quote requests: outside market
+  // hours the quotes are stale and a "trigger" would just be yesterday's close
+  // re-crossing a level.
+  let session: Session | null = null;
+  if (!opts.ignoreHours) {
+    try {
+      const hours = await getMarketHoursCached(opts, marketDate(now));
+      session = sessionAt(hours, now);
+      if (!isPollable(session, allowed)) {
+        const waitMs = msUntilNextSession(hours, now, allowed);
+        const next =
+          waitMs === null
+            ? "no further session today"
+            : `next session opens in ${Math.round(waitMs / 60_000)} min`;
+        console.log(`Skipped: ${describeSession(session)} (${next}). No quotes fetched.`);
+        return;
+      }
+    } catch (err) {
+      // A hours lookup failure shouldn't take the poller down; fall through
+      // and check anyway, but say so rather than silently claiming a session.
+      console.error(`  ! market-hours lookup failed (${err}); checking anyway.`);
+    }
+  }
+
   const alerts = loadAlerts(opts.alertsFile);
+  const ignored = ignoredSymbols(loadTuningConfig(opts.config));
   const market = buildMarketData(opts);
-  const { checked, triggered } = await checkAlerts(alerts, market, [new ConsoleNotifier()]);
+  const { checked, triggered, revisits } = await checkAlerts(
+    alerts,
+    market,
+    [new ConsoleNotifier()],
+    session,
+    ignored,
+    buildBaselineResolver(market)
+  );
   saveAlerts(opts.alertsFile, alerts);
-  console.log(`Checked ${checked} alert(s), ${triggered.length} triggered.`);
+  appendRevisits(opts.revisitsFile, revisits);
+  console.log(
+    `Checked ${checked} alert(s), ${triggered.length} triggered. ` +
+      `All ${checked} remain live; ${revisits.length} entry(ies) queued for revisit.`
+  );
   if (triggered.length > 0) {
     const outPath = defaultAlertTriggerReportPath(new Date());
     writeAlertTriggerReport(triggered, outPath);
     console.log(`Wrote ${triggered.length} triggered alert(s) to ${outPath}`);
+    console.log(`Queue is now ${listRevisits(opts.revisitsFile).length} open — 'alert revisit list' to review.`);
   }
+}
+
+interface RevisitListOpts extends AlertCommonOpts {
+  status: string;
+  limit?: number;
+}
+
+function cmdRevisitList(opts: RevisitListOpts): void {
+  const status = opts.status === "all" ? "all" : (opts.status as "open" | "applied" | "dismissed");
+  const entries = sortByPriority(listRevisits(opts.revisitsFile, { status }));
+  if (entries.length === 0) {
+    console.log(`No ${opts.status} revisit entries.`);
+    return;
+  }
+  const shown = opts.limit ? entries.slice(0, opts.limit) : entries;
+  console.log(`${entries.length} ${opts.status} entry(ies)${shown.length < entries.length ? `, showing ${shown.length}` : ""}:\n`);
+  for (const e of shown) {
+    const pri = e.priority === null ? "  -  " : e.priority.toFixed(1).padStart(5);
+    const level = e.levelAtTrigger === null ? "-" : String(e.levelAtTrigger);
+    console.log(`${pri}  ${e.id}  ${e.symbol.padEnd(6)} ${e.kind.padEnd(8)} fired ${level} @ ${e.triggerPrice} on ${e.triggeredAt.slice(0, 10)}`);
+    if (e.suggestedLevel !== null) {
+      console.log(`         suggested new level: ${e.suggestedLevel}${e.suggestionBasis ? ` (${e.suggestionBasis})` : ""}`);
+    }
+    if (e.signals !== null) {
+      console.log(`         ${explainPriority(e.signals)}`);
+    }
+  }
+  console.log(`\nApply a suggestion with 'alert revisit apply <id>', or drop it with 'alert revisit dismiss <id>'.`);
+}
+
+interface RevisitRelevelOpts extends AlertCommonOpts {
+  cacheDir: string;
+  noCache?: boolean;
+  config: string;
+  holdingsFile: string;
+  symbol?: string[];
+}
+
+/**
+ * Fills in each open entry's suggested level and priority score. Separate
+ * from `alert check` on purpose: checks run every few minutes off live
+ * quotes and must stay cheap, while this needs daily bars per symbol and
+ * only has anything new to say once a day.
+ */
+async function cmdRevisitRelevel(opts: RevisitRelevelOpts): Promise<void> {
+  let entries = listRevisits(opts.revisitsFile, { status: "open" });
+  if (opts.symbol && opts.symbol.length > 0) {
+    const wanted = new Set(opts.symbol.map((s) => s.toUpperCase()));
+    entries = entries.filter((e) => wanted.has(e.symbol.toUpperCase()));
+  }
+  if (entries.length === 0) {
+    console.log("No open revisit entries to re-level.");
+    return;
+  }
+
+  const provider = buildSchwabProvider(opts);
+  const getBeta = buildBetaFetcher(opts);
+  const rawConfig = loadTuningConfig(opts.config);
+  const config: TuningConfig = rawConfig ?? {};
+  const hasConfigFile = rawConfig !== null;
+
+  const heldSymbols = new Set(loadHoldingsStore(opts.holdingsFile).lots.map((l) => l.symbol.toUpperCase()));
+  const now = new Date();
+
+  const bySymbol = new Map<string, RevisitEntry[]>();
+  for (const e of entries) {
+    bySymbol.set(e.symbol, [...(bySymbol.get(e.symbol) ?? []), e]);
+  }
+
+  const all = loadRevisits(opts.revisitsFile);
+  let scored = 0;
+  let suggested = 0;
+  let failed = 0;
+
+  for (const symbol of [...bySymbol.keys()].sort()) {
+    const symbolEntries = bySymbol.get(symbol)!;
+    const params = await resolveParamsForSymbol(symbol, config, hasConfigFile, getBeta);
+
+    // Volume-only entries carry no level and bridge to nothing, so there is no
+    // date range to fetch against - asking anyway yields Math.min() of an
+    // empty array (Infinity) and an invalid Date. They are still scored below
+    // on staleness and position; they just get no bars and no suggestion.
+    const breakoutAlerts = revisitsToBreakoutAlerts(symbolEntries);
+    let bars: PriceBar[] = [];
+    if (breakoutAlerts.length > 0) {
+      const { start, end } = calendarRangeForSymbol(breakoutAlerts, params);
+      try {
+        bars = await provider.getDailyBars(symbol, start, end);
+      } catch (err) {
+        console.error(`  ! ${symbol}: failed to fetch price history (${err})`);
+        failed += symbolEntries.length;
+        continue;
+      }
+    }
+
+    for (const entry of symbolEntries) {
+      const target = all.find((e) => e.id === entry.id)!;
+      const suggestion = suggestLevel(bars, entry.levelAtTrigger, params);
+
+      // Reuse the full breakout pipeline for the verdict and volume signals
+      // rather than recomputing a second, subtly different version here.
+      const bridged = revisitsToBreakoutAlerts([entry])[0];
+      const verdict = bridged !== undefined && bars.length > 0 ? analyzeAlert(bridged, bars, params) : null;
+
+      const { priority, signals } = scoreRevisit(
+        {
+          verdict: verdict?.verdict ?? null,
+          pctMovePastLevel: suggestion.pctMovePastLevel,
+          daysOpen: daysBetween(entry.triggeredAt, now),
+          heldPosition: heldSymbols.has(symbol.toUpperCase()),
+          volumeRatio: verdict?.volumeRatio ?? null,
+          volumeTrendRatio: verdict?.volumeTrendRatio ?? null,
+        },
+        DEFAULT_REVISIT_WEIGHTS
+      );
+
+      target.suggestedLevel = suggestion.suggestedLevel;
+      target.suggestionBasis = suggestion.basis;
+      target.suggestedAt = now.toISOString();
+      target.priority = priority;
+      target.signals = signals;
+      scored++;
+      if (suggestion.suggestedLevel !== null) {
+        suggested++;
+      }
+    }
+  }
+
+  saveRevisits(opts.revisitsFile, all);
+  console.log(
+    `Scored ${scored} open entry(ies); ${suggested} carry a new suggested level` +
+      (failed > 0 ? `, ${failed} failed to fetch` : "") + "."
+  );
+  console.log("'alert revisit list' to review, highest priority first.");
+}
+
+function cmdRevisitResolve(id: string, action: "applied" | "dismissed", opts: AlertCommonOpts): void {
+  const entries = loadRevisits(opts.revisitsFile);
+  const entry = entries.find((e) => e.id === id);
+  if (entry === undefined) {
+    console.error(`No revisit entry with id ${id}.`);
+    process.exit(1);
+  }
+  if (action === "dismissed") {
+    resolveRevisit(opts.revisitsFile, id, "dismissed");
+    console.log(`Dismissed revisit ${id} (${entry.symbol}). The alert itself is untouched and still live.`);
+    return;
+  }
+
+  if (entry.suggestedLevel === null) {
+    console.error(
+      `Revisit ${id} (${entry.symbol}) has no suggested level yet — run 'alert relevel' first, ` +
+        `or set the level yourself with 'alert add --symbol ${entry.symbol} --level <price>'.`
+    );
+    process.exit(1);
+  }
+
+  const alerts = loadAlerts(opts.alertsFile);
+  const alert = alerts.find((a) => a.id === entry.alertId);
+  if (alert === undefined || alert.kind !== "static") {
+    console.error(
+      `Revisit ${id} points at ${alert === undefined ? "an alert that no longer exists" : `a ${alert.kind} alert`}; ` +
+        `only static alerts carry a level that can be re-pointed.`
+    );
+    process.exit(1);
+  }
+
+  const previous = alert.level;
+  alert.level = entry.suggestedLevel;
+  // Record the move on the entry itself so the ticker story can say what you
+  // did, not just that you did something.
+  entry.appliedFrom = previous;
+  entry.appliedTo = alert.level;
+  saveRevisits(opts.revisitsFile, entries);
+  // Re-seed the crossing baseline against the new level so the alert doesn't
+  // immediately fire (or immediately go quiet) purely because the level moved.
+  alert.lastKnownSide = entry.triggerPrice > alert.level ? "above" : "below";
+  alert.mutedUntil = null;
+  saveAlerts(opts.alertsFile, alerts);
+  resolveRevisit(opts.revisitsFile, id, "applied");
+  console.log(`${entry.symbol}: alert ${alert.id} re-levelled ${previous} → ${alert.level}. Revisit ${id} marked applied.`);
 }
 
 interface HoldingsCommonOpts extends CommonOpts {
@@ -704,12 +1199,23 @@ function cmdHoldingsStopRemove(id: string, opts: HoldingsCommonOpts): void {
   console.log(removed ? `Removed stop ${id}.` : `No stop with id ${id}.`);
 }
 
-async function cmdHoldingsCheck(opts: HoldingsCommonOpts): Promise<void> {
+async function cmdHoldingsCheck(opts: HoldingsCommonOpts & { config: string }): Promise<void> {
   const store = loadHoldingsStore(opts.holdingsFile);
   const market = buildMarketData(opts);
-  const { checked, triggered } = await checkHoldings(store, market, [new ConsoleHoldingsNotifier()]);
+  const ignored = ignoredSymbols(loadTuningConfig(opts.config));
+  const { checked, triggered, ignored: skipped } = await checkHoldings(
+    store,
+    market,
+    [new ConsoleHoldingsNotifier()],
+    new Date(),
+    ignored
+  );
   saveHoldingsStore(opts.holdingsFile, store);
-  console.log(`Checked ${checked} holding(s), ${triggered.length} triggered.`);
+  console.log(
+    `Checked ${checked} holding(s), ${triggered.length} triggered` +
+      (skipped > 0 ? ` (${skipped} on the ignore list)` : "") +
+      "."
+  );
   if (triggered.length > 0) {
     const outPath = defaultHoldingsAlertReportPath(new Date());
     writeHoldingsAlertReport(triggered, outPath);
@@ -832,6 +1338,221 @@ function cmdProfileShow(opts: ProfileShowOpts): void {
   console.log(`\n${profile.description ?? "(no description)"}`);
 }
 
+interface HoldingsCoverOpts extends CommonOpts {
+  holdingsFile: string;
+  alertsFile: string;
+  config: string;
+  dryRun?: boolean;
+}
+
+/**
+ * Creates a starting alert for every held position that has none, at 10%
+ * above basis or just clear of the current price, whichever is higher.
+ */
+async function cmdHoldingsCover(opts: HoldingsCoverOpts): Promise<void> {
+  const store = loadHoldingsStore(opts.holdingsFile);
+  // No beta lookup needed: the level is a flat 10% off whichever reference is
+  // higher, so nothing here is volatility-scaled.
+  const ignored = ignoredSymbols(loadTuningConfig(opts.config));
+
+  const covered = new Set(
+    loadAlerts(opts.alertsFile)
+      .filter((a) => a.status === "live")
+      .map((a) => a.symbol.toUpperCase())
+  );
+
+  const held = [...new Set(store.lots.map((l) => l.symbol))].sort();
+  const candidates = held.filter((s) => !covered.has(s.toUpperCase()) && !isIgnored(s, ignored));
+  const skippedIgnored = held.filter((s) => isIgnored(s, ignored));
+
+  if (candidates.length === 0) {
+    console.log(
+      `All ${held.length} held symbol(s) already have a live alert` +
+        (skippedIgnored.length > 0 ? ` or are on the ignore list (${skippedIgnored.join(", ")})` : "") +
+        "."
+    );
+    return;
+  }
+
+  const market = buildMarketData(opts);
+  const quotes = await market.getQuotes(candidates);
+
+  let created = 0;
+  let failed = 0;
+  for (const symbol of candidates) {
+    const info = computeBasis(store.lots, symbol);
+    const quote = quotes.get(symbol);
+    if (info === null || quote === undefined) {
+      console.error(`  ! ${symbol}: no ${info === null ? "basis" : "quote"} available`);
+      failed++;
+      continue;
+    }
+    const { level, pctFromBasis } = coverLevel(info.blendedBasis, quote.lastPrice);
+
+    console.log(
+      `  ${symbol.padEnd(6)} basis ${info.blendedBasis.toFixed(2)} · price ${quote.lastPrice} ` +
+        `(${pctFromBasis >= 0 ? "+" : ""}${pctFromBasis.toFixed(1)}% vs basis) → alert ${level}`
+    );
+
+    if (opts.dryRun) {
+      created++;
+      continue;
+    }
+    const result = await addAlert(opts.alertsFile, { kind: "static", symbol, level }, market);
+    if (result.rejectedReason) {
+      console.error(`  ! ${symbol}: ${result.rejectedReason}`);
+      failed++;
+      continue;
+    }
+    created++;
+  }
+
+  console.log(
+    `\n${opts.dryRun ? "Would create" : "Created"} ${created} alert(s) for uncovered position(s)` +
+      (failed > 0 ? `, ${failed} failed` : "") +
+      (skippedIgnored.length > 0 ? `. Ignored: ${skippedIgnored.join(", ")}` : ".")
+  );
+}
+
+interface HoldingsImportOpts extends CommonOpts {
+  holdingsFile: string;
+  csv: string[];
+  purchaseDate?: string;
+  replace?: boolean;
+  dryRun?: boolean;
+}
+
+function cmdHoldingsImport(opts: HoldingsImportOpts): void {
+  const plans: HoldingsImportPlan[] = [];
+  for (const spec of opts.csv) {
+    const eq = spec.indexOf("=");
+    if (eq < 1) {
+      console.error(`Bad --csv "${spec}" — expected account=path, e.g. roth=webull_roth.csv`);
+      process.exit(1);
+    }
+    plans.push(parseWebullHoldings(spec.slice(eq + 1), spec.slice(0, eq)));
+  }
+  const plan = mergeImportPlans(plans);
+
+  // The export has no purchase date, and the stagnant alert keys off it.
+  const purchaseDate = opts.purchaseDate ?? new Date().toISOString().slice(0, 10);
+  const store = loadHoldingsStore(opts.holdingsFile);
+  if (opts.replace) {
+    store.lots = [];
+    store.alertState = [];
+  }
+
+  console.log(`Read ${plan.rowsRead} row(s) → ${plan.lots.length} lot(s), ${plan.skipped.length} skipped.\n`);
+
+  let value = 0;
+  for (const lot of plan.lots) {
+    value += lot.marketValue;
+    if (opts.dryRun) {
+      console.log(
+        `  ${lot.symbol.padEnd(6)} ${lot.account.padEnd(7)} ${String(lot.count).padStart(4)} @ ${lot.basisPerShare}` +
+          `  (${lot.openPnlPct >= 0 ? "+" : ""}${lot.openPnlPct}%)`
+      );
+      continue;
+    }
+    store.lots.push({
+      id: randomUUID().slice(0, 8),
+      symbol: lot.symbol,
+      count: lot.count,
+      basisPerShare: lot.basisPerShare,
+      purchaseDate,
+      createdAt: new Date().toISOString(),
+      account: lot.account,
+      name: lot.name,
+    });
+  }
+
+  if (!opts.dryRun) {
+    saveHoldingsStore(opts.holdingsFile, store);
+  }
+
+  if (plan.warnings.length > 0) {
+    console.log("\nWarnings:");
+    for (const w of plan.warnings) {
+      console.log(`  ~ ${w.symbol} (${w.account}): ${w.message}`);
+    }
+  }
+  if (plan.skipped.length > 0) {
+    console.log("\nNot imported:");
+    for (const s of plan.skipped) {
+      console.log(`  - ${s.symbol} (${s.account}): ${s.reason}`);
+    }
+  }
+
+  console.log(
+    `\n${opts.dryRun ? "Would import" : "Imported"} ${plan.lots.length} lot(s), $${value.toFixed(2)} market value` +
+      `${opts.dryRun ? "" : ` → ${opts.holdingsFile}`}.`
+  );
+  if (opts.purchaseDate === undefined) {
+    console.log(
+      `Purchase date defaulted to ${purchaseDate} — the export carries none, so the "stagnant" ` +
+        `alert (30d + under 2% profit) stays silent until then. Pass --purchase-date to backdate.`
+    );
+  }
+}
+
+interface DashboardOpts extends AlertCommonOpts {
+  holdingsFile: string;
+  config: string;
+  out?: string;
+  limit?: number;
+  withinPct?: number;
+  windowDays?: number;
+  approaching?: boolean;
+  quiet?: boolean;
+}
+
+function defaultDashboardPath(now: Date): string {
+  const stamp = now.toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
+  return join("reports", `dashboard_${stamp}.json`);
+}
+
+async function cmdDashboard(opts: DashboardOpts): Promise<void> {
+  const alerts = loadAlerts(opts.alertsFile);
+  const revisits = loadRevisits(opts.revisitsFile);
+  const holdings = loadHoldingsStore(opts.holdingsFile);
+
+  // One quote request covers every live alert plus every position.
+  const symbols = [
+    ...new Set([...alerts.filter((a) => a.status === "live").map((a) => a.symbol), ...holdings.lots.map((l) => l.symbol)]),
+  ];
+  let quotes = new Map<string, Quote>();
+  if (symbols.length > 0) {
+    try {
+      quotes = await buildMarketData(opts).getQuotes(symbols);
+    } catch (err) {
+      console.error(`  ! quote fetch failed (${err}); rendering without live prices.`);
+    }
+  }
+
+  const dashboard = buildDashboard({
+    alerts,
+    revisits,
+    holdings,
+    quotes,
+    now: new Date(),
+    limit: opts.limit,
+    approachingWithinPct: opts.withinPct,
+    windowDays: opts.windowDays,
+    ignoredSymbols: ignoredSymbols(loadTuningConfig(opts.config)),
+    includeApproaching: opts.approaching,
+  });
+
+  const outPath = opts.out ?? defaultDashboardPath(new Date());
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, JSON.stringify(dashboard, null, 2));
+
+  if (!opts.quiet) {
+    console.log(renderDashboard(dashboard));
+    console.log("");
+  }
+  console.log(`Wrote ${outPath}`);
+}
+
 function buildProgram(): Command {
   const program = new Command("tv-alerts");
 
@@ -846,7 +1567,7 @@ function buildProgram(): Command {
     .action((opts: CommonOpts) => cmdSchwabLogin(opts));
 
   withCommon(program.command("analyze"))
-    .description("Confirm breakouts for either a TradingView alerts CSV export or this engine's own triggered alerts")
+    .description("Confirm breakouts for either a TradingView alerts CSV export or this engine's own revisit queue")
     .option("--csv <path>", "Path to a TradingView alerts CSV export")
     .option(
       "--from-alerts [path]",
@@ -872,7 +1593,9 @@ function buildProgram(): Command {
 
   const alertCmd = program.command("alert").description("Manage static/trailing price alerts");
   const withAlertCommon = (cmd: Command): Command =>
-    withCommon(cmd).option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json");
+    withCommon(cmd)
+      .option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json")
+      .option("--revisits-file <path>", "Path to the revisit-queue JSON store", "revisits.json");
 
   withAlertCommon(alertCmd.command("add"))
     .description(
@@ -886,7 +1609,11 @@ function buildProgram(): Command {
     .option("--trail-amount <n>", "Trailing alert: trail distance as a dollar amount")
     .option(
       "--volume-at-least <n>",
-      "Volume threshold; standalone if --level/--near are omitted, otherwise ANDed onto that alert"
+      "Absolute volume threshold; standalone if --level/--near are omitted, otherwise ANDed onto that alert"
+    )
+    .option(
+      "--volume-ratio <multiple>",
+      "Volume threshold as a multiple of typical volume for the window (e.g. 1.5) — cannot go stale the way an absolute count does"
     )
     .option(
       "--volume-period <Nunit>",
@@ -894,17 +1621,31 @@ function buildProgram(): Command {
     )
     .action((opts: AlertAddOpts) => cmdAlertAdd(opts));
 
-  withAlertCommon(alertCmd.command("import"))
-    .description("Bootstrap alerts from a TradingView triggered-alerts CSV export (one-time migration helper)")
-    .requiredOption("--csv <path>", "Path to the TradingView alerts CSV export")
-    .option("--symbol <symbol>", "Only import this symbol (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
-    .option("--as-trailing", "Import as trailing alerts instead of static level alerts")
-    .option("--trail-percent <n>", "Trail distance as a percent (only with --as-trailing)")
-    .option("--trail-amount <n>", "Trail distance as a dollar amount (only with --as-trailing)")
-    .action((opts: AlertImportOpts) => cmdAlertImport(opts));
+  withAlertCommon(program.command("dashboard"))
+    .description("One periodic JSON document: the revisit queue, what's close to firing, and holdings")
+    .option("--out <path>", "Output JSON path (default: reports/dashboard_<timestamp>.json)")
+    .option("--holdings-file <path>", "Path to the holdings JSON store", "holdings.json")
+    .option("--limit <n>", "Max rows in the revisit queue", (v) => parseInt(v, 10))
+    .option("--approaching", "Include the list of alerts closest to firing (off by default)")
+    .option("--within-pct <n>", "With --approaching: only list alerts within this percent of firing", (v) => parseFloat(v))
+    .option("--window-days <n>", "How many days back the trigger count covers", (v) => parseInt(v, 10))
+    .option("--quiet", "Write the file without printing the rendered view")
+    .option("--config <path>", "Per-ticker tuning config (supplies ignoreSymbols)", "analysis.config.json")
+    .action((opts: DashboardOpts) => cmdDashboard(opts));
+
+  withAlertCommon(alertCmd.command("seed"))
+    .description("One-time migration of the TradingView CSV exports into this engine's alert store")
+    .requiredOption("--list <path>", "TradingView alert-list export (Symbol, Description, Status, Last Triggered)")
+    .option("--log <path>", "TradingView alert-log export (Symbol, Alert Date, Alert Time, Description)")
+    .option("--dry-run", "Print the plan without writing any alerts")
+    .option("--symbol <symbol>", "Only seed this symbol (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
+    .option("--no-cache", "Disable the on-disk bar cache")
+    .option("--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars")
+    .option("--config <path>", "Per-ticker tuning config", "analysis.config.json")
+    .action((opts: AlertSeedOpts) => cmdAlertSeed(opts));
 
   withAlertCommon(alertCmd.command("list"))
-    .description("List alerts (armed only by default)")
+    .description("List alerts (live only by default; alerts never disarm)")
     .option("--all", "Include triggered/cancelled alerts")
     .action((opts: AlertListOpts) => cmdAlertList(opts));
 
@@ -912,13 +1653,65 @@ function buildProgram(): Command {
     .description("Remove an alert by id")
     .action((id: string, opts: AlertCommonOpts) => cmdAlertRemove(id, opts));
 
+  const revisitCmd = alertCmd
+    .command("revisit")
+    .description("The queue of triggered alerts to revisit (alerts themselves never disarm)");
+
+  withAlertCommon(revisitCmd.command("list"))
+    .description("List revisit entries, highest priority first")
+    .option("--status <status>", "open | applied | dismissed | all", "open")
+    .option("--limit <n>", "Show only the top N", (v) => parseInt(v, 10))
+    .action((opts: RevisitListOpts) => cmdRevisitList(opts));
+
+  withAlertCommon(revisitCmd.command("relevel"))
+    .description("Fetch bars for open entries, propose new levels, and score the queue")
+    .option("--symbol <symbol>", "Only re-level this symbol (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
+    .option("--no-cache", "Disable the on-disk bar cache")
+    .option("--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars")
+    .option("--holdings-file <path>", "Path to the holdings JSON store", "holdings.json")
+    .option("--config <path>", "Per-ticker tuning config", "analysis.config.json")
+    .action((opts: RevisitRelevelOpts) => cmdRevisitRelevel(opts));
+
+  withAlertCommon(revisitCmd.command("apply <id>"))
+    .description("Move the alert to the entry's suggested level and close the entry")
+    .action((id: string, opts: AlertCommonOpts) => cmdRevisitResolve(id, "applied", opts));
+
+  withAlertCommon(revisitCmd.command("dismiss <id>"))
+    .description("Close the entry without touching the alert")
+    .action((id: string, opts: AlertCommonOpts) => cmdRevisitResolve(id, "dismissed", opts));
+
   withAlertCommon(alertCmd.command("check"))
-    .description("Check all armed alerts against live Schwab quotes (run this from cron every ~15 min)")
-    .action((opts: AlertCommonOpts) => cmdAlertCheck(opts));
+    .description("Check all live alerts against live Schwab quotes (run this from cron every ~15 min)")
+    .option("--regular-only", "Only poll during the regular session (default also polls pre/post market)")
+    .option("--config <path>", "Per-ticker tuning config (supplies ignoreSymbols)", "analysis.config.json")
+    .option("--ignore-hours", "Poll regardless of market hours")
+    .option("--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars")
+    .action((opts: AlertCheckOpts) => cmdAlertCheck(opts));
 
   const holdingsCmd = program.command("holdings").description("Track holdings (lots, stops) and basis-relative alerts");
+
   const withHoldingsCommon = (cmd: Command): Command =>
     withCommon(cmd).option("--holdings-file <path>", "Path to the holdings JSON store", "holdings.json");
+
+  withHoldingsCommon(holdingsCmd.command("cover"))
+    .description("Create a starting alert for each held position that has none (10% above basis, or just above price)")
+    .option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json")
+    .option("--config <path>", "Per-ticker tuning config (supplies ignoreSymbols)", "analysis.config.json")
+    .option("--dry-run", "Print the plan without writing anything")
+    .action((opts: HoldingsCoverOpts) => cmdHoldingsCover(opts));
+
+  withHoldingsCommon(holdingsCmd.command("import"))
+    .description("One-time import of Webull holdings CSV exports into lots")
+    .requiredOption(
+      "--csv <account=path>",
+      "Account label and file, e.g. roth=webull_roth.csv (repeatable)",
+      (val, prev: string[]) => [...prev, val],
+      [] as string[]
+    )
+    .option("--purchase-date <YYYY-MM-DD>", "Purchase date for every imported lot (the export carries none)")
+    .option("--replace", "Clear existing lots first instead of adding to them")
+    .option("--dry-run", "Print the plan without writing anything")
+    .action((opts: HoldingsImportOpts) => cmdHoldingsImport(opts));
 
   withHoldingsCommon(holdingsCmd.command("add-lot"))
     .description("Record a purchase lot")
@@ -953,7 +1746,8 @@ function buildProgram(): Command {
 
   withHoldingsCommon(holdingsCmd.command("check"))
     .description("Check holdings for the 10%-above-basis, month-stagnant, and 3%-appreciation alerts")
-    .action((opts: HoldingsCommonOpts) => cmdHoldingsCheck(opts));
+    .option("--config <path>", "Per-ticker tuning config (supplies ignoreSymbols)", "analysis.config.json")
+    .action((opts: HoldingsCommonOpts & { config: string }) => cmdHoldingsCheck(opts));
 
   const profileCmd = program
     .command("profile")

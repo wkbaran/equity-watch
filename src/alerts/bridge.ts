@@ -1,38 +1,46 @@
 /**
- * Converts triggered alerts from this engine's own alerts.json into the
- * TradingView-CSV-shaped `Alert` model that analyzeAlert()/runAnalyze()
- * expect, so `analyze` can confirm breakouts for tickers that triggered
- * here instead of (or in addition to) a TradingView CSV export.
+ * Converts revisit-queue entries into the TradingView-CSV-shaped `Alert`
+ * model that analyzeAlert()/runAnalyze() expect, so `analyze` can confirm
+ * breakouts for things that fired here instead of (or in addition to) a
+ * TradingView CSV export.
  *
- * Volume-only alerts are skipped - there's no price level to confirm a
- * breakout against. For trailing alerts, the observed triggerPrice is used
- * as the "level" (there's no fixed target the way a static alert has one -
- * the trigger price itself is the meaningful reference point).
+ * The queue is the right source rather than the alert list: under the
+ * no-disarm model an alert is permanently live and has no single "it fired"
+ * moment to analyze, while each queue entry is exactly one trigger event
+ * with the price and level it fired at.
+ *
+ * Volume-only entries are skipped - there's no price level to confirm a
+ * breakout against. For trailing entries the observed triggerPrice is used
+ * as the level, since a trailing alert has no fixed target the way a static
+ * one does.
  */
 
-import type { Alert as EngineAlert } from "./models.js";
 import type { Alert } from "../models.js";
+import type { RevisitEntry } from "./revisit.js";
 
-export function triggeredAlertsToBreakoutAlerts(engineAlerts: EngineAlert[]): Alert[] {
+export function revisitsToBreakoutAlerts(entries: RevisitEntry[]): Alert[] {
   const result: Alert[] = [];
-  for (const a of engineAlerts) {
-    if (a.status !== "triggered" || a.triggeredAt === null || a.kind === "volume") {
+  for (const entry of entries) {
+    if (entry.kind === "volume") {
       continue;
     }
-    const level = a.kind === "static" ? a.level : a.triggerPrice;
+    const level = entry.kind === "static" ? entry.levelAtTrigger : entry.triggerPrice;
     if (level === null) {
       continue;
     }
     result.push({
-      alertId: a.id,
+      // The queue entry id, not the alert id: one alert now produces many
+      // trigger events over its life, and history/ upserts by this id, so
+      // keying on the alert would collapse them all onto one record.
+      alertId: entry.id,
       exchange: "",
-      symbol: a.symbol,
+      symbol: entry.symbol,
       timeframe: null,
-      description: `${a.kind} alert triggered`,
-      time: new Date(a.triggeredAt),
+      description: `${entry.kind} alert triggered at ${entry.triggerPrice}`,
+      time: new Date(entry.triggeredAt),
       alertType: "price_cross",
       level,
-      rawTicker: a.symbol,
+      rawTicker: entry.symbol,
     });
   }
   return result;

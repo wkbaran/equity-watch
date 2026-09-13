@@ -9,13 +9,14 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Alert } from "./models.js";
+import { normalizeAlert, type Alert } from "./models.js";
 
 export function loadAlerts(path: string): Alert[] {
   if (!existsSync(path)) {
     return [];
   }
-  return JSON.parse(readFileSync(path, "utf-8")) as Alert[];
+  const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>[];
+  return raw.map(normalizeAlert);
 }
 
 export function saveAlerts(path: string, alerts: Alert[]): void {
@@ -33,7 +34,8 @@ export function removeAlert(path: string, id: string): boolean {
   return true;
 }
 
+/** Live alerts by default; `all` also includes cancelled ones. */
 export function listAlerts(path: string, opts: { all?: boolean } = {}): Alert[] {
   const alerts = loadAlerts(path);
-  return opts.all ? alerts : alerts.filter((a) => a.status === "armed");
+  return opts.all ? alerts : alerts.filter((a) => a.status === "live");
 }

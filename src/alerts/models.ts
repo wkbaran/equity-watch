@@ -3,7 +3,18 @@ export type AlertSide = "above" | "below";
 export type VolumePeriodUnit = "s" | "m" | "h" | "d";
 
 export interface VolumeCondition {
-  threshold: number;
+  /**
+   * Absolute share count. Mutually exclusive with `ratio` - exactly one is
+   * set. Absolute thresholds are what TradingView exports and what a user
+   * types directly; they do not adapt as a stock's liquidity changes.
+   */
+  threshold?: number;
+  /**
+   * Multiple of typical volume for this window, recomputed against a trailing
+   * baseline each check (src/alerts/volumeBaseline.ts). Cannot go stale the
+   * way an absolute threshold can.
+   */
+  ratio?: number;
   mode: "today" | "period";
   /** Only set when mode === "period". */
   periodValue?: number;
@@ -11,20 +22,53 @@ export interface VolumeCondition {
   periodUnit?: VolumePeriodUnit;
 }
 
+/**
+ * Alerts do not disarm. A trigger is an event, not an end state - the alert
+ * stays live and can fire again on a genuine re-cross, and every trigger
+ * appends a entry to the revisit queue (src/alerts/revisit.ts) instead.
+ * "cancelled" is therefore the only non-live state, and it only ever happens
+ * because something explicitly cancelled it (`alert remove`, or a closer
+ * alert superseding this one on the same symbol+side).
+ */
+export type AlertStatus = "live" | "cancelled";
+
 interface BaseAlert {
   id: string;
   symbol: string;
-  status: "armed" | "triggered" | "cancelled";
+  status: AlertStatus;
   createdAt: string;
   livePriceAtCreation: number;
-  triggeredAt: string | null;
-  triggerPrice: number | null;
   /**
-   * A full copy of every attribute as of the moment this alert triggered
-   * (itself with a null triggerSnapshot, since it wasn't triggered yet at
-   * that point). Kept independent of the live record so that a future
-   * edit/rearm of this alert can't retroactively rewrite what it looked
-   * like when it actually fired.
+   * When you started watching this name. Usually equal to createdAt, but a
+   * seeded alert was being watched in TradingView long before this record
+   * existed, so the import backdates it to the earliest evidence it has.
+   */
+  watchingSince: string;
+  /** True when watchingSince was inferred from an import rather than observed here. */
+  watchingSinceApprox: boolean;
+  /**
+   * Price when watching started, for "up X% since you started watching".
+   * Null when it couldn't be recovered - a backdated alert whose start
+   * predates the bars available at import time.
+   */
+  priceAtWatchStart: number | null;
+  /** How many times this alert has fired over its life. */
+  triggerCount: number;
+  /** Most recent trigger; null until it has fired at least once. */
+  lastTriggeredAt: string | null;
+  lastTriggerPrice: number | null;
+  /**
+   * Suppress re-firing until this time. Only used where a condition would
+   * otherwise stay true across consecutive checks and fire repeatedly -
+   * i.e. volume conditions. Static/trailing price crossings are already
+   * self-limiting (see lastKnownSide / extremePrice).
+   */
+  mutedUntil: string | null;
+  /**
+   * A full copy of every attribute as of the moment this alert last
+   * triggered (itself with a null triggerSnapshot). Kept independent of the
+   * live record so that a later edit/re-level of this alert can't
+   * retroactively rewrite what it looked like when it fired.
    */
   triggerSnapshot: Alert | null;
 }
@@ -70,4 +114,32 @@ export function effectiveTrigger(a: PriceAlert): number {
   }
   const dist = a.trailType === "amount" ? a.trailValue : (a.extremePrice * a.trailValue) / 100;
   return a.side === "below" ? a.extremePrice + dist : a.extremePrice - dist;
+}
+
+/**
+ * Older stores used `status: "armed" | "triggered" | "cancelled"`, where
+ * "triggered" meant the alert had fired and stopped watching. Under the
+ * no-disarm model both "armed" and "triggered" are simply live, so they
+ * normalize forward rather than silently dropping out of every check.
+ */
+export function normalizeAlert(raw: Record<string, unknown>): Alert {
+  const legacyStatus = raw.status as string | undefined;
+  const status: AlertStatus = legacyStatus === "cancelled" ? "cancelled" : "live";
+  const legacyTriggeredAt = (raw.triggeredAt ?? null) as string | null;
+  const legacyTriggerPrice = (raw.triggerPrice ?? null) as number | null;
+
+  const { triggeredAt: _t, triggerPrice: _p, ...rest } = raw;
+  const createdAt = raw.createdAt as string | undefined;
+  return {
+    ...rest,
+    status,
+    watchingSince: (raw.watchingSince as string | undefined) ?? createdAt ?? new Date().toISOString(),
+    watchingSinceApprox: (raw.watchingSinceApprox as boolean | undefined) ?? false,
+    priceAtWatchStart:
+      (raw.priceAtWatchStart as number | null | undefined) ?? (raw.livePriceAtCreation as number | undefined) ?? null,
+    triggerCount: (raw.triggerCount as number | undefined) ?? (legacyTriggeredAt !== null ? 1 : 0),
+    lastTriggeredAt: (raw.lastTriggeredAt as string | null | undefined) ?? legacyTriggeredAt,
+    lastTriggerPrice: (raw.lastTriggerPrice as number | null | undefined) ?? legacyTriggerPrice,
+    mutedUntil: (raw.mutedUntil as string | null | undefined) ?? null,
+  } as Alert;
 }

@@ -3,7 +3,24 @@ dist/
 .cache/
 reports/
 history/
-alerts.json
-holdings.json
-schwab_tokens.json
+
+# Local state stores. Anchored to the repo root: these are specific files the
+# CLI writes here, not a name to exclude everywhere. Unanchored patterns also
+# match tests/fixtures/, which is how the anonymized Webull fixtures got
+# silently excluded and broke a fresh clone.
+/alerts.json
+/revisits.json
+/holdings.json
+
+# Real exports. The trimmed/anonymized stand-ins under tests/fixtures/ are
+# deliberately NOT covered by these root-anchored patterns.
+/webull_*.csv
+/tradingview-*.csv
+/alerts_in/
+
+# Credentials
 .env
+schwab_tokens.json
+
+# Browser-automation artifacts (screenshots, console logs, page snapshots)
+.playwright-mcp/

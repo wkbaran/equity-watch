@@ -1,0 +1,72 @@
+Symbol,Description,Status,Last Triggered
+"RPM, 1D","50,100,200 Moving Average (50, close, 100, close, 200, close) Crossing 120.42 on RPM, 1D",Active,
+"VFH, 1D","50,100,200 Moving Average (50, close, 100, close, 200, close) Crossing 138.61 on VFH, 1D",Stopped — Triggered,Wed 02 Sep '26 07:30:02
+"PINS, 1D","50,100,200 Moving Average (50, close, 100, close, 200, close) Crossing 28.20 on PINS, 1D",Active,
+ACI,ACI Crossing Up 14.10,Active,Tue 24 Feb '26 07:32:23
+AESI,AESI Crossing 14.31,Stopped — Triggered,Tue 08 Sep '26 12:25:35
+AGNC,AGNC Crossing 10.42,Active,
+"AGNC, 1D","AGNC, 1D Exiting rectangle",Stopped — Triggered,Wed 09 Sep '26 12:51:03
+ALB,ALB Crossing 137.09,Active,
+ALB,ALB Crossing 140.40,Stopped — Triggered,Fri 21 Aug '26 07:31:00
+ANET,ANET Crossing 182.76,Stopped — Triggered,Fri 31 Jul '26 07:33:58
+ANET,ANET Crossing 196.44,Stopped — Triggered,Fri 07 Aug '26 07:30:00
+ANET,ANET Crossing 207.50,Active,Thu 27 Aug '26 07:30:09
+ASML,"ASML Crossing 1,887.41",Stopped — Triggered,Mon 17 Aug '26 11:44:47
+BA,BA Crossing 222.32,Stopped — Triggered,Tue 28 Jul '26 10:25:54
+BA,BA Crossing 239.75,Stopped — Triggered,Wed 05 Aug '26 11:26:41
+"BA, 1D","BA, 1D Crossing trendline",Stopped — Triggered,Mon 03 Aug '26 08:29:14
+BWAY,BWAY Crossing 16.78,Active,
+CF,CF Crossing 141.11,Active,Thu 10 Sep '26 07:31:51
+CHEF,CHEF Crossing Down 91.00,Active,Wed 29 Jul '26 07:31:55
+CRCL,CRCL Crossing 104.10,Activating,
+CRCL,CRCL Crossing 77.61,Stopped — Triggered,Wed 19 Aug '26 07:36:02
+CRM,CRM Crossing 207.50,Stopped — Triggered,Wed 19 Aug '26 09:49:12
+CRM,CRM Crossing 262.00,Stopped — Triggered,Mon 31 Aug '26 10:19:58
+CRM,CRM Crossing 271.71,Active,
+CRWD,CRWD Crossing 235.00,Active,Mon 31 Aug '26 07:33:13
+CSTM,CSTM Crossing 30.84,Active,
+CTVA,CTVA Crossing 93.00,Active,Tue 01 Sep '26 07:30:45
+ENS,ENS Crossing 19.78,Active,
+ENS,ENS Crossing 200.91,Active,Thu 13 Aug '26 07:33:57
+EQIX,"EQIX Crossing 1,105.41",Active,
+EQIX,"EQIX Crossing 1,127.76",Activating,
+FITB,FITB Crossing 55.70,Active,
+FITB,FITB Crossing 55.85,Active,
+LKFT,GLPG Crossing 35.19,Active,Tue 25 Aug '26 07:31:36
+ICE,ICE Crossing 176.34,Active,
+"ICE, 1D","ICE, 1D Crossing Trend Line",Stopped — Triggered,Mon 31 Aug '26 07:34:53
+LLY,"LLY Crossing 1,283.81",Active,
+MKL,"MKL Crossing 2,003.72",Stopped — Triggered,Mon 27 Jul '26 07:30:20
+MRVL,MRVL Crossing 231.45,Stopped — Triggered,Tue 08 Sep '26 09:18:33
+MRVL,MRVL Crossing 252.50,Active,Fri 04 Sep '26 09:12:09
+MSFT,MSFT Crossing 412.36,Stopped — Triggered,Thu 30 Jul '26 07:30:00
+MTD,MTD Crossing 173.50,Active,
+PPL,PPL Crossing 231.55,Active,Sun 23 Aug '26 22:51:31
+PPL,PPL Crossing 37.14,Active,
+RPM,RPM Crossing 111.32,Stopped — Triggered,Mon 03 Aug '26 13:49:11
+RPM,RPM Crossing 114.48,Stopped — Triggered,Tue 04 Aug '26 10:03:05
+SUI,SUI Crossing 128.43,Active,Tue 28 Jul '26 07:30:04
+"SUI, 1D","SUI, 1D Crossing trendline",Stopped — Triggered,Thu 30 Jul '26 10:57:39
+TALK,TALK Crossing 5.31,Stopped — Calculation error,
+"UNP, 1D","UNP Crossing 277.50 AND Volume Crossing 3 M on UNP, 1D",Active,
+UNP,UNP Crossing 293.03,Active,
+UNP,UNP Crossing 299.62,Stopped — Triggered,Fri 14 Aug '26 07:47:06
+VFH,VFH Crossing 143.35,Active,
+VNRX,VNRX Crossing 0.6000,Active,Thu 27 Aug '26 07:30:03
+"XPRO, 1D","Volume Crossing 1.5 M on XPRO, 1D",Active,
+"FITB, 1D","Volume Crossing 12.75 M on FITB, 1D",Active,
+"CRWD, 1D","Volume Crossing 15.5 M on CRWD, 1D",Stopped — Triggered,Thu 27 Aug '26 11:30:02
+"ALB, 1D","Volume Crossing 2.1 M on ALB, 1D",Stopped — Triggered,Fri 21 Aug '26 13:50:27
+"PNC, 1D","Volume Crossing 2.6 M on PNC, 1D",Active,
+"MTD, 1W","Volume Crossing 55 K on MTD, 1W",Active,
+"ANET, 1D","Volume Crossing Up 11 M on ANET, 1D",Stopped — Triggered,Wed 05 Aug '26 09:50:02
+"BWAY, 1D","Volume Crossing Up 150 K on BWAY, 1D",Active,
+"CSTM, 1h","Volume Crossing Up 2.5 M on CSTM, 1h",Active,
+"MSFT, 1h","Volume Crossing Up 45 M on MSFT, 1h",Active,
+WTRG,WTRG Crossing 42.52,Active,Thu 10 Sep '26 08:23:00
+XPRO,XPRO Crossing 18.90,Active,Mon 31 Aug '26 08:22:32
+XYL,XYL Crossing 125.75,Stopped — Triggered,Tue 28 Jul '26 08:20:15
+XYL,XYL Crossing 128.57,Active,
+"XYL, 1D","XYL, 1D Crossing trendline",Active,
+ZS,ZS Crossing 185.69,Stopped — Triggered,Thu 13 Aug '26 12:38:41
+ZS,ZS Crossing 195.13,Activating,

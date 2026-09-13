@@ -27,9 +27,12 @@ export async function checkHoldings(
   store: HoldingsStore,
   market: Pick<MarketData, "getQuotes">,
   notifiers: HoldingsNotifier[],
-  now: Date = new Date()
-): Promise<{ checked: number; triggered: HoldingsTriggerEvent[] }> {
-  const symbols = [...new Set(store.lots.map((l) => l.symbol))];
+  now: Date = new Date(),
+  /** Symbols to leave alone entirely - see TuningConfig.ignoreSymbols. */
+  ignored: Set<string> = new Set()
+): Promise<{ checked: number; triggered: HoldingsTriggerEvent[]; ignored: number }> {
+  const allSymbols = [...new Set(store.lots.map((l) => l.symbol))];
+  const symbols = allSymbols.filter((s) => !ignored.has(s.toUpperCase()));
   const quotes = await market.getQuotes(symbols);
   const triggered: HoldingsTriggerEvent[] = [];
 
@@ -85,7 +88,7 @@ export async function checkHoldings(
     }
   }
 
-  return { checked: symbols.length, triggered };
+  return { checked: symbols.length, triggered, ignored: allSymbols.length - symbols.length };
 }
 
 export function addLot(

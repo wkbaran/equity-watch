@@ -3,6 +3,7 @@ export type AlertType =
   | "trendline_cross"
   | "volume_cross"
   | "ma_strategy"
+  | "pattern"
   | "other";
 
 export interface Alert {

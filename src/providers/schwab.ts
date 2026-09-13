@@ -19,6 +19,7 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline/promises";
 import open from "open";
 import type { PriceBar } from "../models.js";
+import { parseMarketHours, type MarketHours } from "../marketHours.js";
 import { RateLimiter } from "./rateLimiter.js";
 import type { PriceDataProvider } from "./types.js";
 
@@ -27,6 +28,7 @@ const TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token";
 const PRICE_HISTORY_URL = "https://api.schwabapi.com/marketdata/v1/pricehistory";
 const QUOTES_URL = "https://api.schwabapi.com/marketdata/v1/quotes";
 const INSTRUMENTS_URL = "https://api.schwabapi.com/marketdata/v1/instruments";
+const MARKETS_URL = "https://api.schwabapi.com/marketdata/v1/markets";
 
 // Refresh a bit before the access token actually expires to avoid racing a
 // request against expiry.
@@ -220,6 +222,13 @@ function candlesToBars(candles: Candle[]): PriceBar[] {
 // Schwab's Market Data API is limited to 120 calls/minute per app.
 export const DEFAULT_MAX_REQUESTS_PER_MINUTE = 120;
 
+/**
+ * Schwab rejects a quotes request naming more than 500 symbols
+ * ("Search combination should not exceed 500"). Larger asks are split and
+ * merged, so callers can hand over the whole watchlist without caring.
+ */
+export const MAX_QUOTE_SYMBOLS_PER_REQUEST = 500;
+
 export class SchwabProvider implements PriceDataProvider {
   private rateLimiter: RateLimiter;
 
@@ -293,6 +302,16 @@ export class SchwabProvider implements PriceDataProvider {
     if (symbols.length === 0) {
       return new Map();
     }
+    if (symbols.length > MAX_QUOTE_SYMBOLS_PER_REQUEST) {
+      const merged = new Map<string, Quote>();
+      for (let i = 0; i < symbols.length; i += MAX_QUOTE_SYMBOLS_PER_REQUEST) {
+        const chunk = await this.getQuotes(symbols.slice(i, i + MAX_QUOTE_SYMBOLS_PER_REQUEST));
+        for (const [symbol, quote] of chunk) {
+          merged.set(symbol, quote);
+        }
+      }
+      return merged;
+    }
 
     await this.rateLimiter.acquire();
     const accessToken = await this.auth.getAccessToken();
@@ -333,5 +352,22 @@ export class SchwabProvider implements PriceDataProvider {
     const payload = (await response.json()) as InstrumentsResponse;
     const beta = payload.instruments?.[0]?.fundamental?.beta;
     return typeof beta === "number" ? beta : null;
+  }
+
+  /**
+   * Equity market hours for a date, including pre/post-market windows and
+   * the shortened sessions on half days. `date` is YYYY-MM-DD in US/Eastern.
+   */
+  async getMarketHours(date: string): Promise<MarketHours> {
+    await this.rateLimiter.acquire();
+    const accessToken = await this.auth.getAccessToken();
+    const params = new URLSearchParams({ markets: "equity", date });
+    const response = await fetch(`${MARKETS_URL}?${params}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(`Schwab market-hours request failed (${response.status}): ${await response.text()}`);
+    }
+    return parseMarketHours(await response.json(), date);
   }
 }

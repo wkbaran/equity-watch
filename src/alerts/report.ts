@@ -34,14 +34,14 @@ function chartUrl(symbol: string): string {
   return `https://www.tradingview.com/chart/?symbol=${symbol}`;
 }
 
-function volumeFields(alert: Alert): { volume_mode: string; volume_threshold: number | ""; volume_period: string } {
+function volumeFields(alert: Alert): { volume_mode: string; volume_threshold: number | string; volume_period: string } {
   const condition = alert.kind === "volume" ? alert.volume : alert.volumeCondition;
   if (!condition) {
     return { volume_mode: "", volume_threshold: "", volume_period: "" };
   }
   return {
     volume_mode: condition.mode,
-    volume_threshold: condition.threshold,
+    volume_threshold: condition.threshold ?? (condition.ratio !== undefined ? `${condition.ratio}x normal` : ""),
     volume_period: condition.mode === "period" ? `${condition.periodValue}${condition.periodUnit}` : "",
   };
 }
@@ -57,8 +57,8 @@ export function writeAlertTriggerReport(triggered: Alert[], outPath: string): vo
     trail_type: a.kind === "trailing" ? a.trailType : "",
     trail_value: a.kind === "trailing" ? a.trailValue : "",
     ...volumeFields(a),
-    trigger_price: a.triggerPrice,
-    triggered_at: a.triggeredAt,
+    trigger_price: a.lastTriggerPrice,
+    triggered_at: a.lastTriggeredAt,
     chart_url: chartUrl(a.symbol),
   }));
   const csvText = stringify(rows, { header: true, columns: OUTPUT_FIELDS });

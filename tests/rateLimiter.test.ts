@@ -52,3 +52,40 @@ describe("RateLimiter", () => {
     await pending;
   });
 });
+
+describe("quote batching", () => {
+  it("caps a batch at Schwab's documented 500-symbol limit", async () => {
+    // Schwab rejects a larger ask outright: "Search combination should not
+    // exceed 500". A 516-symbol watchlist is a realistic size here.
+    const { MAX_QUOTE_SYMBOLS_PER_REQUEST, SchwabProvider } = await import("../src/providers/schwab.js");
+    expect(MAX_QUOTE_SYMBOLS_PER_REQUEST).toBe(500);
+
+    const batches: number[] = [];
+    const provider = Object.create(SchwabProvider.prototype) as InstanceType<typeof SchwabProvider>;
+    // Stand in for the network call, recording how the symbols were split.
+    const original = SchwabProvider.prototype.getQuotes;
+    let depth = 0;
+    (provider as unknown as { rateLimiter: unknown }).rateLimiter = { acquire: async () => {} };
+    const spy = async function (this: unknown, symbols: string[]): Promise<Map<string, unknown>> {
+      if (symbols.length > MAX_QUOTE_SYMBOLS_PER_REQUEST) {
+        depth++;
+        return original.call(this as never, symbols) as never;
+      }
+      batches.push(symbols.length);
+      return new Map(symbols.map((s) => [s, { lastPrice: 1, totalVolume: 0 }]));
+    };
+    (provider as unknown as { getQuotes: unknown }).getQuotes = spy;
+
+    const symbols = Array.from({ length: 516 }, (_, i) => `S${i}`);
+    const result = await original.call(provider as never, symbols);
+
+    expect(batches).toEqual([500, 16]);
+    expect(result.size).toBe(516);
+    expect(depth).toBe(0);
+  });
+
+  it("makes a single request when under the limit", async () => {
+    const { MAX_QUOTE_SYMBOLS_PER_REQUEST } = await import("../src/providers/schwab.js");
+    expect(500 % MAX_QUOTE_SYMBOLS_PER_REQUEST).toBe(0);
+  });
+});

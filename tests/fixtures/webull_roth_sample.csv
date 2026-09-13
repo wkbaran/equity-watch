@@ -1,0 +1,9 @@
+Symbol,Name,Quantity,Market Value,Open P&L,Open P&L %,Day's P&L,Last Price,Avg Cost,Total Cost,Position Ratio %,Product Type
+CASHX,Sample Cash ETF,45,4117.5,0.9,0.02,0.09,91.5,91.48,4116.6,60.52,Stock
+QTYA,Quantity Mismatch Co,3,340.55,-27.0,-7.35,-2.7,68.11,73.51,367.55,5.01,Stock
+DEEPL,Deep Loser Inc,46,64.4,-140.3,-68.54,-14.03,1.4,4.45,204.7,0.95,Stock
+WINR,Winner Health Group,49,626.71,73.99,13.39,7.4,12.79,11.28,552.72,9.21,Stock
+MIDA,Midcap Alpha Corp,20,440.4,-4.4,-0.99,-0.44,22.02,22.24,444.8,6.47,Stock
+MIDB,Midcap Beta Inc,3,395.7,-33.9,-7.89,-3.39,131.9,143.2,429.6,5.82,Stock
+MIDC,Midcap Gamma Ltd,2,582.86,-37.94,-6.11,-3.79,291.43,310.4,620.8,8.57,Stock
+MIDD,Midcap Delta Plc,1,235.62,-4.64,-1.93,-0.46,235.62,240.26,240.26,3.46,Stock

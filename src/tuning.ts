@@ -17,6 +17,26 @@ export interface TuningConfig {
   /** Scale recentHighTolerance by the symbol's beta unless overridden. Default true. */
   scaleToleranceByBeta?: boolean;
   overrides?: Record<string, Partial<AnalysisParams>>;
+  /**
+   * Symbols to exclude from alerting entirely.
+   *
+   * For holdings that aren't really positions: cash-parking vehicles like a
+   * short-duration T-Bill ETF, where capital sits between opportunities. They
+   * still appear in the dashboard's holdings list (a third of the account
+   * shouldn't vanish from the picture) but generate no alerts, never enter the
+   * revisit queue, and are never flagged as a quiet watch — none of which
+   * would mean anything for an instrument held deliberately flat.
+   */
+  ignoreSymbols?: string[];
+}
+
+/** Case-insensitive set of symbols the config says to leave alone. */
+export function ignoredSymbols(config: TuningConfig | null): Set<string> {
+  return new Set((config?.ignoreSymbols ?? []).map((s) => s.trim().toUpperCase()).filter((s) => s.length > 0));
+}
+
+export function isIgnored(symbol: string, ignored: Set<string>): boolean {
+  return ignored.has(symbol.toUpperCase());
 }
 
 /** Returns null if the file doesn't exist - distinct from an empty/default config. */

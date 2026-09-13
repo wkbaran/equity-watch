@@ -8,8 +8,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
-    "cli": "tsx src/cli.ts"
+    "test": "tsc -p tsconfig.test.json && vitest run",
+    "cli": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.test.json"
   },
   "license": "ISC",
   "dependencies": {

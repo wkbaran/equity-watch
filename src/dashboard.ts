@@ -1,0 +1,407 @@
+/**
+ * The periodic dashboard document.
+ *
+ * The three existing report writers (breakout_report_*, alert_triggers_*,
+ * holdings_alerts_*) are event logs: they are only written when something
+ * fired, and each covers one subsystem. A dashboard needs the opposite - one
+ * document, emitted on a schedule, that is just as meaningful on a quiet day
+ * as on a busy one. So this always renders four things:
+ *
+ *   1. what needs a decision   (the revisit queue, priority-ranked)
+ *   2. what is about to happen (live alerts closest to firing)
+ *   3. what is being watched   (coverage totals)
+ *   4. what is actually held   (positions against basis)
+ *
+ * JSON rather than CSV: this is a nested document with per-row signal
+ * breakdowns, and it is meant to be fed to something, not opened in a
+ * spreadsheet. The CSV writers stay as they are for the event logs.
+ */
+
+import { effectiveTrigger, type Alert } from "./alerts/models.js";
+import { explainPriority, type RevisitEntry } from "./alerts/revisit.js";
+import { computeBasis, type HoldingsStore } from "./holdings/models.js";
+import type { Session } from "./marketHours.js";
+import {
+  buildStories,
+  quietWatchNote,
+  sinceWatchingNote,
+  triggerAction,
+  triggerHeadline,
+  type NarrativeContext,
+  type TickerStory,
+} from "./narrative.js";
+import type { Quote } from "./providers/schwab.js";
+
+export interface DashboardSummary {
+  liveAlerts: number;
+  symbolsWatched: number;
+  openRevisits: number;
+  /** Open entries that already carry a proposed level, i.e. actionable right now. */
+  actionableRevisits: number;
+  triggersInWindow: number;
+  windowDays: number;
+  positions: number;
+  quotesUnavailable: number;
+}
+
+export interface RevisitRow {
+  id: string;
+  symbol: string;
+  priority: number | null;
+  /** Plain-English one-liner: "TGT broke resistance with volume". */
+  headline: string;
+  /** What it's waiting on, as a sentence. Null when nothing is pending. */
+  action: string | null;
+  /** How the name has done since you first started watching it. */
+  sinceWatching: string | null;
+  session: Session | null;
+  verdict: string | null;
+  triggeredAt: string;
+  triggerPrice: number;
+  levelAtTrigger: number | null;
+  suggestedLevel: number | null;
+  suggestionBasis: string | null;
+  daysOpen: number | null;
+  why: string | null;
+  heldPosition: boolean;
+  chartUrl: string;
+}
+
+export interface ApproachingRow {
+  alertId: string;
+  symbol: string;
+  kind: Alert["kind"];
+  side: string | null;
+  trigger: number | null;
+  price: number;
+  /** Percent price must move to fire. Negative means the condition is already met but gated on volume. */
+  distancePct: number | null;
+  hasVolumeCondition: boolean;
+  triggerCount: number;
+  chartUrl: string;
+}
+
+export interface HoldingRow {
+  symbol: string;
+  shares: number;
+  basis: number;
+  price: number | null;
+  pctFromBasis: number | null;
+  marketValue: number | null;
+  lastPurchaseDate: string;
+  stops: number[];
+  /** Held but excluded from alerting — cash parking, not a conviction position. */
+  ignored: boolean;
+}
+
+export interface Dashboard {
+  generatedAt: string;
+  summary: DashboardSummary;
+  revisitQueue: RevisitRow[];
+  approaching: ApproachingRow[];
+  /** How many alerts were within range in total, before the display cap. */
+  approachingTotal: number;
+  holdings: HoldingRow[];
+  /** Multi-trigger threads told as a narrative, most active first. */
+  stories: TickerStory[];
+  /** Long-watched names that have never fired here and have barely moved. */
+  quietWatches: string[];
+  /** How many qualified in total, before the display cap. */
+  quietTotal: number;
+}
+
+export interface DashboardInputs {
+  alerts: Alert[];
+  revisits: RevisitEntry[];
+  holdings: HoldingsStore;
+  quotes: Map<string, Quote>;
+  now: Date;
+  /** How many days back "recent triggers" counts. */
+  windowDays?: number;
+  /** Cap on rows in the queue and approaching lists. */
+  limit?: number;
+  /** Only list alerts within this percent of firing. */
+  approachingWithinPct?: number;
+  /** Cap on ticker stories. */
+  storyLimit?: number;
+  /**
+   * Include the "approaching" list. Off by default: on a 500-alert book a
+   * hundred names sit within a few percent of firing at any moment, which is
+   * a readout of market noise rather than anything to act on. The queue says
+   * what actually happened; that is the part worth a glance.
+   */
+  includeApproaching?: boolean;
+  /** Symbols excluded from alerting (TuningConfig.ignoreSymbols). */
+  ignoredSymbols?: Set<string>;
+}
+
+function chartUrl(symbol: string): string {
+  return `https://www.tradingview.com/chart/?symbol=${symbol}`;
+}
+
+function round(n: number, places = 2): number {
+  const f = 10 ** places;
+  return Math.round(n * f) / f;
+}
+
+export function buildDashboard(inputs: DashboardInputs): Dashboard {
+  const { alerts, revisits, holdings, quotes, now } = inputs;
+  const windowDays = inputs.windowDays ?? 7;
+  const limit = inputs.limit ?? 25;
+  const withinPct = inputs.approachingWithinPct ?? 5;
+
+  const ignored = inputs.ignoredSymbols ?? new Set<string>();
+  const isIgnored = (symbol: string) => ignored.has(symbol.toUpperCase());
+
+  const live = alerts.filter((a) => a.status === "live" && !isIgnored(a.symbol));
+  const heldSymbols = new Set(holdings.lots.map((l) => l.symbol.toUpperCase()));
+
+  const narrativeCtx: NarrativeContext = { heldSymbols };
+  const open = revisits.filter((e) => e.status === "open" && !isIgnored(e.symbol));
+  const revisitQueue: RevisitRow[] = [...open]
+    .sort((a, b) => (b.priority ?? -1) - (a.priority ?? -1))
+    .slice(0, limit)
+    .map((e) => ({
+      id: e.id,
+      symbol: e.symbol,
+      priority: e.priority,
+      headline: triggerHeadline(e, narrativeCtx),
+      action: triggerAction(e),
+      sinceWatching: sinceWatchingNote(
+        e.watchingSince ?? null,
+        e.priceAtWatchStart ?? null,
+        quotes.get(e.symbol)?.lastPrice ?? e.triggerPrice,
+        e.watchingSinceApprox ?? false
+      ),
+      session: e.session ?? null,
+      verdict: e.signals?.verdict ?? null,
+      triggeredAt: e.triggeredAt,
+      triggerPrice: e.triggerPrice,
+      levelAtTrigger: e.levelAtTrigger,
+      suggestedLevel: e.suggestedLevel,
+      suggestionBasis: e.suggestionBasis,
+      daysOpen: e.signals?.daysOpen ?? null,
+      why: e.signals ? explainPriority(e.signals) : null,
+      heldPosition: heldSymbols.has(e.symbol.toUpperCase()),
+      chartUrl: chartUrl(e.symbol),
+    }));
+
+  const includeApproaching = inputs.includeApproaching ?? false;
+  let quotesUnavailable = 0;
+  const approaching: ApproachingRow[] = [];
+  for (const alert of live) {
+    const quote = quotes.get(alert.symbol);
+    if (quote === undefined) {
+      quotesUnavailable++;
+      continue;
+    }
+    const price = quote.lastPrice;
+
+    // Volume-only alerts have no price distance to report, but they are still
+    // live and worth showing, so they carry a null distance rather than being
+    // dropped from the picture entirely.
+    if (alert.kind === "volume") {
+      approaching.push({
+        alertId: alert.id,
+        symbol: alert.symbol,
+        kind: alert.kind,
+        side: null,
+        trigger: null,
+        price,
+        distancePct: null,
+        hasVolumeCondition: true,
+        triggerCount: alert.triggerCount,
+        chartUrl: chartUrl(alert.symbol),
+      });
+      continue;
+    }
+
+    const trigger = effectiveTrigger(alert);
+    // Signed so that it always reads as "how far price still has to move",
+    // regardless of which side of the level the alert is watching for.
+    const distancePct = price === 0 ? null : round(((trigger - price) / price) * 100 * (alert.side === "below" ? -1 : 1));
+    if (distancePct !== null && distancePct > withinPct) {
+      continue;
+    }
+    approaching.push({
+      alertId: alert.id,
+      symbol: alert.symbol,
+      kind: alert.kind,
+      side: alert.side,
+      trigger: round(trigger),
+      price,
+      distancePct,
+      hasVolumeCondition: alert.volumeCondition !== undefined,
+      triggerCount: alert.triggerCount,
+      chartUrl: chartUrl(alert.symbol),
+    });
+  }
+  approaching.sort((a, b) => (a.distancePct ?? Infinity) - (b.distancePct ?? Infinity));
+  // A 500-alert book puts a hundred names within a few percent of firing,
+  // which is unreadable on a small display. Keep the nearest and report the
+  // total so the rest aren't hidden silently.
+  const approachingTotal = approaching.length;
+  const approachingShown = includeApproaching ? approaching.slice(0, limit) : [];
+
+  const holdingRows: HoldingRow[] = [];
+  for (const symbol of [...new Set(holdings.lots.map((l) => l.symbol))].sort()) {
+    const basis = computeBasis(holdings.lots, symbol);
+    if (basis === null) {
+      continue;
+    }
+    const price = quotes.get(symbol)?.lastPrice ?? null;
+    holdingRows.push({
+      symbol,
+      shares: basis.totalCount,
+      basis: round(basis.blendedBasis),
+      price,
+      pctFromBasis: price === null ? null : round(((price - basis.blendedBasis) / basis.blendedBasis) * 100),
+      marketValue: price === null ? null : round(price * basis.totalCount),
+      lastPurchaseDate: basis.lastPurchaseDate,
+      ignored: isIgnored(symbol),
+      stops: holdings.stops.filter((s) => s.symbol === symbol).map((s) => s.stopPrice),
+    });
+  }
+
+  // Names that have been watched a long time, never fired, and barely moved:
+  // each one is an alert slot that could be spent on something else.
+  const quietWatches: string[] = [];
+  const quietTotal = { count: 0 };
+  for (const alert of live) {
+    const note = quietWatchNote(
+      {
+        symbol: alert.symbol,
+        watchingSince: alert.watchingSince,
+        watchingSinceApprox: alert.watchingSinceApprox,
+        observedSince: alert.createdAt,
+        priceAtWatchStart: alert.priceAtWatchStart,
+        currentPrice: quotes.get(alert.symbol)?.lastPrice ?? null,
+        triggerCount: alert.triggerCount,
+      },
+      now
+    );
+    if (note !== null) {
+      quietTotal.count++;
+      if (quietWatches.length < limit) {
+        quietWatches.push(note);
+      }
+    }
+  }
+
+  const windowStart = now.getTime() - windowDays * 86_400_000;
+  const triggersInWindow = revisits.filter((e) => new Date(e.triggeredAt).getTime() >= windowStart).length;
+
+  return {
+    generatedAt: now.toISOString(),
+    summary: {
+      liveAlerts: live.length,
+      symbolsWatched: new Set(live.map((a) => a.symbol)).size,
+      openRevisits: open.length,
+      actionableRevisits: open.filter((e) => e.suggestedLevel !== null).length,
+      triggersInWindow,
+      windowDays,
+      positions: holdingRows.length,
+      quotesUnavailable,
+    },
+    revisitQueue,
+    approaching: approachingShown,
+    approachingTotal: includeApproaching ? approachingTotal : 0,
+    holdings: holdingRows,
+    stories: buildStories(
+      revisits.filter((e) => !isIgnored(e.symbol)),
+      narrativeCtx,
+      { limit: inputs.storyLimit ?? 5 }
+    ),
+    quietWatches,
+    quietTotal: quietTotal.count,
+  };
+}
+
+/** Terminal rendering of the same document, for when you just want to glance at it. */
+export function renderDashboard(d: Dashboard): string {
+  const lines: string[] = [];
+  const s = d.summary;
+  lines.push(`Dashboard — ${d.generatedAt.slice(0, 16).replace("T", " ")}`);
+  lines.push("=".repeat(72));
+  lines.push(
+    `${s.liveAlerts} live alert(s) across ${s.symbolsWatched} symbol(s) · ` +
+      `${s.openRevisits} open revisit(s) (${s.actionableRevisits} with a proposed level) · ` +
+      `${s.triggersInWindow} trigger(s) in ${s.windowDays}d · ${s.positions} position(s)`
+  );
+  if (s.quotesUnavailable > 0) {
+    lines.push(`(${s.quotesUnavailable} alert(s) had no quote available this run)`);
+  }
+
+  lines.push("");
+  lines.push(`REVISIT QUEUE (${d.revisitQueue.length} shown)`);
+  lines.push("-".repeat(72));
+  if (d.revisitQueue.length === 0) {
+    lines.push("  nothing waiting on a decision");
+  }
+  for (const r of d.revisitQueue) {
+    const pri = r.priority === null ? "  -  " : r.priority.toFixed(1).padStart(5);
+    // Narrative first: the number is the sort key, the sentence is the point.
+    lines.push(`${pri}  ${r.headline}`);
+    lines.push(`         fired ${r.levelAtTrigger ?? "-"} @ ${r.triggerPrice}${r.action ? `. ${r.action}` : ""}`);
+    if (r.suggestedLevel !== null) {
+      lines.push(`         'alert revisit apply ${r.id}'`);
+    }
+    if (r.sinceWatching !== null) {
+      lines.push(`         ${r.sinceWatching}`);
+    }
+    if (r.why !== null) {
+      lines.push(`         ${r.why}`);
+    }
+  }
+
+  if (d.stories.length > 0) {
+    lines.push("");
+    lines.push(`STORIES (${d.stories.length})`);
+    lines.push("-".repeat(72));
+    for (const s of d.stories) {
+      lines.push(`  ${s.summary}`);
+      for (const line of s.lines) {
+        lines.push(`    ${line.text}`);
+      }
+      lines.push("");
+    }
+  }
+
+  if (d.approaching.length > 0) {
+    lines.push("");
+    const more = d.approachingTotal > d.approaching.length ? ` of ${d.approachingTotal}` : "";
+    lines.push(`APPROACHING (nearest ${d.approaching.length}${more} within range)`);
+    lines.push("-".repeat(72));
+    for (const a of d.approaching) {
+      const dist = a.distancePct === null ? "   vol" : `${a.distancePct >= 0 ? "+" : ""}${a.distancePct.toFixed(2)}%`;
+      const gate = a.hasVolumeCondition ? " +vol" : "";
+    // The arrow carries the side: a below alert needs price to fall to fire,
+    // which "90.48 -> 90.40" alone doesn't make obvious.
+      const arrow = a.side === "below" ? "\u2193" : a.side === "above" ? "\u2191" : "\u2192";
+      lines.push(`${dist.padStart(8)}  ${a.symbol.padEnd(6)} ${a.price} ${arrow} ${a.trigger ?? "-"}${gate}`);
+    }
+  }
+
+  if (d.quietWatches.length > 0) {
+    lines.push("");
+    const qMore = d.quietTotal > d.quietWatches.length ? ` of ${d.quietTotal}` : "";
+    lines.push(`QUIET (${d.quietWatches.length}${qMore} watched a while, nothing since)`);
+    lines.push("-".repeat(72));
+    for (const q of d.quietWatches) {
+      lines.push(`  ${q}`);
+    }
+  }
+
+  if (d.holdings.length > 0) {
+    lines.push("");
+    lines.push(`HOLDINGS (${d.holdings.length})`);
+    lines.push("-".repeat(72));
+    for (const h of d.holdings) {
+      const pct = h.pctFromBasis === null ? "    -" : `${h.pctFromBasis >= 0 ? "+" : ""}${h.pctFromBasis.toFixed(1)}%`;
+      const tag = h.ignored ? "  (not alerted)" : "";
+      lines.push(`${pct.padStart(8)}  ${h.symbol.padEnd(6)} ${h.shares} @ ${h.basis} → ${h.price ?? "-"}${tag}`);
+    }
+  }
+
+  return lines.join("\n");
+}
