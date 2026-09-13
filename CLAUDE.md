@@ -60,6 +60,19 @@ so compare them to an intraday instant by trading date, not by timestamp.
 `closeOnOrAfter` compared timestamps and returned the next day's close for any
 intraday time.
 
+## The CLI must actually run on Windows, where a silent no-op looks like success
+
+`src/cli.ts` only runs its program when `isEntryPoint(import.meta.url)` is
+true. It used to compare `import.meta.url === \`file://${process.argv[1]}\``,
+which **never matches under Windows Node**: argv[1] is `C:\...\cli.js`, and
+the URL is `file:///C:/.../cli.js`. Every command, `--help` included, exited 0
+having printed and done nothing. A scheduled task would have reported success
+every 15 minutes while checking no alerts. The same comparison also failed
+when the CLI ran through a symlinked directory. `src/entrypoint.ts` compares
+real paths. Don't simplify it back to a string compare.
+
+When verifying anything on Windows, check for **output**, not just exit code 0.
+
 ## `classifyDescription` handles shapes the old regexes dropped
 
 It originally missed four rows out of 671, all now handled — but the reasons

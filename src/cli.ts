@@ -54,6 +54,7 @@ import {
 import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
 import { buildDashboard, renderDashboard } from "./dashboard.js";
 import { localDateString } from "./timezone.js";
+import { isEntryPoint } from "./entrypoint.js";
 import { publishSite } from "./web/publish.js";
 import { buildAlertRows } from "./web/alertsPage.js";
 import { shouldPublish, siteDocument, siteFingerprint, writeSite, type PublishState } from "./web/site.js";
@@ -1978,7 +1979,8 @@ function buildProgram(): Command {
   return program;
 }
 
-const isMainModule = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
-if (isMainModule) {
+// Not a string comparison of import.meta.url and argv[1]: that never matches
+// on Windows, so the CLI silently did nothing there (see src/entrypoint.ts).
+if (isEntryPoint(import.meta.url)) {
   buildProgram().parseAsync(process.argv);
 }

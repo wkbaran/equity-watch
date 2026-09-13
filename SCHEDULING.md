@@ -143,16 +143,20 @@ copy "%WSL%\.env" .
 copy "%WSL%\alerts.json" .
 copy "%WSL%\revisits.json" .
 copy "%WSL%\holdings.json" .
-copy "%WSL%\analysis.config.json" .
-robocopy "%WSL%\history" history /E
+robocopy "%WSL%\.cache" .cache /E
 robocopy "%WSL%\reports" reports /E
 
 mkdir "%USERPROFILE%\.equity_watch"
 copy "\\wsl.localhost\Ubuntu-24.04\home\bill\.equity_watch\schwab_tokens.json" "%USERPROFILE%\.equity_watch\"
 ```
 
-`.cache\` doesn't need copying; it rebuilds. Then, in WSL, rename the old state
-so nothing writes to it by accident:
+- `analysis.config.json` is committed, so the clone already has it.
+- `.cache\` would rebuild on its own, but `profiles\` (FMP's free-tier quota),
+  `beta\`, and `bars\` cost API calls to refetch, so copy it.
+- `reports\` is only old CSV output, so it's optional.
+- There is no `history\` unless `analyze` has been run.
+
+Then, in WSL, rename the old state so nothing writes to it by accident:
 
 ```sh
 cd ~/projects/equity-watch && for f in alerts.json revisits.json holdings.json; do mv "$f" "$f.moved-to-windows"; done
@@ -229,3 +233,4 @@ weakness" above).
 | No log file at all | The task didn't start: PC off, or `-ExecutionPolicy Bypass` missing from the action. Check Task Scheduler History. |
 | Runs, but dashboard never updates | `--skip-unchanged` saw nothing new; it republishes at least every 30 minutes. Check `S3_BUCKET` and AWS keys in `.env`. |
 | Alerts firing twice, or state flip-flopping | The WSL checkout is still running checks too. See step 2. |
+| Task succeeds, but the log shows `==> alert check` with no output under it | The build predates the Windows entry-point fix (2026-09-13), so the CLI exits 0 without doing anything. Run `git pull`, then `npm run build`. |
