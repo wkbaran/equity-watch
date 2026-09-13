@@ -20,6 +20,18 @@ import { randomUUID } from "node:crypto";
 import type { Session } from "../marketHours.js";
 import type { MaTimeframe, MaType } from "../indicators/movingAverage.js";
 import type { Alert, AlertSide, MaEvent } from "./models.js";
+import { describeAlertCondition } from "./describe.js";
+
+/** What a volume condition measured at the moment it was satisfied. */
+export interface RevisitVolume {
+  /** Shares traded over the window. */
+  observed: number;
+  /** Shares the condition demanded, rounded to a whole share. */
+  required: number;
+  /** "today", or a trailing window such as "30m". */
+  window: string;
+  basis: "threshold" | "ratio";
+}
 
 export interface RevisitMa {
   maType: MaType;
@@ -93,6 +105,17 @@ export interface RevisitEntry {
    * entries written before moving averages existed stay valid.
    */
   ma?: RevisitMa;
+  /**
+   * The alert's condition in words as of the trigger. Absent on entries
+   * written before this was recorded (2026-09-13); a reader can fall back to
+   * the alert's current settings, but must say that's what it's showing.
+   */
+  condition?: string;
+  /**
+   * What the volume condition measured when it fired. Absent when the alert
+   * had no volume condition, and on entries written before it was recorded.
+   */
+  volume?: RevisitVolume;
 }
 
 export interface RevisitWeights {
@@ -238,7 +261,8 @@ export function newRevisitEntry(
   alert: Alert,
   triggerPrice: number,
   at: string,
-  session: Session | null = null
+  session: Session | null = null,
+  details: { volume?: RevisitVolume } = {}
 ): RevisitEntry {
   return {
     id: randomUUID().slice(0, 8),
@@ -247,6 +271,8 @@ export function newRevisitEntry(
     kind: alert.kind,
     triggeredAt: at,
     triggerPrice,
+    condition: describeAlertCondition(alert),
+    ...(details.volume ? { volume: details.volume } : {}),
     levelAtTrigger:
       alert.kind === "static"
         ? alert.level

@@ -14,6 +14,7 @@ import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Dashboard } from "../dashboard.js";
+import type { AlertRow } from "./alertsPage.js";
 
 /** Static assets copied verbatim into the site directory. */
 export const SITE_ASSETS = ["index.html", "app.js", "sw.js"];
@@ -47,12 +48,17 @@ export function siteDocument(dashboard: Dashboard, options: SiteOptions): SiteDo
   return { ...dashboard, holdings: options.holdings ? dashboard.holdings : [], site: options };
 }
 
-export function writeSite(dir: string, dashboard: Dashboard, options: SiteOptions): void {
+/**
+ * dashboard.json is what the page polls; alerts.json is the full alert book,
+ * fetched only by the Alerts view (see src/web/alertsPage.ts).
+ */
+export function writeSite(dir: string, dashboard: Dashboard, options: SiteOptions, alerts: AlertRow[]): void {
   mkdirSync(dir, { recursive: true });
   for (const name of SITE_ASSETS) {
     copyFileSync(join(assetDir(), name), join(dir, name));
   }
   writeFileSync(join(dir, "dashboard.json"), JSON.stringify(siteDocument(dashboard, options)));
+  writeFileSync(join(dir, "alerts.json"), JSON.stringify({ generatedAt: dashboard.generatedAt, alerts }));
 }
 
 /**
@@ -75,7 +81,16 @@ const VOLATILE_KEYS = new Set([
   "approachingTotal",
   "quietWatches",
   "quietTotal",
+  // Alert rows (alertsPage.ts): trailing triggers and moving averages shift
+  // on nearly every check, and distance moves with price.
+  "movingLevel",
+  "vsLevelPct",
 ]);
+
+function stableHash(value: unknown): string {
+  const stable = JSON.stringify(value, (key, v) => (VOLATILE_KEYS.has(key) ? undefined : v));
+  return createHash("sha256").update(stable).digest("hex");
+}
 
 /**
  * A hash of what happened, ignoring what merely moved. Must come out the same
@@ -83,8 +98,12 @@ const VOLATILE_KEYS = new Set([
  * first so a quiet run spends no API calls at all.
  */
 export function dashboardFingerprint(d: Dashboard): string {
-  const stable = JSON.stringify(d, (key, value) => (VOLATILE_KEYS.has(key) ? undefined : value));
-  return createHash("sha256").update(stable).digest("hex");
+  return stableHash(d);
+}
+
+/** Everything the site publishes: the dashboard document and the alert book. Same rules. */
+export function siteFingerprint(doc: SiteDocument, alerts: AlertRow[]): string {
+  return stableHash({ doc, alerts });
 }
 
 export interface PublishState {

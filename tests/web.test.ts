@@ -53,8 +53,9 @@ describe("writeSite", () => {
   it("writes the page assets and the document it polls", () => {
     dir = mkdtempSync(join(tmpdir(), "site-"));
     const d = buildDashboard({ alerts: [], revisits: [], holdings: emptyHoldingsStore(), quotes: new Map(), now: NOW });
-    writeSite(dir, d, { holdings: false });
-    expect(readdirSync(dir).sort()).toEqual([...SITE_ASSETS, "dashboard.json"].sort());
+    writeSite(dir, d, { holdings: false }, []);
+    expect(readdirSync(dir).sort()).toEqual([...SITE_ASSETS, "dashboard.json", "alerts.json"].sort());
+    expect(JSON.parse(readFileSync(join(dir, "alerts.json"), "utf-8"))).toEqual({ generatedAt: NOW.toISOString(), alerts: [] });
     const published = JSON.parse(readFileSync(join(dir, "dashboard.json"), "utf-8"));
     expect(published.generatedAt).toBe(NOW.toISOString());
     expect(published.site).toEqual({ holdings: false });

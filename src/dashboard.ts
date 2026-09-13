@@ -18,7 +18,8 @@
  */
 
 import { effectiveTrigger, type Alert } from "./alerts/models.js";
-import { explainPriority, type RevisitEntry } from "./alerts/revisit.js";
+import { describeAlertCondition } from "./alerts/describe.js";
+import { explainPriority, type RevisitEntry, type RevisitMa, type RevisitVolume } from "./alerts/revisit.js";
 import { computeBasis, type HoldingsStore } from "./holdings/models.js";
 import type { Session } from "./marketHours.js";
 import {
@@ -73,19 +74,48 @@ export interface RevisitRow {
  * below the cap and a dismissed one vanishes from it. Anything that needs to
  * notice "something new fired" (the browser dashboard's notifications) has
  * to diff against this list, not the queue.
+ *
+ * Also carries everything a trigger's detail view shows, so a renderer never
+ * needs the stores themselves.
  */
 export interface TriggerRow {
   id: string;
+  alertId: string;
   symbol: string;
+  kind: Alert["kind"];
   headline: string;
   triggeredAt: string;
   triggerPrice: number;
   levelAtTrigger: number | null;
   session: Session | null;
   status: RevisitEntry["status"];
+  resolvedAt: string | null;
   priority: number | null;
   heldPosition: boolean;
   chartUrl: string;
+  /** The alert's condition in words. */
+  condition: string | null;
+  /**
+   * "recorded": captured when it fired. "current": the entry predates that, so
+   * this is the alert as it is now, which may differ. Null when neither exists
+   * (an old entry whose alert has since been removed).
+   */
+  conditionSource: "recorded" | "current" | null;
+  /** Whether the alert still exists in the store (live or cancelled). */
+  alertExists: boolean;
+  /** Observed vs. required volume at trigger time, when that was recorded. */
+  volume: RevisitVolume | null;
+  verdict: string | null;
+  pctMovePastLevel: number | null;
+  volumeRatio: number | null;
+  volumeTrendRatio: number | null;
+  why: string | null;
+  suggestedLevel: number | null;
+  suggestionBasis: string | null;
+  watchingSince: string | null;
+  watchingSinceApprox: boolean;
+  sinceWatching: string | null;
+  ma: RevisitMa | null;
 }
 
 export interface ApproachingRow {
@@ -119,7 +149,10 @@ export interface Dashboard {
   generatedAt: string;
   summary: DashboardSummary;
   revisitQueue: RevisitRow[];
-  /** Every trigger in the window regardless of status, newest first. */
+  /**
+   * Every trigger in the window regardless of status, plus older ones still
+   * open (so every queue row has details to open), newest first.
+   */
   recentTriggers: TriggerRow[];
   approaching: ApproachingRow[];
   /** How many alerts were within range in total, before the display cap. */
@@ -325,23 +358,51 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
 
   // Capped well above the queue limit: a consumer diffing for new firings
   // only misses one if more than this many fire between two of its polls.
-  const recentTriggers: TriggerRow[] = inWindow
+  const alertsById = new Map(alerts.map((a) => [a.id, a]));
+  const recentTriggers: TriggerRow[] = revisits
     .filter((e) => !isIgnored(e.symbol))
+    .filter((e) => e.status === "open" || new Date(e.triggeredAt).getTime() >= windowStart)
     .sort((a, b) => b.triggeredAt.localeCompare(a.triggeredAt))
     .slice(0, RECENT_TRIGGER_CAP)
-    .map((e) => ({
-      id: e.id,
-      symbol: e.symbol,
-      headline: triggerHeadline(e, narrativeCtx),
-      triggeredAt: e.triggeredAt,
-      triggerPrice: e.triggerPrice,
-      levelAtTrigger: e.levelAtTrigger,
-      session: e.session ?? null,
-      status: e.status,
-      priority: e.priority,
-      heldPosition: heldSymbols.has(e.symbol.toUpperCase()),
-      chartUrl: chartUrl(e.symbol),
-    }));
+    .map((e): TriggerRow => {
+      const alert = alertsById.get(e.alertId);
+      return {
+        id: e.id,
+        alertId: e.alertId,
+        symbol: e.symbol,
+        kind: e.kind,
+        headline: triggerHeadline(e, narrativeCtx),
+        triggeredAt: e.triggeredAt,
+        triggerPrice: e.triggerPrice,
+        levelAtTrigger: e.levelAtTrigger,
+        session: e.session ?? null,
+        status: e.status,
+        resolvedAt: e.resolvedAt,
+        priority: e.priority,
+        heldPosition: heldSymbols.has(e.symbol.toUpperCase()),
+        chartUrl: chartUrl(e.symbol),
+        condition: e.condition ?? (alert ? describeAlertCondition(alert) : null),
+        conditionSource: e.condition !== undefined ? "recorded" : alert ? "current" : null,
+        alertExists: alert !== undefined,
+        volume: e.volume ?? null,
+        verdict: e.signals?.verdict ?? null,
+        pctMovePastLevel: e.signals?.pctMovePastLevel ?? null,
+        volumeRatio: e.signals?.volumeRatio ?? null,
+        volumeTrendRatio: e.signals?.volumeTrendRatio ?? null,
+        why: e.signals ? explainPriority(e.signals) : null,
+        suggestedLevel: e.suggestedLevel,
+        suggestionBasis: e.suggestionBasis,
+        watchingSince: e.watchingSince ?? null,
+        watchingSinceApprox: e.watchingSinceApprox ?? false,
+        sinceWatching: sinceWatchingNote(
+          e.watchingSince ?? null,
+          e.priceAtWatchStart ?? null,
+          quotes.get(e.symbol)?.lastPrice ?? e.triggerPrice,
+          e.watchingSinceApprox ?? false
+        ),
+        ma: e.ma ?? null,
+      };
+    });
 
   return {
     generatedAt: now.toISOString(),

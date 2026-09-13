@@ -129,6 +129,21 @@ Two more things that look wrong and aren't:
   which is correct from both `src/web/site.ts` (tsx) and `dist/web/site.js`.
   `tsc` does not copy non-TS files, which is why the assets aren't under `src/`.
 
+## Trigger details before 2026-09-13 are incomplete, and can't be backfilled
+
+`RevisitEntry.condition` and `RevisitEntry.volume` are recorded by the engine
+at trigger time and are optional on purpose. Every entry written before they
+existed lacks them, and the information is gone: the engine never saved the
+volume it measured, and a removed alert (like MTD's `d297c287`) takes its
+condition with it. `buildDashboard` falls back to the alert's *current*
+settings and marks `conditionSource: "current"`. The page must keep saying so.
+Never present current settings as what the alert was when it fired.
+
+Moving levels on alert rows (trailing triggers, MA averages) live in
+`movingLevel`, not `level`, precisely so `VOLATILE_KEYS` can exclude them from
+the publish fingerprint. Put a trailing trigger in `level` and every check
+republishes.
+
 ## Moving-average alerts are evaluated over a price path, not a price
 
 `src/alerts/maEngine.ts` replays the 1-minute bars since `lastEvaluatedAt`, plus

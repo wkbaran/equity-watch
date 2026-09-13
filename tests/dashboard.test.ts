@@ -87,17 +87,37 @@ function base(overrides: Partial<Parameters<typeof buildDashboard>[0]> = {}) {
 }
 
 describe("recentTriggers", () => {
-  it("lists every trigger in the window newest first, whatever its status", () => {
+  it("lists every trigger in the window whatever its status, plus older open ones, newest first", () => {
     const d = base({
       revisits: [
-        revisit({ id: "old", triggeredAt: "2026-09-01T12:00:00.000Z" }),
+        revisit({ id: "oldOpen", triggeredAt: "2026-09-01T12:00:00.000Z" }),
+        revisit({ id: "oldDismissed", triggeredAt: "2026-09-01T13:00:00.000Z", status: "dismissed" }),
         revisit({ id: "mid", triggeredAt: "2026-09-10T12:00:00.000Z", status: "dismissed" }),
         revisit({ id: "new", triggeredAt: "2026-09-11T12:00:00.000Z", status: "applied" }),
       ],
     });
-    // The queue only holds open entries; this list is what a poller diffs for news.
-    expect(d.recentTriggers.map((t) => t.id)).toEqual(["new", "mid"]);
+    // The queue only holds open entries; this list is what a poller diffs for
+    // news, and every queue row must be able to open its details from it.
+    expect(d.recentTriggers.map((t) => t.id)).toEqual(["new", "mid", "oldOpen"]);
     expect(d.recentTriggers[0].headline).toContain("AAPL");
+  });
+
+  it("carries trigger details, preferring what was recorded at trigger time", () => {
+    const recorded = revisit({
+      id: "rec",
+      condition: "volume >= 1000 today",
+      volume: { observed: 1500, required: 1000, window: "today", basis: "threshold" },
+    });
+    const fallback = revisit({ id: "cur", triggeredAt: "2026-09-11T12:00:00.000Z" });
+    const orphan = revisit({ id: "gone", alertId: "removed", triggeredAt: "2026-09-11T13:00:00.000Z" });
+    const d = base({ alerts: [staticAlert()], revisits: [recorded, fallback, orphan] });
+    const byId = Object.fromEntries(d.recentTriggers.map((t) => [t.id, t]));
+
+    expect(byId.rec).toMatchObject({ condition: "volume >= 1000 today", conditionSource: "recorded", alertExists: true, volume: { observed: 1500 } });
+    // Older entries fall back to the alert as it is now, and say so.
+    expect(byId.cur).toMatchObject({ condition: "price crosses 110", conditionSource: "current", volume: null });
+    // Nothing recorded and nothing to fall back on: null, not a guess.
+    expect(byId.gone).toMatchObject({ condition: null, conditionSource: null, alertExists: false, alertId: "removed" });
   });
 
   it("drops ignored symbols", () => {

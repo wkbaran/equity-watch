@@ -21,6 +21,7 @@ import {
 import { baselineKey, computeBaseline } from "./alerts/volumeBaseline.js";
 import { effectiveTrigger, type MaAlert, type MaApproach, type VolumeCondition, type VolumePeriodUnit } from "./alerts/models.js";
 import { DEFAULT_TOUCH_MARGIN_PCT, describeMaAlert, type DailyHistoryResolver } from "./alerts/maEngine.js";
+import { describeVolumeCondition } from "./alerts/describe.js";
 import { parseMaSpec, type MaSpec } from "./indicators/movingAverage.js";
 import { ConsoleNotifier } from "./alerts/notify.js";
 import { writeAlertTriggerReport } from "./alerts/report.js";
@@ -53,7 +54,8 @@ import {
 import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
 import { buildDashboard, renderDashboard } from "./dashboard.js";
 import { publishSite } from "./web/publish.js";
-import { dashboardFingerprint, shouldPublish, siteDocument, writeSite, type PublishState } from "./web/site.js";
+import { buildAlertRows } from "./web/alertsPage.js";
+import { shouldPublish, siteDocument, siteFingerprint, writeSite, type PublishState } from "./web/site.js";
 import {
   EXTENDED_SESSIONS,
   REGULAR_SESSIONS,
@@ -555,8 +557,7 @@ interface AlertAddOpts extends AlertCommonOpts {
 }
 
 function formatVolumeCondition(v: VolumeCondition): string {
-  const amount = v.threshold !== undefined ? String(v.threshold) : `${v.ratio}x normal`;
-  return v.mode === "today" ? `volume >= ${amount} today` : `volume >= ${amount} in last ${v.periodValue}${v.periodUnit}`;
+  return describeVolumeCondition(v);
 }
 
 /** Builds the optional VolumeCondition shared by static/trailing/volume alert creation. Exits on bad input. */
@@ -1677,7 +1678,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   // quote-less build: a run with nothing new exits here without spending a
   // single quote request, which is what makes a tight cron interval affordable.
   if (opts.publish && opts.skipUnchanged) {
-    const decision = shouldPublish(loadPublishState(), dashboardFingerprint(siteDocument(build(new Map()), siteOptions)), new Date(), opts.maxStaleMinutes);
+    const decision = shouldPublish(loadPublishState(), siteFingerprint(siteDocument(build(new Map()), siteOptions), buildAlertRows(alerts, new Map(), ignored)), new Date(), opts.maxStaleMinutes);
     if (!decision.publish) {
       console.log(`Skipped publish: ${decision.reason}.`);
       return;
@@ -1717,8 +1718,9 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   // Fingerprint what is actually published, so holdings changes don't trigger
   // a publish while the holdings section is off.
   const siteDashboard = siteDocument(dashboard, siteOptions);
+  const alertRows = buildAlertRows(alerts, quotes, ignored);
   if (siteDir !== undefined) {
-    writeSite(siteDir, dashboard, siteOptions);
+    writeSite(siteDir, dashboard, siteOptions, alertRows);
     console.log(`Wrote site to ${siteDir}/${siteOptions.holdings ? "" : " (holdings excluded; set web.holdings in the config to include)"}`);
   }
 
@@ -1726,7 +1728,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     const plan = await publishSite({ localDir: siteDir });
     console.log(`Published: ${plan.upload.length} uploaded, ${plan.remove.length} deleted, ${plan.unchanged} unchanged.`);
     mkdirSync(dirname(PUBLISH_STATE_PATH), { recursive: true });
-    const state: PublishState = { fingerprint: dashboardFingerprint(siteDashboard), publishedAt: siteDashboard.generatedAt };
+    const state: PublishState = { fingerprint: siteFingerprint(siteDashboard, alertRows), publishedAt: siteDashboard.generatedAt };
     writeFileSync(PUBLISH_STATE_PATH, JSON.stringify(state, null, 2));
   }
 }

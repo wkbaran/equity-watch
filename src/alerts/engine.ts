@@ -16,7 +16,7 @@ import type { MaTimeframe, MaType } from "../indicators/movingAverage.js";
 import type { Session } from "../marketHours.js";
 import { checkMaAlerts, type DailyHistoryResolver } from "./maEngine.js";
 import type { Notifier } from "./notify.js";
-import { newRevisitEntry, type RevisitEntry } from "./revisit.js";
+import { newRevisitEntry, type RevisitEntry, type RevisitVolume } from "./revisit.js";
 import { requiredVolume } from "./volumeBaseline.js";
 import { loadAlerts, saveAlerts } from "./store.js";
 
@@ -56,18 +56,30 @@ async function volumeSatisfied(
   todaySoFar: number,
   market: MarketData,
   resolveBaseline: BaselineResolver
-): Promise<boolean> {
+): Promise<{ satisfied: boolean; observation: RevisitVolume | null }> {
   const needsBaseline = condition.threshold === undefined;
   const baseline = needsBaseline ? await resolveBaseline(symbol, condition) : null;
   const required = requiredVolume(condition, baseline);
   if (required === null) {
     // No usable threshold - a ratio with no baseline to scale. Treat as
     // unsatisfied rather than letting any volume qualify.
-    return false;
+    return { satisfied: false, observation: null };
   }
 
+  // Returned alongside the verdict so a trigger can record what it actually
+  // saw ("1.5M shares today vs 1M required"), not just that it fired.
+  const observe = (observed: number) => ({
+    satisfied: observed >= required,
+    observation: {
+      observed,
+      required: Math.round(required),
+      window: condition.mode === "today" ? "today" : `${condition.periodValue}${condition.periodUnit}`,
+      basis: needsBaseline ? ("ratio" as const) : ("threshold" as const),
+    },
+  });
+
   if (condition.mode === "today") {
-    return todaySoFar >= required;
+    return observe(todaySoFar);
   }
 
   const windowMs = periodMs(condition);
@@ -75,14 +87,14 @@ async function volumeSatisfied(
 
   if (condition.periodUnit === "d") {
     const bars = await market.getDailyBars(symbol, new Date(windowStart), new Date());
-    return bars.reduce((sum, b) => sum + b.volume, 0) >= required;
+    return observe(bars.reduce((sum, b) => sum + b.volume, 0));
   }
 
   // Sub-day periods: Schwab's REST history floors out at 1-minute bars, so
   // fetch enough trailing days to cover the window and filter client-side.
   const daysBack = Math.min(10, Math.max(2, Math.ceil(windowMs / PERIOD_UNIT_MS.d) + 1));
   const bars = await market.getIntradayBars(symbol, daysBack);
-  return bars.filter((b) => b.date.getTime() >= windowStart).reduce((sum, b) => sum + b.volume, 0) >= required;
+  return observe(bars.filter((b) => b.date.getTime() >= windowStart).reduce((sum, b) => sum + b.volume, 0));
 }
 
 /**
@@ -169,11 +181,11 @@ export async function checkAlerts(
     }
 
     const condition = alert.kind === "volume" ? alert.volume : alert.volumeCondition;
-    const volumeOk = condition
+    const volumeCheck = condition
       ? await volumeSatisfied(condition, alert.symbol, quote.totalVolume, market, resolveBaseline)
-      : true;
+      : null;
 
-    if (!volumeOk) {
+    if (volumeCheck !== null && !volumeCheck.satisfied) {
       // Price condition met but volume hasn't caught up yet. For static
       // alerts specifically, deliberately leave lastKnownSide stale so this
       // stays "pending" across checks until volume qualifies OR price fully
@@ -186,7 +198,9 @@ export async function checkAlerts(
     // record what the alert looked like when it fired rather than what it
     // looks like after being set up to watch again.
     const snapshot = { ...alert, triggerSnapshot: null } as Alert;
-    revisits.push(newRevisitEntry(snapshot, currentPrice, now, session));
+    revisits.push(
+      newRevisitEntry(snapshot, currentPrice, now, session, { volume: volumeCheck?.observation ?? undefined })
+    );
 
     alert.triggerSnapshot = snapshot;
     alert.triggerCount += 1;

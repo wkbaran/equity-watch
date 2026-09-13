@@ -667,6 +667,34 @@ Revisit rows carry **copy-command buttons** (`alert revisit apply <id>`,
 `dismiss <id>`). The site is static and can't write to your stores; this is the
 zero-infrastructure bridge until it can.
 
+**Views.** The header switches between **Overview** and **Alerts** (`#/alerts`).
+Both are routes in the same page, so polling and notifications keep running on
+either one.
+
+- **Alerts** lists every live, checked alert from its own `alerts.json`, fetched
+  only while that view is open, so the every-minute poll of `dashboard.json`
+  stays small. Each row shows the condition in words, its level, the current
+  price and distance from the level, how often it has fired, and when. You can
+  search, filter by kind, and sort (symbol, closest to level, most triggered,
+  recently fired, newest). A trailing trigger or moving average shows as
+  "moving". Click a row for its details and recent triggers.
+- **Trigger details** (`#/trigger/<id>`) open from any recent trigger, queue
+  row, toast, or notification. They show:
+  - when it fired, its status, and the alert's condition at that moment
+  - price vs. level
+  - for volume conditions, the volume it saw against what was required
+  - the breakout verdict, volume signals, and priority breakdown
+  - any suggested level, and a link to the alert
+
+  The condition and observed volume are **recorded at trigger time**, so they
+  stay true after the alert is edited or removed. Triggers recorded before that
+  existed fall back to the alert's current settings, labelled as such, or say
+  "not recorded" when the alert is gone. Older volume triggers have no
+  observed-volume figure at all.
+
+Recent triggers now also include open entries older than the window, so every
+revisit-queue row has details to open.
+
 **Holdings and login are both off by default**, and they go together. The site is
 public, so `dashboard.json` is readable by anyone with the URL. With holdings off,
 the holdings rows (share counts, basis, market value, stops) are removed from the
