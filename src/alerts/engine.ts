@@ -18,6 +18,7 @@ import { checkMaAlerts, type DailyHistoryResolver } from "./maEngine.js";
 import type { Notifier } from "./notify.js";
 import { newRevisitEntry, type RevisitEntry, type RevisitVolume } from "./revisit.js";
 import { requiredVolume } from "./volumeBaseline.js";
+import { nextMarketMidnight } from "../timezone.js";
 import { loadAlerts, saveAlerts } from "./store.js";
 
 export interface MarketData {
@@ -106,10 +107,10 @@ async function volumeSatisfied(
  */
 function muteUntilFor(condition: VolumeCondition, now: Date): string {
   if (condition.mode === "today") {
-    const tomorrow = new Date(now);
-    tomorrow.setUTCHours(0, 0, 0, 0);
-    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-    return tomorrow.toISOString();
+    // The trading day's volume keeps accumulating through after-hours, so the
+    // mute must last until the exchange's midnight. UTC midnight is 19:00
+    // Eastern in winter, which would re-fire the same day's alert in post-market.
+    return nextMarketMidnight(now).toISOString();
   }
   return new Date(now.getTime() + periodMs(condition)).toISOString();
 }

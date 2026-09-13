@@ -24,8 +24,11 @@ Differences that matter beyond the column names:
 - **No `Alert ID`** in the newer exports. `history.ts` upserts by alert id,
   so anything importing these needs a synthesized stable key (symbol +
   level + timestamp) or it will duplicate across runs.
-- **Split date/time** (`Alert Date` + `Alert Time`) in local exchange time,
-  versus a single ISO-8601 UTC `Time` column in the older export.
+- **Split date/time** (`Alert Date` + `Alert Time`) in **Mountain time**
+  (`America/Denver`, the TradingView account's display zone), versus a single
+  ISO-8601 UTC `Time` column in the older export. This note used to say "local
+  exchange time", and `seed.ts` used to parse these as UTC. Both were wrong. See
+  "Three time zones" below for the evidence.
 - **No exchange prefix** on `Symbol` (`AAPL`, not `BATS:AAPL`), though the
   `SYMBOL, TIMEFRAME` form (`"CDRE, 1D"`) still appears. `splitTicker`'s
   regex already tolerates both.
@@ -34,6 +37,28 @@ Differences that matter beyond the column names:
   of alerts that fired (alert events). Every model in this project assumes
   events. `Last Triggered` is blank for alerts that have never fired, and
   is formatted `Mon 27 Jul '26 07:30:12` — not ISO.
+
+## Three time zones, never interchangeable
+
+`src/timezone.ts` explains the rule. In short:
+
+- **Market logic uses `America/New_York` explicitly:** trading dates, session
+  checks, intraday bar buckets, time-of-day volume baselines, the end of a
+  "today" window. Never UTC dates (`toISOString().slice(0, 10)`) and never the
+  machine's zone. UTC midnight falls during after-hours trading (19:00 or 20:00
+  Eastern), and a UTC clock time shifts by an hour at every DST change.
+- **TradingView exports are in `America/Denver`** (`TRADINGVIEW_EXPORT_TIME_ZONE`
+  in `seed.ts`). Verified 2026-09-13: half the alert log sits in the 07:00 hour,
+  59 rows at exactly 7:30 (the 9:30 Eastern open), and Schwab minute bars show
+  the logged crossings at 13:30 UTC, with no bars at all at 07:30 UTC.
+- **The machine's zone** (Mountain with DST, both in WSL and on Windows) is only
+  for what a person reads locally: terminal output, report file names, "today"
+  as a default input.
+
+Daily bars are stamped at the **start** of the trading day (Eastern midnight),
+so compare them to an intraday instant by trading date, not by timestamp.
+`closeOnOrAfter` compared timestamps and returned the next day's close for any
+intraday time.
 
 ## `classifyDescription` handles shapes the old regexes dropped
 

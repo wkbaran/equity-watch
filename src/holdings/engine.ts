@@ -3,6 +3,7 @@ import type { MarketData } from "../alerts/engine.js";
 import { computeBasis, type HoldingAlertState, type HoldingsStore, type Lot, type Stop } from "./models.js";
 import { loadHoldingsStore, saveHoldingsStore } from "./store.js";
 import type { HoldingsNotifier } from "./notify.js";
+import { localDateString } from "../timezone.js";
 
 const ABOVE_BASIS_THRESHOLD_PCT = 10;
 const STAGNANT_MIN_DAYS = 30;
@@ -101,7 +102,8 @@ export function addLot(
     symbol: input.symbol,
     count: input.count,
     basisPerShare: input.basisPerShare,
-    purchaseDate: input.purchaseDate ?? new Date().toISOString().slice(0, 10),
+    // Local calendar date, the "today" a person means when omitting it.
+    purchaseDate: input.purchaseDate ?? localDateString(),
     createdAt: new Date().toISOString(),
   };
   store.lots.push(lot);

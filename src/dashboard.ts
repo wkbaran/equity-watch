@@ -435,7 +435,17 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
 export function renderDashboard(d: Dashboard): string {
   const lines: string[] = [];
   const s = d.summary;
-  lines.push(`Dashboard — ${d.generatedAt.slice(0, 16).replace("T", " ")}`);
+  // The machine's local time with its zone named: a bare UTC timestamp read as
+  // local time is off by six or seven hours in Mountain time.
+  const generated = new Date(d.generatedAt).toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+  lines.push(`Dashboard — ${generated}`);
   lines.push("=".repeat(72));
   lines.push(
     `${s.liveAlerts} live alert(s) across ${s.symbolsWatched} symbol(s) · ` +

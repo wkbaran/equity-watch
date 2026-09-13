@@ -22,7 +22,9 @@
  *            lunchtime look dead.
  */
 
+import { marketDate } from "../marketHours.js";
 import type { PriceBar } from "../models.js";
+import { marketMinuteOfDay } from "../timezone.js";
 import type { VolumeCondition } from "./models.js";
 
 /** Trading days of history used for a daily baseline. Matches AnalysisParams.baselineDays. */
@@ -75,21 +77,25 @@ export function rollingWindowBaseline(bars: PriceBar[], days: number): number {
  * Average volume in a window of `windowMs` ending at the same clock time as
  * `now`, across the sessions covered by `bars`.
  *
- * Grouping by calendar date keeps each session's window separate, so the
+ * Grouping by trading date keeps each session's window separate, so the
  * result reflects "how much normally trades at this time of day" rather than
  * a flat hourly average that ignores the open/close humps.
+ *
+ * Clock time and date are both taken on the exchange's clock. In UTC the
+ * session moves by an hour at every DST change, so a UTC time-of-day match
+ * compares each session before the change against the wrong hour.
  */
 export function intradayBaseline(bars: PriceBar[], windowMs: number, now: Date): number {
   if (bars.length === 0) {
     return 0;
   }
-  const endMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const endMinutes = marketMinuteOfDay(now);
   const windowMinutes = windowMs / 60_000;
 
   const perSession = new Map<string, number>();
   for (const bar of bars) {
-    const day = bar.date.toISOString().slice(0, 10);
-    const minutes = bar.date.getUTCHours() * 60 + bar.date.getUTCMinutes();
+    const day = marketDate(bar.date);
+    const minutes = marketMinuteOfDay(bar.date);
     if (minutes > endMinutes || minutes <= endMinutes - windowMinutes) {
       continue;
     }
@@ -97,7 +103,7 @@ export function intradayBaseline(bars: PriceBar[], windowMs: number, now: Date):
   }
 
   // Drop today's own partial accumulation - it is the thing being measured.
-  const today = now.toISOString().slice(0, 10);
+  const today = marketDate(now);
   perSession.delete(today);
 
   return mean([...perSession.values()]);

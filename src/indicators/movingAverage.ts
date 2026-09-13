@@ -19,6 +19,7 @@
 
 import type { PriceBar } from "../models.js";
 import { marketDate } from "../marketHours.js";
+import { marketMinuteOfDay } from "../timezone.js";
 
 export type MaType = "sma" | "ema";
 export type MaTimeframe = "1m" | "2m" | "5m" | "15m" | "1D" | "1W";
@@ -98,26 +99,6 @@ export function movingAverage(maType: MaType, values: number[], period: number):
   return maType === "sma" ? sma(values, period) : ema(values, period);
 }
 
-const ET_CLOCK = new Intl.DateTimeFormat("en-US", {
-  timeZone: "America/New_York",
-  hour: "2-digit",
-  minute: "2-digit",
-  hourCycle: "h23",
-});
-
-function minuteOfDayET(date: Date): number {
-  let hour = 0;
-  let minute = 0;
-  for (const part of ET_CLOCK.formatToParts(date)) {
-    if (part.type === "hour") {
-      hour = Number(part.value) % 24;
-    } else if (part.type === "minute") {
-      minute = Number(part.value);
-    }
-  }
-  return hour * 60 + minute;
-}
-
 /**
  * Which bar of `timeframe` an instant falls in, as a string that sorts in
  * time order. Bucketed by the exchange's clock, not UTC: a daily candle
@@ -129,7 +110,7 @@ export function bucketKey(date: Date, timeframe: MaTimeframe): string {
   const day = marketDate(date);
   const minutes = intradayMinutes(timeframe);
   if (minutes !== null) {
-    const start = Math.floor(minuteOfDayET(date) / minutes) * minutes;
+    const start = Math.floor(marketMinuteOfDay(date) / minutes) * minutes;
     return `${day}T${String(start).padStart(4, "0")}`;
   }
   if (timeframe === "1D") {

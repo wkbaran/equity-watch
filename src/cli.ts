@@ -53,6 +53,7 @@ import {
 } from "./holdings/import.js";
 import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
 import { buildDashboard, renderDashboard } from "./dashboard.js";
+import { localDateString } from "./timezone.js";
 import { publishSite } from "./web/publish.js";
 import { buildAlertRows } from "./web/alertsPage.js";
 import { shouldPublish, siteDocument, siteFingerprint, writeSite, type PublishState } from "./web/site.js";
@@ -1565,7 +1566,9 @@ function cmdHoldingsImport(opts: HoldingsImportOpts): void {
   const plan = mergeImportPlans(plans);
 
   // The export has no purchase date, and the stagnant alert keys off it.
-  const purchaseDate = opts.purchaseDate ?? new Date().toISOString().slice(0, 10);
+  // Local calendar date: an import run on a Mountain-time evening is still
+  // "today" there, even though it's already tomorrow in UTC.
+  const purchaseDate = opts.purchaseDate ?? localDateString();
   const store = loadHoldingsStore(opts.holdingsFile);
   if (opts.replace) {
     store.lots = [];
@@ -1641,8 +1644,8 @@ interface DashboardOpts extends AlertCommonOpts {
 }
 
 function defaultDashboardPath(now: Date): string {
-  const stamp = now.toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
-  return join("reports", `dashboard_${stamp}.json`);
+  // Local time, like every other report file name here.
+  return join("reports", `dashboard_${timestampSuffix(now)}.json`);
 }
 
 const PUBLISH_STATE_PATH = join(".cache", "web_publish.json");

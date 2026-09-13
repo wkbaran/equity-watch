@@ -61,7 +61,8 @@ describe("classifyDescription - shapes the TradingView exports actually contain"
 
 describe("seed helpers", () => {
   it("parses the alert-list export's own timestamp format", () => {
-    expect(parseLastTriggered("Mon 27 Jul '26 07:30:12")).toBe("2026-07-27T07:30:12.000Z");
+    // Mountain time, as TradingView exported it: 07:30 MDT is 13:30Z (see tests/timezone.test.ts).
+    expect(parseLastTriggered("Mon 27 Jul '26 07:30:12")).toBe("2026-07-27T13:30:12.000Z");
     expect(parseLastTriggered("")).toBeNull();
     expect(parseLastTriggered("2026-07-27T07:30:12Z")).toBeNull(); // ISO is the *other* export
   });

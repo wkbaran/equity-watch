@@ -735,7 +735,9 @@ change, a new suggestion, a holdings change) or when the published prices are
 older than `--max-stale-minutes` (default 30). It decides *before* fetching
 quotes, so a quiet run costs no API calls. Last-publish state lives in
 `.cache/web_publish.json`. `scripts/check-and-publish.sh` pairs it with
-`alert check` for cron:
+`alert check`. On Windows, schedule `scripts\check-and-publish.ps1` with Task
+Scheduler instead; `SCHEDULING.md` has the setup and the reasoning. For cron
+under WSL:
 
 ```
 */2 * * * 1-5 /path/to/repo/scripts/check-and-publish.sh >> /path/to/repo/logs/cron.log 2>&1

@@ -25,6 +25,16 @@ import { readFileSync } from "node:fs";
 import { parse as parseCsv } from "csv-parse/sync";
 import { classifyDescription } from "../parse.js";
 import type { VolumeCondition } from "./models.js";
+import { marketDate } from "../marketHours.js";
+import { zonedTimeToUtc } from "../timezone.js";
+
+/**
+ * The zone both exports' timestamps are written in: the TradingView account's
+ * display zone, Mountain time. Not UTC and not the exchange's zone. The alert
+ * log clusters at 07:30 (the 09:30 Eastern open), and Schwab minute bars show
+ * the logged crossings at 13:30 UTC with no bars at all at 07:30 UTC.
+ */
+export const TRADINGVIEW_EXPORT_TIME_ZONE = "America/Denver";
 
 export interface SeedCandidate {
   symbol: string;
@@ -87,7 +97,33 @@ export function parseLastTriggered(raw: string): string | null {
   if (monthIndex === undefined) {
     return null;
   }
-  return new Date(Date.UTC(2000 + Number(year), monthIndex, Number(day), Number(hh), Number(mm), Number(ss))).toISOString();
+  return zonedTimeToUtc(
+    2000 + Number(year),
+    monthIndex + 1,
+    Number(day),
+    Number(hh),
+    Number(mm),
+    Number(ss),
+    TRADINGVIEW_EXPORT_TIME_ZONE
+  ).toISOString();
+}
+
+/** The alert log's "2026-09-02" + "7:30:02", in the export's zone. Null if either part is malformed. */
+function parseLogDateTime(date: string, time: string): Date | null {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  const t = /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(time);
+  if (d === null || t === null) {
+    return null;
+  }
+  return zonedTimeToUtc(
+    Number(d[1]),
+    Number(d[2]),
+    Number(d[3]),
+    Number(t[1]),
+    Number(t[2]),
+    Number(t[3]),
+    TRADINGVIEW_EXPORT_TIME_ZONE
+  );
 }
 
 /** Strips the ", 1D" chart-timeframe suffix TradingView appends to the Symbol column. */
@@ -144,7 +180,7 @@ function readLogRows(path: string): RawRow[] {
   return records.map((r) => {
     const date = (r["Alert Date"] ?? "").trim();
     const time = (r["Alert Time"] ?? "").trim();
-    const parsed = date ? new Date(`${date}T${time.padStart(8, "0")}Z`) : null;
+    const parsed = parseLogDateTime(date, time);
     return {
       symbol: (r["Symbol"] ?? "").trim(),
       description: (r["Description"] ?? "").trim(),
@@ -330,16 +366,20 @@ export function resolveLevel(candidate: SeedCandidate, lastClose: number): Resol
 }
 
 /**
- * The close on (or the first session after) a past date, from bars already
- * fetched for re-levelling. Returns null when the date predates the fetched
- * window, in which case the narrative states the date without claiming a
- * percentage it can't support.
+ * The close of the trading day `iso` falls on (or the first session after, if
+ * that day has no bar), from bars already fetched for re-levelling. Returns
+ * null when no bar is that late, in which case the narrative states the date
+ * without claiming a percentage it can't support.
+ *
+ * Compared by trading date, not timestamp: daily bars are stamped at the
+ * start of the day (Eastern midnight), so every intraday instant is later
+ * than its own day's bar and a timestamp comparison lands on the next day.
  */
 export function closeOnOrAfter(bars: { date: Date; close: number }[], iso: string): number | null {
-  const target = new Date(iso).getTime();
+  const targetDay = marketDate(new Date(iso));
   let best: { date: Date; close: number } | null = null;
   for (const bar of bars) {
-    if (bar.date.getTime() >= target && (best === null || bar.date.getTime() < best.date.getTime())) {
+    if (marketDate(bar.date) >= targetDay && (best === null || bar.date.getTime() < best.date.getTime())) {
       best = bar;
     }
   }
