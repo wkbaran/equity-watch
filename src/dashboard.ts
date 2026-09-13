@@ -222,6 +222,12 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
     }
     const price = quote.lastPrice;
 
+    // A moving-average alert's level is recomputed from bars at check time;
+    // the dashboard has no bars, and a stale lastLevel would misstate distance.
+    if (alert.kind === "ma") {
+      continue;
+    }
+
     // Volume-only alerts have no price distance to report, but they are still
     // live and worth showing, so they carry a null distance rather than being
     // dropped from the picture entirely.

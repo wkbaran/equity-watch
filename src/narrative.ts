@@ -20,6 +20,7 @@
  */
 
 import type { RevisitEntry } from "./alerts/revisit.js";
+import { maLabel } from "./indicators/movingAverage.js";
 import { describeSession, type Session } from "./marketHours.js";
 
 export interface NarrativeContext {
@@ -82,6 +83,24 @@ export function triggerHeadline(entry: RevisitEntry, ctx: NarrativeContext): str
     return `${subject} traded unusual volume`;
   }
 
+  const session = entry.session ?? null;
+  const sessionSuffix = session !== null && session !== "regular" ? `, in ${describeSession(session)}` : "";
+
+  // Moving-average triggers say exactly what was recorded - which average and
+  // whether price crossed or touched it - and nothing about breakout quality,
+  // which was never judged for them.
+  if (entry.ma !== undefined) {
+    const label = maLabel(entry.ma);
+    const from = entry.ma.approachedFrom === null ? "" : ` from ${entry.ma.approachedFrom}`;
+    const phrase =
+      entry.ma.event === "touch"
+        ? `touched its ${label}${from}`
+        : entry.ma.event === "cross_up"
+          ? `crossed above its ${label}`
+          : `crossed below its ${label}`;
+    return `${subject} ${phrase}${sessionSuffix}`;
+  }
+
   const parts = [`${subject} ${movePhrase(entry)}`];
 
   const move = entry.signals?.pctMovePastLevel ?? null;
@@ -89,12 +108,7 @@ export function triggerHeadline(entry: RevisitEntry, ctx: NarrativeContext): str
     parts.push(move >= 0 ? `now ${pct(move)} above it` : `now ${pct(move)} below it`);
   }
 
-  const session = entry.session ?? null;
-  if (session !== null && session !== "regular") {
-    parts.push(`in ${describeSession(session)}`);
-  }
-
-  return parts.join(", ");
+  return parts.join(", ") + sessionSuffix;
 }
 
 /** A watch this long with this little movement is worth mentioning as dead weight. */

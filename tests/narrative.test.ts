@@ -43,6 +43,36 @@ function withSignals(overrides: Partial<RevisitEntry>, signalInputs: Parameters<
   return entry({ ...overrides, priority, signals });
 }
 
+describe("triggerHeadline for moving-average triggers", () => {
+  const ma = (overrides: Partial<NonNullable<RevisitEntry["ma"]>>) =>
+    entry({
+      kind: "ma",
+      levelAtTrigger: 200.5,
+      triggerPrice: 201,
+      ma: { maType: "sma", period: 200, timeframe: "1W", event: "cross_up", approachedFrom: "below", ...overrides },
+    });
+
+  it("names the average and what price did against it", () => {
+    expect(triggerHeadline(ma({}), NONE)).toBe("TGT crossed above its 200-week SMA");
+    expect(triggerHeadline(ma({ event: "cross_down", approachedFrom: "above" }), NONE)).toBe(
+      "TGT crossed below its 200-week SMA"
+    );
+  });
+
+  it("says which side a touch came from, and keeps the held and session qualifiers", () => {
+    const touch = { ...ma({ maType: "ema", period: 9, timeframe: "5m", event: "touch", approachedFrom: "above" }), symbol: "MKS", session: "pre" as const };
+    expect(triggerHeadline(touch, HELD)).toBe("Holding MKS touched its 9-bar EMA on 5-minute bars from above, in pre-market");
+  });
+
+  it("never borrows breakout language, whatever the verdict says", () => {
+    const scored = withSignals(
+      { kind: "ma", ma: { maType: "sma", period: 20, timeframe: "1D", event: "cross_up", approachedFrom: "below" } },
+      { verdict: "CONFIRMED_BREAKOUT", pctMovePastLevel: 4, daysOpen: 0, heldPosition: false, volumeRatio: 3, volumeTrendRatio: 2 }
+    );
+    expect(triggerHeadline(scored, NONE)).toBe("TGT crossed above its 20-day SMA");
+  });
+});
+
 describe("triggerHeadline", () => {
   it("says what the user asked for: broke resistance with volume", () => {
     const e = withSignals({}, {

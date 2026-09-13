@@ -18,7 +18,16 @@
 
 import { randomUUID } from "node:crypto";
 import type { Session } from "../marketHours.js";
-import type { Alert } from "./models.js";
+import type { MaTimeframe, MaType } from "../indicators/movingAverage.js";
+import type { Alert, AlertSide, MaEvent } from "./models.js";
+
+export interface RevisitMa {
+  maType: MaType;
+  period: number;
+  timeframe: MaTimeframe;
+  event: MaEvent;
+  approachedFrom: AlertSide | null;
+}
 
 export type RevisitStatus = "open" | "applied" | "dismissed";
 
@@ -78,6 +87,12 @@ export interface RevisitEntry {
   /** 0-100. Null until a scoring pass has run. */
   priority: number | null;
   signals: RevisitSignals | null;
+  /**
+   * Set on moving-average triggers: which average, and what price did against
+   * it. `levelAtTrigger` holds the average's value at that moment. Optional so
+   * entries written before moving averages existed stay valid.
+   */
+  ma?: RevisitMa;
 }
 
 export interface RevisitWeights {
@@ -232,7 +247,25 @@ export function newRevisitEntry(
     kind: alert.kind,
     triggeredAt: at,
     triggerPrice,
-    levelAtTrigger: alert.kind === "static" ? alert.level : alert.kind === "trailing" ? alert.near : null,
+    levelAtTrigger:
+      alert.kind === "static"
+        ? alert.level
+        : alert.kind === "trailing"
+          ? alert.near
+          : alert.kind === "ma"
+            ? alert.lastLevel
+            : null,
+    ...(alert.kind === "ma" && alert.lastEvent !== null
+      ? {
+          ma: {
+            maType: alert.maType,
+            period: alert.period,
+            timeframe: alert.timeframe,
+            event: alert.lastEvent,
+            approachedFrom: alert.lastApproachedFrom,
+          },
+        }
+      : {}),
     session,
     watchingSince: alert.watchingSince ?? null,
     watchingSinceApprox: alert.watchingSinceApprox ?? false,

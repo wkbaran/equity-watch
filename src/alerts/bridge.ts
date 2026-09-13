@@ -13,6 +13,11 @@
  * breakout against. For trailing entries the observed triggerPrice is used
  * as the level, since a trailing alert has no fixed target the way a static
  * one does.
+ *
+ * Moving-average crosses bridge with the average's value at the cross as the
+ * level: "did it close past the 200-day and hold" is the same question as for
+ * a static level. Touches are skipped - price met the average without
+ * crossing it, so there's no breakout to confirm.
  */
 
 import type { Alert } from "../models.js";
@@ -21,10 +26,10 @@ import type { RevisitEntry } from "./revisit.js";
 export function revisitsToBreakoutAlerts(entries: RevisitEntry[]): Alert[] {
   const result: Alert[] = [];
   for (const entry of entries) {
-    if (entry.kind === "volume") {
+    if (entry.kind === "volume" || (entry.kind === "ma" && entry.ma?.event === "touch")) {
       continue;
     }
-    const level = entry.kind === "static" ? entry.levelAtTrigger : entry.triggerPrice;
+    const level = entry.kind === "static" || entry.kind === "ma" ? entry.levelAtTrigger : entry.triggerPrice;
     if (level === null) {
       continue;
     }

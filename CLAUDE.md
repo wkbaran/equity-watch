@@ -129,6 +129,34 @@ Two more things that look wrong and aren't:
   which is correct from both `src/web/site.ts` (tsx) and `dist/web/site.js`.
   `tsc` does not copy non-TS files, which is why the assets aren't under `src/`.
 
+## Moving-average alerts are evaluated over a price path, not a price
+
+`src/alerts/maEngine.ts` replays the 1-minute bars since `lastEvaluatedAt`, plus
+the live quote, on every check. It is tempting to "simplify" this to comparing
+the live quote against the average, like a static alert. Don't. The user
+explicitly asked for evaluation independent of poll timing: a cross that
+reverses between polls must fire, and a 1-minute average must work under a
+2-minute poll. Both break with snapshot comparison.
+
+Things that look like bugs and aren't:
+
+- **The level excludes the forming bar** (`levelAt` in
+  `src/indicators/movingAverage.ts`). Including it makes the average chase
+  the price it's compared against.
+- **Crosses use closes, touches use high/low.** A wick through the average is
+  a touch, not a cross.
+- **Bucketing is by the exchange clock** (`America/New_York`). Schwab stamps
+  daily candles at Eastern midnight, which is the previous day's evening in
+  some UTC readings. Never bucket by `toISOString().slice(0, 10)`.
+- **Schwab's `periodType=day` only accepts `period` 1-5 or 10.** Confirmed
+  2026-09-13: `period=6` returns HTTP 400 ("When periodType=day valid val…"),
+  `period=5` works. `schwabIntradayPeriod` snaps to the valid values. The
+  pre-existing volume-period code in `engine.ts` (`volumeSatisfied`) does
+  **not** snap: it computes `daysBack = ceil(window / 1 day) + 1`, so a volume
+  window given in hours or minutes that spans more than 4 days (e.g.
+  `--volume-period 120h`) requests 6-9 and fails on every check. Not fixed as of
+  this note.
+
 ## A zero volume baseline must mean "cannot evaluate", never "no threshold"
 
 `requiredVolume` returns `null` for a ratio condition with a zero or missing

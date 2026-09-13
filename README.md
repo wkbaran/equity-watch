@@ -279,6 +279,54 @@ node dist/cli.js alert check            # one pass against live Schwab quotes;
                                          # at this every ~15 min
 ```
 
+### Moving-average alerts
+
+Fire when price **crosses** a simple or exponential moving average, or
+**touches** it within a small margin, on 1/2/5/15-minute, daily, or weekly bars:
+
+```bash
+node dist/cli.js alert add --symbol AAPL --ma sma200@1W                    # any cross of the 200-week SMA
+node dist/cli.js alert add --symbol AAPL --ma sma20@1D --direction up      # only upward crosses of the 20-day
+node dist/cli.js alert add --symbol AAPL --ma ema9@5m --touch              # within 0.25% of the 9-bar EMA on 5-minute bars
+node dist/cli.js alert add --symbol AAPL --ma sma9@1D --touch 0.5 --from above   # pullback to the 9-day from above
+```
+
+`--ma` takes `sma|ema`, a period (1-200), `@`, and a timeframe (`1m 2m 5m 15m 1D 1W`).
+
+- **The level moves with the average.** Nothing to re-level: `revisit relevel`
+  proposes no new level for these, and `apply` doesn't apply to them.
+- **Completed bars only.** The average in force at any moment is taken over bars
+  that had already closed, so a daily or weekly average holds still all day and
+  an intraday one steps once per bar. That's what a chart shows for any bar but
+  the one still forming.
+- **Independent of poll timing.** Each check replays the 1-minute bars since the
+  last check, plus the live quote, not just the price at poll time. A cross that
+  reversed between polls still fires, and a 9-bar average on 1-minute bars works
+  under a 2-minute poll.
+- **Cross vs. touch.** A cross is judged on closes, so a wick through and back is
+  a touch, not a cross. A touch uses each bar's full high-low range.
+- **Re-firing.** At most once per MA bar (TradingView's "once per bar"). A touch
+  also has to move away by twice the margin before it can fire again.
+- **First check seeds.** A new alert records which side price is on at its first
+  check and can fire from the next one, so adding one never fires immediately.
+- **Not enough history means no level.** A 200-week SMA on a three-year-old
+  listing is skipped with a warning rather than averaged over what exists.
+- **EMAs get 4× their period of history** to converge (up to ~15 years of daily
+  bars for a 200-week EMA, in one request). Intraday EMAs are limited to Schwab's
+  10 trading days of minute bars, so long ones may still differ slightly from a
+  chart with more history.
+- **Regular-session minute bars.** In pre/post market only the live quote
+  moves the path.
+
+Cost: one 1-minute-bar request per symbol per check (shared by all that symbol's
+averages), plus one daily-history request per symbol per day, cached in
+`.cache/ma-daily/`. With many symbols on a short poll, the 120 requests/minute
+throttle will stretch a check out rather than fail.
+
+Each trigger lands in the revisit queue like any other, with the average's value
+as `levelAtTrigger`. An intraday average on a choppy name can fire often; that's
+worth watching before adding many.
+
 ### Market hours
 
 `alert check` asks Schwab for the day's equity hours before spending a single

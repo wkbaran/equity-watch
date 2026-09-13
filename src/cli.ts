@@ -19,7 +19,9 @@ import {
   type WatchOrigin,
 } from "./alerts/engine.js";
 import { baselineKey, computeBaseline } from "./alerts/volumeBaseline.js";
-import { effectiveTrigger, type VolumeCondition, type VolumePeriodUnit } from "./alerts/models.js";
+import { effectiveTrigger, type MaAlert, type MaApproach, type VolumeCondition, type VolumePeriodUnit } from "./alerts/models.js";
+import { DEFAULT_TOUCH_MARGIN_PCT, describeMaAlert, type DailyHistoryResolver } from "./alerts/maEngine.js";
+import { parseMaSpec, type MaSpec } from "./indicators/movingAverage.js";
 import { ConsoleNotifier } from "./alerts/notify.js";
 import { writeAlertTriggerReport } from "./alerts/report.js";
 import {
@@ -243,6 +245,36 @@ function buildBaselineResolver(market: MarketData, now: Date = new Date()): Base
       memo.set(key, null);
       return null;
     }
+  };
+}
+
+const MA_DAILY_CACHE_DIR = join(".cache", "ma-daily");
+
+/**
+ * Daily history for 1D/1W moving averages, cached per symbol+lookback and
+ * keyed to the market date. The averages only use completed bars, so what
+ * they need changes once a day; refetching up to 15 years of dailies every
+ * poll would be pure waste.
+ */
+function buildDailyHistoryResolver(market: MarketData, now: Date = new Date()): DailyHistoryResolver {
+  const today = marketDate(now);
+  return async (symbol, lookbackDays) => {
+    const file = join(MA_DAILY_CACHE_DIR, `${symbol.replace(/[^A-Za-z0-9_-]/g, "_")}_${lookbackDays}.json`);
+    if (existsSync(file)) {
+      const cached = JSON.parse(readFileSync(file, "utf-8")) as {
+        date: string;
+        bars: (Omit<PriceBar, "date"> & { date: string })[];
+      };
+      if (cached.date === today) {
+        return cached.bars.map((b) => ({ ...b, date: new Date(b.date) }));
+      }
+    }
+    const bars = await market.getDailyBars(symbol, new Date(now.getTime() - lookbackDays * 86_400_000), now);
+    if (bars.length > 0) {
+      mkdirSync(MA_DAILY_CACHE_DIR, { recursive: true });
+      writeFileSync(file, JSON.stringify({ date: today, bars: bars.map((b) => ({ ...b, date: b.date.toISOString() })) }));
+    }
+    return bars;
   };
 }
 
@@ -516,6 +548,10 @@ interface AlertAddOpts extends AlertCommonOpts {
   volumeAtLeast?: string;
   volumeRatio?: string;
   volumePeriod?: string;
+  ma?: string;
+  touch?: string | boolean;
+  direction?: string;
+  from?: string;
 }
 
 function formatVolumeCondition(v: VolumeCondition): string {
@@ -561,7 +597,76 @@ interface AlertListOpts extends AlertCommonOpts {
   all?: boolean;
 }
 
+async function cmdAlertAddMa(opts: AlertAddOpts): Promise<void> {
+  const conflicting = [opts.level, opts.near, opts.trailPercent, opts.trailAmount, opts.volumeAtLeast, opts.volumeRatio, opts.volumePeriod];
+  if (conflicting.some((v) => v !== undefined)) {
+    console.error("--ma can't be combined with --level, --near, --trail-*, or --volume-* (no volume condition on moving averages yet).");
+    process.exit(1);
+  }
+
+  let spec: MaSpec;
+  try {
+    spec = parseMaSpec(opts.ma!);
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(1);
+  }
+
+  const isTouch = opts.touch !== undefined;
+  let marginPct = DEFAULT_TOUCH_MARGIN_PCT;
+  if (typeof opts.touch === "string") {
+    marginPct = parseFloat(opts.touch);
+    if (!Number.isFinite(marginPct) || marginPct <= 0 || marginPct > 10) {
+      console.error(`Invalid --touch margin "${opts.touch}" — expected a percent between 0 and 10, e.g. 0.25.`);
+      process.exit(1);
+    }
+  }
+
+  let from: MaApproach = "either";
+  if (opts.direction !== undefined) {
+    if (isTouch) {
+      console.error("--direction applies to crosses. For a touch, use --from above|below.");
+      process.exit(1);
+    }
+    if (opts.direction !== "up" && opts.direction !== "down") {
+      console.error(`Invalid --direction "${opts.direction}" — expected up or down.`);
+      process.exit(1);
+    }
+    from = opts.direction === "up" ? "below" : "above";
+  }
+  if (opts.from !== undefined) {
+    if (!isTouch) {
+      console.error("--from applies to touches (--touch). For a cross, use --direction up|down.");
+      process.exit(1);
+    }
+    if (opts.from !== "above" && opts.from !== "below") {
+      console.error(`Invalid --from "${opts.from}" — expected above or below.`);
+      process.exit(1);
+    }
+    from = opts.from;
+  }
+
+  const market = buildMarketData(opts);
+  const result = await addAlert(
+    opts.alertsFile,
+    { kind: "ma", symbol: opts.symbol, ...spec, trigger: isTouch ? "touch" : "cross", from, marginPct },
+    market
+  );
+  if (result.rejectedReason) {
+    console.log(`Not added: ${result.rejectedReason}`);
+    return;
+  }
+  const a = result.added as MaAlert;
+  console.log(
+    `Added ma alert ${a.id} (${a.symbol}, ${describeMaAlert(a)}). ` +
+      `The next check records where price sits; it can fire from the check after that.`
+  );
+}
+
 async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
+  if (opts.ma !== undefined) {
+    return cmdAlertAddMa(opts);
+  }
   const hasLevel = opts.level !== undefined;
   const hasNear = opts.near !== undefined;
   if (hasLevel && hasNear) {
@@ -616,6 +721,10 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
   const a = result.added!;
   if (a.kind === "volume") {
     console.log(`Added volume alert ${a.id} (${a.symbol}, ${formatVolumeCondition(a.volume)}).`);
+    return;
+  }
+  if (a.kind === "ma") {
+    console.log(`Added ma alert ${a.id} (${a.symbol}, ${describeMaAlert(a)}).`);
     return;
   }
   const trigger = effectiveTrigger(a);
@@ -867,6 +976,14 @@ function cmdAlertList(opts: AlertListOpts): void {
       console.log(`${a.id}  volume   ${a.symbol.padEnd(6)}        status=${a.status} ${formatVolumeCondition(a.volume)}`);
       continue;
     }
+    if (a.kind === "ma") {
+      const side = a.lastSide ?? "-";
+      console.log(
+        `${a.id}  ma       ${a.symbol.padEnd(6)} ${side.padEnd(5)} ${describeMaAlert(a)} ` +
+          `status=${a.status} average=${a.lastLevel ?? "-"}`
+      );
+      continue;
+    }
     const anchor = a.kind === "static" ? a.level : a.near;
     const trail = a.kind === "trailing" ? `${a.trailValue}${a.trailType === "percent" ? "%" : "$"}` : "-";
     const andVolume = a.volumeCondition ? ` AND ${formatVolumeCondition(a.volumeCondition)}` : "";
@@ -920,14 +1037,18 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
   const alerts = loadAlerts(opts.alertsFile);
   const ignored = ignoredSymbols(loadTuningConfig(opts.config));
   const market = buildMarketData(opts);
-  const { checked, triggered, revisits } = await checkAlerts(
+  const { checked, triggered, revisits, warnings } = await checkAlerts(
     alerts,
     market,
     [new ConsoleNotifier()],
     session,
     ignored,
-    buildBaselineResolver(market)
+    buildBaselineResolver(market),
+    buildDailyHistoryResolver(market)
   );
+  for (const warning of warnings) {
+    console.error(`  ! ${warning}`);
+  }
   saveAlerts(opts.alertsFile, alerts);
   appendRevisits(opts.revisitsFile, revisits);
   console.log(
@@ -1037,7 +1158,13 @@ async function cmdRevisitRelevel(opts: RevisitRelevelOpts): Promise<void> {
 
     for (const entry of symbolEntries) {
       const target = all.find((e) => e.id === entry.id)!;
-      const suggestion = suggestLevel(bars, entry.levelAtTrigger, params);
+      const levelled = suggestLevel(bars, entry.levelAtTrigger, params);
+      // A moving-average alert's level is the average itself. There's nothing
+      // to re-level it to, but the move past it still counts toward priority.
+      const suggestion =
+        entry.kind === "ma"
+          ? { ...levelled, suggestedLevel: null, basis: "moving-average alert: its level moves with the average" }
+          : levelled;
 
       // Reuse the full breakout pipeline for the verdict and volume signals
       // rather than recomputing a second, subtly different version here.
@@ -1670,6 +1797,16 @@ function buildProgram(): Command {
       "--volume-period <Nunit>",
       "Look at volume over a trailing window instead of the default 'so far today' (e.g. 30m, 2h, 1d, 45s)"
     )
+    .option(
+      "--ma <spec>",
+      "Moving-average alert: sma|ema, period, @timeframe (1m 2m 5m 15m 1D 1W), e.g. sma200@1W or ema9@5m. Fires when price crosses it"
+    )
+    .option(
+      "--touch [marginPct]",
+      `With --ma: fire when price comes within this percent of the average instead (default ${DEFAULT_TOUCH_MARGIN_PCT})`
+    )
+    .option("--direction <up|down>", "With --ma (cross): only fire on crosses in this direction")
+    .option("--from <above|below>", "With --ma --touch: only fire when price approaches from this side")
     .action((opts: AlertAddOpts) => cmdAlertAdd(opts));
 
   withAlertCommon(program.command("dashboard"))

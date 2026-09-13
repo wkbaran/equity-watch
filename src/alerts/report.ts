@@ -12,6 +12,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { stringify } from "csv-stringify/sync";
 import type { Alert } from "./models.js";
+import { describeMaAlert } from "./maEngine.js";
 
 const OUTPUT_FIELDS = [
   "id",
@@ -19,6 +20,7 @@ const OUTPUT_FIELDS = [
   "symbol",
   "side",
   "level",
+  "moving_average",
   "near",
   "trail_type",
   "trail_value",
@@ -35,7 +37,7 @@ function chartUrl(symbol: string): string {
 }
 
 function volumeFields(alert: Alert): { volume_mode: string; volume_threshold: number | string; volume_period: string } {
-  const condition = alert.kind === "volume" ? alert.volume : alert.volumeCondition;
+  const condition = alert.kind === "volume" ? alert.volume : alert.kind === "ma" ? undefined : alert.volumeCondition;
   if (!condition) {
     return { volume_mode: "", volume_threshold: "", volume_period: "" };
   }
@@ -51,8 +53,9 @@ export function writeAlertTriggerReport(triggered: Alert[], outPath: string): vo
     id: a.id,
     kind: a.kind,
     symbol: a.symbol,
-    side: a.kind === "volume" ? "" : a.side,
-    level: a.kind === "static" ? a.level : "",
+    side: a.kind === "volume" ? "" : a.kind === "ma" ? (a.lastEvent ?? "") : a.side,
+    level: a.kind === "static" ? a.level : a.kind === "ma" ? (a.lastLevel ?? "") : "",
+    moving_average: a.kind === "ma" ? describeMaAlert(a) : "",
     near: a.kind === "trailing" ? a.near : "",
     trail_type: a.kind === "trailing" ? a.trailType : "",
     trail_value: a.kind === "trailing" ? a.trailValue : "",

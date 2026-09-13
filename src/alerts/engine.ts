@@ -5,11 +5,16 @@ import {
   effectiveTrigger,
   type Alert,
   type AlertSide,
+  type MaAlert,
+  type MaApproach,
+  type MaTrigger,
   type PriceAlert,
   type VolumeCondition,
   type VolumePeriodUnit,
 } from "./models.js";
+import type { MaTimeframe, MaType } from "../indicators/movingAverage.js";
 import type { Session } from "../marketHours.js";
+import { checkMaAlerts, type DailyHistoryResolver } from "./maEngine.js";
 import type { Notifier } from "./notify.js";
 import { newRevisitEntry, type RevisitEntry } from "./revisit.js";
 import { requiredVolume } from "./volumeBaseline.js";
@@ -105,8 +110,11 @@ export async function checkAlerts(
   /** Symbols to leave alone entirely - see TuningConfig.ignoreSymbols. */
   ignored: Set<string> = new Set(),
   /** Supplies typical volume for ratio-based conditions. */
-  resolveBaseline: BaselineResolver = async () => null
-): Promise<{ checked: number; triggered: Alert[]; revisits: RevisitEntry[] }> {
+  resolveBaseline: BaselineResolver = async () => null,
+  /** Supplies daily history for 1D/1W moving averages. The CLI's version caches per market date. */
+  resolveDailyHistory: DailyHistoryResolver = (symbol, days) =>
+    market.getDailyBars(symbol, new Date(Date.now() - days * 86_400_000), new Date())
+): Promise<{ checked: number; triggered: Alert[]; revisits: RevisitEntry[]; warnings: string[] }> {
   const live = alerts.filter((a) => a.status === "live" && !ignored.has(a.symbol.toUpperCase()));
   const symbols = [...new Set(live.map((a) => a.symbol))];
   const quotes = await market.getQuotes(symbols);
@@ -117,6 +125,10 @@ export async function checkAlerts(
   const now = nowDate.toISOString();
 
   for (const alert of live) {
+    // Moving-average alerts are path-evaluated in one batch below.
+    if (alert.kind === "ma") {
+      continue;
+    }
     if (alert.mutedUntil !== null && alert.mutedUntil > now) {
       continue;
     }
@@ -198,7 +210,37 @@ export async function checkAlerts(
     }
   }
 
-  return { checked: live.length, triggered, revisits };
+  const warnings: string[] = [];
+  const maAlerts = live.filter((a): a is MaAlert => a.kind === "ma");
+  if (maAlerts.length > 0) {
+    const ma = await checkMaAlerts(maAlerts, quotes, market, resolveDailyHistory, nowDate);
+    warnings.push(...ma.warnings);
+    for (const { alert, evaluation } of ma.results) {
+      if (evaluation.event === null) {
+        continue;
+      }
+      // Recorded at the point it happened, which may be minutes before this check.
+      const at = evaluation.at!.toISOString();
+      const price = evaluation.price!;
+      alert.lastEvent = evaluation.event;
+      alert.lastApproachedFrom = evaluation.approachedFrom;
+      alert.lastLevel = evaluation.level;
+
+      const snapshot = { ...alert, triggerSnapshot: null } as Alert;
+      revisits.push(newRevisitEntry(snapshot, price, at, session));
+      alert.triggerSnapshot = snapshot;
+      alert.triggerCount += 1;
+      alert.lastTriggeredAt = at;
+      alert.lastTriggerPrice = price;
+
+      triggered.push(alert);
+      for (const notifier of notifiers) {
+        await notifier.notify({ alert, currentPrice: price, chartUrl: chartUrl(alert.symbol) });
+      }
+    }
+  }
+
+  return { checked: live.length, triggered, revisits, warnings };
 }
 
 /** Backdates an imported alert to when it was really first watched. */
@@ -219,7 +261,18 @@ export type AddAlertInput =
       volume?: VolumeCondition;
       watching?: WatchOrigin;
     }
-  | { kind: "volume"; symbol: string; volume: VolumeCondition; watching?: WatchOrigin };
+  | { kind: "volume"; symbol: string; volume: VolumeCondition; watching?: WatchOrigin }
+  | {
+      kind: "ma";
+      symbol: string;
+      maType: MaType;
+      period: number;
+      timeframe: MaTimeframe;
+      trigger: MaTrigger;
+      from: MaApproach;
+      marginPct: number;
+      watching?: WatchOrigin;
+    };
 
 export interface AddAlertResult {
   added: Alert | null;
@@ -262,6 +315,33 @@ export async function addAlert(path: string, input: AddAlertInput, market: Marke
     return { added: candidate, replaced: null, rejectedReason: null };
   }
 
+  // Moving-average alerts are likewise outside the uniqueness rule: a 9-day
+  // and a 200-week average on one symbol are different things to watch. State
+  // starts empty and seeds on the first check.
+  if (input.kind === "ma") {
+    const candidate: MaAlert = {
+      ...baseFields,
+      kind: "ma",
+      maType: input.maType,
+      period: input.period,
+      timeframe: input.timeframe,
+      trigger: input.trigger,
+      from: input.from,
+      marginPct: input.marginPct,
+      lastSide: null,
+      inBand: false,
+      lastLevel: null,
+      lastEvaluatedAt: null,
+      lastFiredBucket: null,
+      lastEvent: null,
+      lastApproachedFrom: null,
+    };
+    const alerts = loadAlerts(path);
+    alerts.push(candidate);
+    saveAlerts(path, alerts);
+    return { added: candidate, replaced: null, rejectedReason: null };
+  }
+
   const anchor = input.kind === "static" ? input.level : input.near;
   if (anchor === livePrice) {
     return {
@@ -297,7 +377,8 @@ export async function addAlert(path: string, input: AddAlertInput, market: Marke
 
   const alerts = loadAlerts(path);
   const existing = alerts.find(
-    (a): a is PriceAlert => a.kind !== "volume" && a.status === "live" && a.symbol === input.symbol && a.side === side
+    (a): a is PriceAlert =>
+      (a.kind === "static" || a.kind === "trailing") && a.status === "live" && a.symbol === input.symbol && a.side === side
   );
 
   if (existing) {

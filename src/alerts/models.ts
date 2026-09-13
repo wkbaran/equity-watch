@@ -1,3 +1,5 @@
+import type { MaTimeframe, MaType } from "../indicators/movingAverage.js";
+
 export type AlertSide = "above" | "below";
 
 export type VolumePeriodUnit = "s" | "m" | "h" | "d";
@@ -104,7 +106,47 @@ export interface VolumeAlert extends BaseAlert {
   volume: VolumeCondition;
 }
 
-export type Alert = StaticAlert | TrailingAlert | VolumeAlert;
+export type MaTrigger = "cross" | "touch";
+/** Which side price must be coming from for the alert to fire. */
+export type MaApproach = AlertSide | "either";
+export type MaEvent = "cross_up" | "cross_down" | "touch";
+
+/**
+ * Fires when price crosses, or comes within `marginPct` of, a moving average
+ * (src/alerts/maEngine.ts). The level moves with the average, so unlike a
+ * static alert there is nothing to re-level after it fires.
+ *
+ * Evaluated against the 1-minute price path since the last check, not just
+ * the live quote, so a cross or touch that happened between polls still
+ * fires, and an average on bars shorter than the poll interval still works.
+ *
+ * Not part of the price-alert above/below uniqueness rule: several averages
+ * on one symbol are distinct things to watch.
+ */
+export interface MaAlert extends BaseAlert {
+  kind: "ma";
+  maType: MaType;
+  period: number;
+  timeframe: MaTimeframe;
+  trigger: MaTrigger;
+  /** For a cross, "below" means only upward crosses; for a touch, the side price approaches from. */
+  from: MaApproach;
+  /** Touch band as a percent of the average. Unused by crosses. */
+  marginPct: number;
+  /** Price's side of the average as of the last point evaluated. Null until seeded. */
+  lastSide: AlertSide | null;
+  /** Whether price is inside the touch band. It must leave by twice the margin to re-arm. */
+  inBand: boolean;
+  /** The average's value at the last point evaluated (or at the last trigger), for display. */
+  lastLevel: number | null;
+  lastEvaluatedAt: string | null;
+  /** Bucket key of the MA bar it last fired in: at most one trigger per bar. */
+  lastFiredBucket: string | null;
+  lastEvent: MaEvent | null;
+  lastApproachedFrom: AlertSide | null;
+}
+
+export type Alert = StaticAlert | TrailingAlert | VolumeAlert | MaAlert;
 export type PriceAlert = StaticAlert | TrailingAlert;
 
 /** The live price at which this alert's price condition would currently trigger. */
