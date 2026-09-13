@@ -96,6 +96,39 @@ recorded verdict. The phrasing is load-bearing — "broke resistance" is only
 emitted where the verdict supports it, and `NO_CLOSE_CONFIRM` must never be
 described as a breakout.
 
+## The browser dashboard's publish fingerprint must ignore anything price-derived
+
+`dashboard --publish --skip-unchanged` fingerprints a build made with **no
+quotes** and compares it to the last publish, so a quiet cron run spends zero
+API calls. That only works if the fingerprint of a quote-less build equals the
+fingerprint of the real one. `VOLATILE_KEYS` in `src/web/site.ts` lists every
+field that moves with price or the clock. If you add a price-dependent field to
+the `Dashboard` document, add its key there or every run will publish (the
+`dashboardFingerprint` test in `tests/dashboard.test.ts` will catch it only if
+its fixture exercises the field).
+
+**Holdings are removed from the published JSON, not hidden by the page.** The
+site has no login by default (`EnableBasicAuth=false`), so `dashboard.json` is
+public. With `web.holdings` off, `siteDocument` (`src/web/site.ts`) empties the
+holdings rows before writing *and* before fingerprinting.
+
+The line the user drew (2026-09-12): **size and value are private, being held
+is not.** "Holding MKS broke support", held-first story ordering, and "held
+position" in priority breakdowns are fine to publish. Share counts, basis,
+market value, and stops are not. If you add a field carrying any of those
+outside `holdings`, strip it in `siteDocument` too. The `siteDocument` tests in
+`tests/dashboard.test.ts` check the JSON for `shares`/`basis`/`marketValue` keys.
+
+Two more things that look wrong and aren't:
+
+- **No CloudFront invalidation.** The congress project's publisher invalidates
+  `/*` on every publish. This one can publish every few minutes, and
+  invalidations past 1,000 paths/month are billed, so it uploads everything with
+  `Cache-Control: no-cache` instead. Don't port the invalidation back.
+- **`web/` sits outside `src/`** and is resolved as `../../web/` from the module,
+  which is correct from both `src/web/site.ts` (tsx) and `dist/web/site.js`.
+  `tsc` does not copy non-TS files, which is why the assets aren't under `src/`.
+
 ## A zero volume baseline must mean "cannot evaluate", never "no threshold"
 
 `requiredVolume` returns `null` for a ratio condition with a zero or missing

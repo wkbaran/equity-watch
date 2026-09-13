@@ -5,6 +5,7 @@ import type { RevisitEntry } from "../src/alerts/revisit.js";
 import { scoreRevisit } from "../src/alerts/revisit.js";
 import { emptyHoldingsStore, type HoldingsStore } from "../src/holdings/models.js";
 import type { Quote } from "../src/providers/schwab.js";
+import { dashboardFingerprint, siteDocument } from "../src/web/site.js";
 
 const NOW = new Date("2026-09-12T12:00:00.000Z");
 
@@ -84,6 +85,77 @@ function base(overrides: Partial<Parameters<typeof buildDashboard>[0]> = {}) {
     ...overrides,
   });
 }
+
+describe("recentTriggers", () => {
+  it("lists every trigger in the window newest first, whatever its status", () => {
+    const d = base({
+      revisits: [
+        revisit({ id: "old", triggeredAt: "2026-09-01T12:00:00.000Z" }),
+        revisit({ id: "mid", triggeredAt: "2026-09-10T12:00:00.000Z", status: "dismissed" }),
+        revisit({ id: "new", triggeredAt: "2026-09-11T12:00:00.000Z", status: "applied" }),
+      ],
+    });
+    // The queue only holds open entries; this list is what a poller diffs for news.
+    expect(d.recentTriggers.map((t) => t.id)).toEqual(["new", "mid"]);
+    expect(d.recentTriggers[0].headline).toContain("AAPL");
+  });
+
+  it("drops ignored symbols", () => {
+    const d = base({ revisits: [revisit({ symbol: "BIL" })], ignoredSymbols: new Set(["BIL"]) });
+    expect(d.recentTriggers).toEqual([]);
+  });
+});
+
+describe("siteDocument", () => {
+  const held = () => base({ revisits: [revisit()], holdings: holdingsWith("AAPL", 10, 100), quotes: quotes({ AAPL: 150 }) });
+
+  it("removes share counts, basis, and value when holdings are off, but keeps that a name is held", () => {
+    const doc = siteDocument(held(), { holdings: false });
+    expect(doc.holdings).toEqual([]);
+    expect(JSON.stringify(doc)).not.toMatch(/"shares"|"basis"|"marketValue"/);
+    // Being held is not sensitive on its own; only size and value are.
+    expect(doc.revisitQueue[0].headline).toMatch(/^Holding AAPL/);
+    expect(doc.recentTriggers[0].heldPosition).toBe(true);
+  });
+
+  it("keeps holdings rows when enabled", () => {
+    expect(siteDocument(held(), { holdings: true }).holdings[0].shares).toBe(10);
+  });
+
+  it("doesn't let holdings changes move the fingerprint while holdings are off", () => {
+    const more = base({ revisits: [revisit()], holdings: holdingsWith("AAPL", 20, 90) });
+    const off = { holdings: false };
+    expect(dashboardFingerprint(siteDocument(held(), off))).toBe(dashboardFingerprint(siteDocument(more, off)));
+  });
+});
+
+describe("dashboardFingerprint", () => {
+  const inputs = () => ({
+    alerts: [staticAlert()],
+    revisits: [revisit({ watchingSince: "2026-01-01T00:00:00.000Z", priceAtWatchStart: 80 })],
+    holdings: holdingsWith("AAPL", 10, 100),
+  });
+
+  it("is the same with and without quotes, at different times", () => {
+    // The CLI relies on this to decide whether to publish before fetching quotes.
+    const withQuotes = base({ ...inputs(), quotes: quotes({ AAPL: 150 }) });
+    const without = base({ ...inputs(), now: new Date(NOW.getTime() + 60_000) });
+    expect(withQuotes.holdings[0].price).toBe(150);
+    expect(withQuotes.revisitQueue[0].sinceWatching).not.toBeNull();
+    expect(dashboardFingerprint(withQuotes)).toBe(dashboardFingerprint(without));
+  });
+
+  it("changes when something happens", () => {
+    const before = dashboardFingerprint(base(inputs()));
+    const fired = inputs();
+    fired.revisits.push(revisit({ id: "r2", triggeredAt: "2026-09-11T12:00:00.000Z" }));
+    expect(dashboardFingerprint(base(fired))).not.toBe(before);
+
+    const dismissed = inputs();
+    dismissed.revisits[0].status = "dismissed";
+    expect(dashboardFingerprint(base(dismissed))).not.toBe(before);
+  });
+});
 
 describe("buildDashboard", () => {
   it("renders a meaningful document on a completely quiet day", () => {

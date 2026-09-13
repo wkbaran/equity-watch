@@ -585,6 +585,79 @@ prints the same content as a terminal view. Four sections:
    barely moved: alert slots you could spend elsewhere.
 6. **Holdings** — each position against blended basis with current value.
 
+### Browser dashboard (`web/`, `src/web/`)
+
+The same document, rendered as a static site you can leave open in a tab:
+
+```bash
+node dist/cli.js dashboard --site site          # writes site/ (index.html, app.js, sw.js, dashboard.json)
+cd site && python3 -m http.server 8000          # preview at http://localhost:8000
+node dist/cli.js dashboard --publish --skip-unchanged --quiet   # sync to S3
+```
+
+The page is fixed; only `dashboard.json` changes between runs, and the page
+re-fetches it every minute. It adds a `recentTriggers` list to the document
+(every firing in the window, newest first, any status) because the revisit
+queue is priority-sorted and capped, so it can't tell you what's *new*.
+
+**Notifications.** When a trigger id appears that this browser hasn't seen, the
+page shows an in-page toast and, if you've clicked *Enable notifications*, an
+OS notification when the tab is in the background or the window is unfocused.
+The tab title also gains a `(n)` count. What this can and can't do:
+
+- Works while the tab is **open anywhere** (background tab, other window,
+  minimized). Background tabs are throttled to about one poll a minute, which
+  is the poll rate anyway.
+- Does **not** work once the tab is closed. That needs Web Push (a service
+  worker subscription plus the publisher sending VAPID-signed pushes); `sw.js`
+  is the piece that would receive them, but nothing sends them yet.
+- Needs HTTPS (or localhost). On iOS, only a home-screen web app can notify.
+- The first visit on a browser marks everything already listed as seen, so it
+  doesn't open with a week of backlog.
+
+Revisit rows carry **copy-command buttons** (`alert revisit apply <id>`,
+`dismiss <id>`). The site is static and can't write to your stores; this is the
+zero-infrastructure bridge until it can.
+
+**Holdings and login are both off by default**, and they go together. The site is
+public, so `dashboard.json` is readable by anyone with the URL. With holdings off,
+the holdings rows (share counts, basis, market value, stops) are removed from the
+published JSON, not just hidden in the page. Headlines can still say a name is
+held ("Holding MKS broke support"), which reveals nothing about size or value.
+To turn both back on:
+
+1. Redeploy the stack with `EnableBasicAuth=true BasicAuthUser=… BasicAuthPassword=…`.
+2. Add `"web": { "holdings": true }` to `analysis.config.json`.
+
+**Theme.** Dark by default, using the uniquetrades-congress palette (Catppuccin).
+The header toggle remembers a light preference per browser.
+
+**Publishing.** `cloudformation.yaml` creates a private S3 bucket, a
+CloudFront distribution served at **https://watch.billbaran.us** (certificate and
+DNS record in the public `billbaran.us` Route 53 zone), and a publish-only IAM
+user. The first deploy waits on DNS validation of the certificate, which usually
+takes a few minutes. Deploy it in `us-east-1`,
+then copy the outputs into `.env` (`S3_BUCKET`, `AWS_REGION`,
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`):
+
+```bash
+aws cloudformation deploy --region us-east-1 --stack-name tv-alerts-dashboard \
+  --template-file cloudformation.yaml --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides BucketName=tv-alerts-yourname
+aws cloudformation describe-stacks --region us-east-1 --stack-name tv-alerts-dashboard --query 'Stacks[0].Outputs'
+```
+
+`--skip-unchanged` publishes only when something happened (a trigger, a status
+change, a new suggestion, a holdings change) or when the published prices are
+older than `--max-stale-minutes` (default 30). It decides *before* fetching
+quotes, so a quiet run costs no API calls. Last-publish state lives in
+`.cache/web_publish.json`. `scripts/check-and-publish.sh` pairs it with
+`alert check` for cron:
+
+```
+*/2 * * * 1-5 /path/to/repo/scripts/check-and-publish.sh >> /path/to/repo/logs/cron.log 2>&1
+```
+
 ### Narrative
 
 Every queue row carries a `headline` — a plain-English sentence rather than a

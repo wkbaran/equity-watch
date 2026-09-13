@@ -1,0 +1,223 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  TradingView alert dashboard — static site hosting.
+  S3 bucket (private) + CloudFront (HTTPS, optional basic auth) + IAM publish user.
+  Deploy in us-east-1: ACM certificates used by CloudFront must live there.
+
+  Adapted from uniquetrades-congress. It publishes every few minutes, so the
+  publisher relies on Cache-Control: no-cache instead of invalidations
+  (which are billed past 1,000 paths a month).
+
+  Basic auth is off by default and the site is public. Set
+  EnableBasicAuth=true before turning on web.holdings in analysis.config.json.
+
+Parameters:
+
+  BucketName:
+    Type: String
+    Description: S3 bucket name (globally unique, e.g. tv-alerts-dashboard-yourname).
+
+  EnableBasicAuth:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['false', 'true']
+    Description: >
+      Put a username/password prompt in front of the whole site. Required
+      before publishing holdings (web.holdings in analysis.config.json).
+
+  BasicAuthUser:
+    Type: String
+    Default: ''
+    Description: Username the browser will prompt for (only with EnableBasicAuth=true).
+
+  BasicAuthPassword:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >
+      Password the browser will prompt for (only with EnableBasicAuth=true;
+      use 12+ characters). It is embedded in the CloudFront Function code, so
+      anyone with CloudFront console access to this account can read it.
+
+  CustomDomain:
+    Type: String
+    Default: watch.billbaran.us
+    Description: Custom domain to serve from. Pass '' to use the cloudfront.net URL instead.
+
+  HostedZoneId:
+    Type: String
+    # The PUBLIC billbaran.us zone. There is also a private zone with the same
+    # name (Z09836011VGZMT65Q2977); certificate validation and the alias record
+    # must go in the public one or nothing outside the VPC can resolve them.
+    Default: Z0927352H55TBS393ZU1
+    Description: Route 53 public Hosted Zone ID for CustomDomain.
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref CustomDomain, '']]
+  HasBasicAuth: !Equals [!Ref EnableBasicAuth, 'true']
+
+Resources:
+
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  OAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${BucketName}-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Wildcard distribution ID avoids a BucketPolicy <-> Distribution cycle.
+  # Restricted to this AWS account.
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${Bucket.Arn}/*'
+            Condition:
+              StringLike:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/*'
+
+  BasicAuthFunction:
+    Type: AWS::CloudFront::Function
+    Condition: HasBasicAuth
+    Properties:
+      Name: !Sub '${BucketName}-basic-auth'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Basic auth for the alert dashboard
+        Runtime: cloudfront-js-2.0
+      FunctionCode: !Sub
+        - |
+          function handler(event) {
+            var auth = event.request.headers.authorization;
+            if (auth && auth.value === 'Basic ${Expected}') {
+              return event.request;
+            }
+            return {
+              statusCode: 401,
+              statusDescription: 'Unauthorized',
+              headers: { 'www-authenticate': { value: 'Basic realm="alerts"' } }
+            };
+          }
+        # Long form: YAML allows only one tag per node, so `!Base64 !Sub` is invalid.
+        - Expected:
+            Fn::Base64: !Sub '${BasicAuthUser}:${BasicAuthPassword}'
+
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: HasCustomDomain
+    Properties:
+      DomainName: !Ref CustomDomain
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref CustomDomain
+          HostedZoneId: !Ref HostedZoneId
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: BucketPolicy
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt Bucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !Ref OAC
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          # AWS managed CachingOptimized. It honors the origin's
+          # Cache-Control, and every object is uploaded with no-cache.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          AllowedMethods: [GET, HEAD]
+          Compress: true
+          FunctionAssociations: !If
+            - HasBasicAuth
+            - - EventType: viewer-request
+                FunctionARN: !GetAtt BasicAuthFunction.FunctionMetadata.FunctionARN
+            - !Ref AWS::NoValue
+        Aliases: !If
+          - HasCustomDomain
+          - [!Ref CustomDomain]
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref Certificate
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasCustomDomain
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref CustomDomain
+      Type: A
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2   # fixed zone ID for all CloudFront distributions
+        DNSName: !GetAtt Distribution.DomainName
+        EvaluateTargetHealth: false
+
+  PublishUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub 'tv-alerts-publisher-${BucketName}'
+      Policies:
+        - PolicyName: DashboardPublish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt Bucket.Arn
+              - Effect: Allow
+                Action: [s3:PutObject, s3:DeleteObject]
+                Resource: !Sub '${Bucket.Arn}/*'
+
+  PublishAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref PublishUser
+
+Outputs:
+  SiteUrl:
+    Value: !If
+      - HasCustomDomain
+      - !Sub 'https://${CustomDomain}'
+      - !Sub 'https://${Distribution.DomainName}'
+  BucketName:
+    Description: S3_BUCKET in .env
+    Value: !Ref Bucket
+  Region:
+    Description: AWS_REGION in .env
+    Value: !Ref AWS::Region
+  AccessKeyId:
+    Description: AWS_ACCESS_KEY_ID in .env
+    Value: !Ref PublishAccessKey
+  SecretAccessKey:
+    Description: AWS_SECRET_ACCESS_KEY in .env (visible here only; store securely)
+    Value: !GetAtt PublishAccessKey.SecretAccessKey

@@ -50,6 +50,8 @@ import {
 } from "./holdings/import.js";
 import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
 import { buildDashboard, renderDashboard } from "./dashboard.js";
+import { publishSite } from "./web/publish.js";
+import { dashboardFingerprint, shouldPublish, siteDocument, writeSite, type PublishState } from "./web/site.js";
 import {
   EXTENDED_SESSIONS,
   REGULAR_SESSIONS,
@@ -1504,6 +1506,10 @@ interface DashboardOpts extends AlertCommonOpts {
   windowDays?: number;
   approaching?: boolean;
   quiet?: boolean;
+  site?: string;
+  publish?: boolean;
+  skipUnchanged?: boolean;
+  maxStaleMinutes: number;
 }
 
 function defaultDashboardPath(now: Date): string {
@@ -1511,10 +1517,46 @@ function defaultDashboardPath(now: Date): string {
   return join("reports", `dashboard_${stamp}.json`);
 }
 
+const PUBLISH_STATE_PATH = join(".cache", "web_publish.json");
+
+function loadPublishState(): PublishState | null {
+  return existsSync(PUBLISH_STATE_PATH) ? (JSON.parse(readFileSync(PUBLISH_STATE_PATH, "utf-8")) as PublishState) : null;
+}
+
 async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   const alerts = loadAlerts(opts.alertsFile);
   const revisits = loadRevisits(opts.revisitsFile);
   const holdings = loadHoldingsStore(opts.holdingsFile);
+  const config = loadTuningConfig(opts.config);
+  const ignored = ignoredSymbols(config);
+  const siteDir = opts.site ?? (opts.publish ? "site" : undefined);
+  const siteOptions = { holdings: config?.web?.holdings === true };
+
+  const build = (quotes: Map<string, Quote>) =>
+    buildDashboard({
+      alerts,
+      revisits,
+      holdings,
+      quotes,
+      now: new Date(),
+      limit: opts.limit,
+      approachingWithinPct: opts.withinPct,
+      windowDays: opts.windowDays,
+      ignoredSymbols: ignored,
+      includeApproaching: opts.approaching,
+    });
+
+  // The fingerprint ignores price-derived fields, so it can be taken from a
+  // quote-less build: a run with nothing new exits here without spending a
+  // single quote request, which is what makes a tight cron interval affordable.
+  if (opts.publish && opts.skipUnchanged) {
+    const decision = shouldPublish(loadPublishState(), dashboardFingerprint(siteDocument(build(new Map()), siteOptions)), new Date(), opts.maxStaleMinutes);
+    if (!decision.publish) {
+      console.log(`Skipped publish: ${decision.reason}.`);
+      return;
+    }
+    console.log(`Publishing: ${decision.reason}.`);
+  }
 
   // One quote request covers every live alert plus every position.
   const symbols = [
@@ -1529,28 +1571,37 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     }
   }
 
-  const dashboard = buildDashboard({
-    alerts,
-    revisits,
-    holdings,
-    quotes,
-    now: new Date(),
-    limit: opts.limit,
-    approachingWithinPct: opts.withinPct,
-    windowDays: opts.windowDays,
-    ignoredSymbols: ignoredSymbols(loadTuningConfig(opts.config)),
-    includeApproaching: opts.approaching,
-  });
+  const dashboard = build(quotes);
 
-  const outPath = opts.out ?? defaultDashboardPath(new Date());
-  mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, JSON.stringify(dashboard, null, 2));
+  // A site run can happen every couple of minutes; a timestamped report per
+  // run would bury reports/. Only write one there when asked to.
+  if (siteDir === undefined || opts.out !== undefined) {
+    const outPath = opts.out ?? defaultDashboardPath(new Date());
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, JSON.stringify(dashboard, null, 2));
+    console.log(`Wrote ${outPath}`);
+  }
 
   if (!opts.quiet) {
     console.log(renderDashboard(dashboard));
     console.log("");
   }
-  console.log(`Wrote ${outPath}`);
+
+  // Fingerprint what is actually published, so holdings changes don't trigger
+  // a publish while the holdings section is off.
+  const siteDashboard = siteDocument(dashboard, siteOptions);
+  if (siteDir !== undefined) {
+    writeSite(siteDir, dashboard, siteOptions);
+    console.log(`Wrote site to ${siteDir}/${siteOptions.holdings ? "" : " (holdings excluded; set web.holdings in the config to include)"}`);
+  }
+
+  if (opts.publish && siteDir !== undefined) {
+    const plan = await publishSite({ localDir: siteDir });
+    console.log(`Published: ${plan.upload.length} uploaded, ${plan.remove.length} deleted, ${plan.unchanged} unchanged.`);
+    mkdirSync(dirname(PUBLISH_STATE_PATH), { recursive: true });
+    const state: PublishState = { fingerprint: dashboardFingerprint(siteDashboard), publishedAt: siteDashboard.generatedAt };
+    writeFileSync(PUBLISH_STATE_PATH, JSON.stringify(state, null, 2));
+  }
 }
 
 function buildProgram(): Command {
@@ -1631,6 +1682,10 @@ function buildProgram(): Command {
     .option("--window-days <n>", "How many days back the trigger count covers", (v) => parseInt(v, 10))
     .option("--quiet", "Write the file without printing the rendered view")
     .option("--config <path>", "Per-ticker tuning config (supplies ignoreSymbols)", "analysis.config.json")
+    .option("--site <dir>", "Also write the static browser dashboard to this directory (skips the reports/ JSON unless --out is given)")
+    .option("--publish", "Sync the site to S3 (S3_BUCKET/AWS_* in .env); implies --site site")
+    .option("--skip-unchanged", "With --publish: do nothing, not even fetch quotes, unless something happened or prices are stale")
+    .option("--max-stale-minutes <n>", "With --skip-unchanged: republish anyway once prices are this old", (v) => parseInt(v, 10), 30)
     .action((opts: DashboardOpts) => cmdDashboard(opts));
 
   withAlertCommon(alertCmd.command("seed"))

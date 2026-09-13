@@ -67,6 +67,27 @@ export interface RevisitRow {
   chartUrl: string;
 }
 
+/**
+ * One firing, in time order. Distinct from RevisitRow because the queue is
+ * priority-sorted, capped, and open-only: a low-priority trigger can land
+ * below the cap and a dismissed one vanishes from it. Anything that needs to
+ * notice "something new fired" (the browser dashboard's notifications) has
+ * to diff against this list, not the queue.
+ */
+export interface TriggerRow {
+  id: string;
+  symbol: string;
+  headline: string;
+  triggeredAt: string;
+  triggerPrice: number;
+  levelAtTrigger: number | null;
+  session: Session | null;
+  status: RevisitEntry["status"];
+  priority: number | null;
+  heldPosition: boolean;
+  chartUrl: string;
+}
+
 export interface ApproachingRow {
   alertId: string;
   symbol: string;
@@ -98,6 +119,8 @@ export interface Dashboard {
   generatedAt: string;
   summary: DashboardSummary;
   revisitQueue: RevisitRow[];
+  /** Every trigger in the window regardless of status, newest first. */
+  recentTriggers: TriggerRow[];
   approaching: ApproachingRow[];
   /** How many alerts were within range in total, before the display cap. */
   approachingTotal: number;
@@ -134,6 +157,8 @@ export interface DashboardInputs {
   /** Symbols excluded from alerting (TuningConfig.ignoreSymbols). */
   ignoredSymbols?: Set<string>;
 }
+
+const RECENT_TRIGGER_CAP = 100;
 
 function chartUrl(symbol: string): string {
   return `https://www.tradingview.com/chart/?symbol=${symbol}`;
@@ -289,7 +314,28 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
   }
 
   const windowStart = now.getTime() - windowDays * 86_400_000;
-  const triggersInWindow = revisits.filter((e) => new Date(e.triggeredAt).getTime() >= windowStart).length;
+  const inWindow = revisits.filter((e) => new Date(e.triggeredAt).getTime() >= windowStart);
+  const triggersInWindow = inWindow.length;
+
+  // Capped well above the queue limit: a consumer diffing for new firings
+  // only misses one if more than this many fire between two of its polls.
+  const recentTriggers: TriggerRow[] = inWindow
+    .filter((e) => !isIgnored(e.symbol))
+    .sort((a, b) => b.triggeredAt.localeCompare(a.triggeredAt))
+    .slice(0, RECENT_TRIGGER_CAP)
+    .map((e) => ({
+      id: e.id,
+      symbol: e.symbol,
+      headline: triggerHeadline(e, narrativeCtx),
+      triggeredAt: e.triggeredAt,
+      triggerPrice: e.triggerPrice,
+      levelAtTrigger: e.levelAtTrigger,
+      session: e.session ?? null,
+      status: e.status,
+      priority: e.priority,
+      heldPosition: heldSymbols.has(e.symbol.toUpperCase()),
+      chartUrl: chartUrl(e.symbol),
+    }));
 
   return {
     generatedAt: now.toISOString(),
@@ -304,6 +350,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       quotesUnavailable,
     },
     revisitQueue,
+    recentTriggers,
     approaching: approachingShown,
     approachingTotal: includeApproaching ? approachingTotal : 0,
     holdings: holdingRows,

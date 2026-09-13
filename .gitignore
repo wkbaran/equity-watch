@@ -24,3 +24,7 @@ schwab_tokens.json
 
 # Browser-automation artifacts (screenshots, console logs, page snapshots)
 .playwright-mcp/
+
+# Built browser dashboard and cron logs
+/site/
+/logs/

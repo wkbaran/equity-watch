@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alerts</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔔</text></svg>">
+<script>
+  // Apply a saved light preference before first paint, so the page doesn't flash dark.
+  try { if (localStorage.getItem("tva-theme") === "light") document.documentElement.setAttribute("data-theme", "light"); } catch (e) {}
+</script>
+<style>
+  /* Palette copied from uniquetrades-congress (Catppuccin Mocha / Latte). Dark is the default. */
+  :root {
+    --bg: #1e1e2e;
+    --surface: #313244;
+    --surface2: #45475a;
+    --border: #585b70;
+    --text: #cdd6f4;
+    --subtext: #a6adc8;
+    --muted: #6c7086;
+    --accent: #89b4fa;
+    --green: #a6e3a1;
+    --red: #f38ba8;
+    --yellow: #f9e2af;
+    --peach: #fab387;
+    --radius: 10px;
+    --shadow: 0 2px 12px rgba(0,0,0,0.4);
+    color-scheme: dark;
+  }
+  [data-theme="light"] {
+    --bg: #eff1f5;
+    --surface: #e6e9ef;
+    --surface2: #dce0e8;
+    --border: #bcc0cc;
+    --text: #4c4f69;
+    --subtext: #5c5f77;
+    --muted: #9ca0b0;
+    --accent: #1e66f5;
+    --green: #40a02b;
+    --red: #d20f39;
+    --yellow: #df8e1d;
+    --peach: #fe640b;
+    --shadow: 0 2px 12px rgba(0,0,0,0.12);
+    color-scheme: light;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { font-size: 15px; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button {
+    font: inherit; font-size: 0.8rem; color: var(--text); background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.7rem; cursor: pointer;
+    transition: background 0.15s;
+  }
+  button:hover { background: var(--border); }
+
+  .site-header {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 1rem 1rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+  }
+  .site-title { font-size: 1.1rem; font-weight: 700; color: var(--accent); letter-spacing: 0.02em; margin: 0; }
+  .meta { color: var(--subtext); font-size: 0.8rem; }
+  .spacer { flex: 1; }
+  .header-right { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
+
+  main { max-width: 1080px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+  .section-header {
+    display: flex; align-items: baseline; gap: 0.75rem;
+    margin: 2rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border);
+  }
+  .section-title { font-size: 1rem; font-weight: 700; margin: 0; }
+  .section-count { font-size: 0.8rem; color: var(--muted); }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.85rem 1rem; }
+  .tile .value { font-size: 1.7rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile .label { color: var(--subtext); font-size: 0.8rem; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .empty { padding: 0.9rem 1rem; color: var(--muted); }
+  #error { margin-bottom: 1rem; color: var(--red); }
+
+  .queue-row { display: grid; grid-template-columns: 48px 1fr; gap: 12px; padding: 0.8rem 1rem; border-top: 1px solid var(--border); }
+  .queue-row:first-child { border-top: 0; }
+  .priority { font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; color: var(--accent); }
+  .priority.none { color: var(--muted); }
+  .headline { font-size: 1rem; font-weight: 500; }
+  .sub { color: var(--subtext); font-size: 0.85rem; }
+  .why { color: var(--muted); font-size: 0.78rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
+  .tag { display: inline-block; font-size: 0.72rem; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--subtext); margin-left: 6px; vertical-align: 1px; }
+  .tag.held { border-color: var(--accent); color: var(--accent); }
+
+  .trigger-row { display: grid; grid-template-columns: 96px 1fr auto; gap: 12px; padding: 0.55rem 1rem; border-top: 1px solid var(--border); align-items: baseline; }
+  .trigger-row:first-child { border-top: 0; }
+  .trigger-row.new { box-shadow: inset 3px 0 0 var(--yellow); }
+  .when { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+  .status { font-size: 0.8rem; color: var(--muted); }
+
+  .story { padding: 0.8rem 1rem; border-top: 1px solid var(--border); }
+  .story:first-child { border-top: 0; }
+  .story ol { margin: 6px 0 0; padding-left: 18px; color: var(--subtext); font-size: 0.85rem; }
+
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 7px 12px; text-align: right; white-space: nowrap; border-top: 1px solid var(--border); }
+  th { font-size: 0.8rem; font-weight: 500; color: var(--subtext); border-top: 0; cursor: pointer; user-select: none; background: var(--surface2); }
+  th[aria-sort] { color: var(--text); }
+  th:first-child, td:first-child { text-align: left; }
+  tr.ignored td { color: var(--muted); }
+  .bar-cell { width: 140px; }
+  .bar { position: relative; height: 10px; background: var(--surface2); border-radius: 2px; }
+  .bar::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--muted); }
+  .bar span { position: absolute; top: 0; bottom: 0; }
+  .bar span.up { left: 50%; background: var(--green); border-radius: 0 2px 2px 0; }
+  .bar span.down { right: 50%; background: var(--red); border-radius: 2px 0 0 2px; }
+
+  details summary { cursor: pointer; color: var(--subtext); padding: 0.7rem 1rem; }
+  details ul { margin: 0; padding: 0 1rem 0.8rem 2rem; color: var(--subtext); }
+
+  #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 10; max-width: min(420px, calc(100vw - 32px)); }
+  .toast {
+    background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-left: 3px solid var(--yellow);
+    border-radius: var(--radius); padding: 0.65rem 0.9rem; box-shadow: var(--shadow);
+    display: grid; grid-template-columns: 1fr auto; gap: 10px; animation: slide .2s ease-out;
+  }
+  .toast .t-sym { font-weight: 700; color: var(--accent); }
+  .toast button { background: transparent; border: 0; padding: 0 2px; font-size: 1rem; line-height: 1; }
+  @keyframes slide { from { transform: translateY(8px); opacity: 0; } }
+  @media (max-width: 560px) {
+    .trigger-row { grid-template-columns: 1fr; gap: 2px; }
+    .queue-row { grid-template-columns: 36px 1fr; }
+  }
+</style>
+</head>
+<body>
+<header class="site-header">
+  <h1 class="site-title">Alerts</h1>
+  <span id="updated" class="meta">loading…</span>
+  <span class="spacer"></span>
+  <div class="header-right">
+    <span id="notify-state" class="meta"></span>
+    <button id="notify-btn" hidden>Enable notifications</button>
+    <button id="theme-btn">☀️ Light</button>
+  </div>
+</header>
+<main>
+  <div id="error" class="card empty" hidden></div>
+  <section id="tiles" class="tiles"></section>
+
+  <div class="section-header"><h2 class="section-title">Revisit queue</h2><span id="queue-count" class="section-count"></span></div>
+  <div id="queue" class="card"></div>
+
+  <div class="section-header"><h2 class="section-title">Recent triggers</h2><span id="triggers-count" class="section-count"></span></div>
+  <div id="triggers" class="card"></div>
+
+  <div id="stories-section" hidden>
+    <div class="section-header"><h2 class="section-title">Stories</h2></div>
+    <div id="stories" class="card"></div>
+  </div>
+
+  <!-- Shown only when the published document has site.holdings = true (analysis.config.json: web.holdings). -->
+  <div id="holdings-section" hidden>
+    <div class="section-header"><h2 class="section-title">Holdings</h2><span id="holdings-count" class="section-count"></span></div>
+    <div class="card table-wrap"><table id="holdings"></table></div>
+  </div>
+
+  <div id="quiet-section" hidden>
+    <div class="section-header"><h2 class="section-title">Quiet watches</h2></div>
+    <details class="card"><summary id="quiet-summary"></summary><ul id="quiet"></ul></details>
+  </div>
+</main>
+<div id="toasts" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>
