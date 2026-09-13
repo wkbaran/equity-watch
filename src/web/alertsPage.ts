@@ -10,6 +10,7 @@
 import { describeAlertCondition } from "../alerts/describe.js";
 import { effectiveTrigger, type Alert, type AlertSide } from "../alerts/models.js";
 import type { Quote } from "../providers/schwab.js";
+import { tradingViewUrl } from "../tradingview.js";
 
 export interface AlertRow {
   id: string;
@@ -43,7 +44,12 @@ function round2(n: number): number {
 }
 
 /** Live alerts that are actually checked (ignored symbols excluded), by symbol. */
-export function buildAlertRows(alerts: Alert[], quotes: Map<string, Quote>, ignored: Set<string>): AlertRow[] {
+export function buildAlertRows(
+  alerts: Alert[],
+  quotes: Map<string, Quote>,
+  ignored: Set<string>,
+  exchanges: Map<string, string> = new Map()
+): AlertRow[] {
   return alerts
     .filter((a) => a.status === "live" && !ignored.has(a.symbol.toUpperCase()))
     .map((a): AlertRow => {
@@ -68,7 +74,7 @@ export function buildAlertRows(alerts: Alert[], quotes: Map<string, Quote>, igno
         watchingSinceApprox: a.watchingSinceApprox,
         price,
         vsLevelPct: price === null || reference === null || reference === 0 ? null : round2(((price - reference) / reference) * 100),
-        chartUrl: `https://www.tradingview.com/chart/?symbol=${a.symbol}`,
+        chartUrl: tradingViewUrl(a.symbol, exchanges.get(a.symbol)),
       };
     })
     .sort((a, b) => a.symbol.localeCompare(b.symbol) || a.id.localeCompare(b.id));

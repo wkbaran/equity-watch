@@ -25,7 +25,10 @@ describe("isEntryPoint", () => {
 
   it("matches when started through a symlinked directory", () => {
     const link = join(dir, "link");
-    symlinkSync(join(dir, "real"), link, "dir");
+    // "junction", not "dir": a directory symlink needs admin or Developer Mode on
+    // Windows (EPERM otherwise), while a junction doesn't. Elsewhere the type is
+    // ignored and this is an ordinary symlink.
+    symlinkSync(join(dir, "real"), link, "junction");
     expect(isEntryPoint(pathToFileURL(script).href, join(link, "cli.js"))).toBe(true);
   });
 

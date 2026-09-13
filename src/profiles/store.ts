@@ -20,6 +20,15 @@ export function loadCachedProfile(cacheDir: string, symbol: string): CompanyProf
   return JSON.parse(readFileSync(file, "utf-8")) as CompanyProfile;
 }
 
+/**
+ * Whether `profile fetch` should call FMP for a symbol. A profile cached before
+ * the exchange was recorded counts as missing, since chart links need it; one
+ * where FMP had no exchange (`null`) does not, or it would be refetched forever.
+ */
+export function profileNeedsFetch(cached: CompanyProfile | null, refresh: boolean): boolean {
+  return refresh || cached === null || cached.exchange === undefined;
+}
+
 export function saveCachedProfile(cacheDir: string, profile: CompanyProfile): void {
   const file = profileFile(cacheDir, profile.symbol);
   mkdirSync(dirname(file), { recursive: true });

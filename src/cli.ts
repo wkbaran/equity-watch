@@ -78,7 +78,8 @@ import { FMP_FREE_DAILY_LIMIT, FmpProvider } from "./providers/fmp.js";
 import { DEFAULT_MAX_REQUESTS_PER_MINUTE, SchwabAuth, SchwabProvider, type Quote } from "./providers/schwab.js";
 import type { PriceDataProvider } from "./providers/types.js";
 import { DailyBudget } from "./profiles/budget.js";
-import { loadCachedProfile, listCachedProfiles, saveCachedProfile } from "./profiles/store.js";
+import { loadCachedProfile, listCachedProfiles, profileNeedsFetch, saveCachedProfile } from "./profiles/store.js";
+import { exchangesFromProfiles } from "./tradingview.js";
 import { gatherKnownSymbols } from "./profiles/universe.js";
 import { ignoredSymbols, isIgnored, loadTuningConfig, resolveParamsForSymbol, type TuningConfig } from "./tuning.js";
 
@@ -1404,7 +1405,7 @@ async function cmdProfileFetch(opts: ProfileFetchOpts): Promise<void> {
   let budgetExhausted = 0;
   let failed = 0;
   for (const symbol of [...symbols].sort()) {
-    if (!opts.refresh && loadCachedProfile(opts.cacheDir, symbol) !== null) {
+    if (!profileNeedsFetch(loadCachedProfile(opts.cacheDir, symbol), opts.refresh === true)) {
       skipped++;
       continue;
     }
@@ -1642,6 +1643,7 @@ interface DashboardOpts extends AlertCommonOpts {
   publish?: boolean;
   skipUnchanged?: boolean;
   maxStaleMinutes: number;
+  profileCacheDir: string;
 }
 
 function defaultDashboardPath(now: Date): string {
@@ -1663,6 +1665,12 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   const ignored = ignoredSymbols(config);
   const siteDir = opts.site ?? (opts.publish ? "site" : undefined);
   const siteOptions = { holdings: config?.web?.holdings === true };
+  // Chart links need each symbol's exchange; a bare symbol can open a foreign listing.
+  const exchanges = exchangesFromProfiles(listCachedProfiles(opts.profileCacheDir));
+  const unlisted = new Set(alerts.filter((a) => a.status === "live" && !exchanges.has(a.symbol)).map((a) => a.symbol));
+  if (unlisted.size > 0 && !opts.quiet) {
+    console.log(`${unlisted.size} symbols have no cached exchange, so their chart links are unprefixed. Run: profile fetch --all-known`);
+  }
 
   const build = (quotes: Map<string, Quote>) =>
     buildDashboard({
@@ -1676,13 +1684,14 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
       windowDays: opts.windowDays,
       ignoredSymbols: ignored,
       includeApproaching: opts.approaching,
+      exchanges,
     });
 
   // The fingerprint ignores price-derived fields, so it can be taken from a
   // quote-less build: a run with nothing new exits here without spending a
   // single quote request, which is what makes a tight cron interval affordable.
   if (opts.publish && opts.skipUnchanged) {
-    const decision = shouldPublish(loadPublishState(), siteFingerprint(siteDocument(build(new Map()), siteOptions), buildAlertRows(alerts, new Map(), ignored)), new Date(), opts.maxStaleMinutes);
+    const decision = shouldPublish(loadPublishState(), siteFingerprint(siteDocument(build(new Map()), siteOptions), buildAlertRows(alerts, new Map(), ignored, exchanges)), new Date(), opts.maxStaleMinutes);
     if (!decision.publish) {
       console.log(`Skipped publish: ${decision.reason}.`);
       return;
@@ -1722,7 +1731,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   // Fingerprint what is actually published, so holdings changes don't trigger
   // a publish while the holdings section is off.
   const siteDashboard = siteDocument(dashboard, siteOptions);
-  const alertRows = buildAlertRows(alerts, quotes, ignored);
+  const alertRows = buildAlertRows(alerts, quotes, ignored, exchanges);
   if (siteDir !== undefined) {
     writeSite(siteDir, dashboard, siteOptions, alertRows);
     console.log(`Wrote site to ${siteDir}/${siteOptions.holdings ? "" : " (holdings excluded; set web.holdings in the config to include)"}`);
@@ -1829,6 +1838,7 @@ function buildProgram(): Command {
     .option("--publish", "Sync the site to S3 (S3_BUCKET/AWS_* in .env); implies --site site")
     .option("--skip-unchanged", "With --publish: do nothing, not even fetch quotes, unless something happened or prices are stale")
     .option("--max-stale-minutes <n>", "With --skip-unchanged: republish anyway once prices are this old", (v) => parseInt(v, 10), 30)
+    .option("--profile-cache-dir <path>", "Profile cache, which supplies each symbol's exchange for chart links", ".cache/profiles")
     .action((opts: DashboardOpts) => cmdDashboard(opts));
 
   withAlertCommon(alertCmd.command("seed"))

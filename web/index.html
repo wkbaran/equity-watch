@@ -119,9 +119,10 @@
 
   .trigger-row { display: grid; grid-template-columns: 110px 1fr auto; gap: 12px; padding: 0.55rem 1rem; border-top: 1px solid var(--border); align-items: baseline; }
   .trigger-row:first-child { border-top: 0; }
-  a.trigger-row { color: var(--text); text-decoration: none; }
-  a.trigger-row:hover, tr.clickable:hover { background: var(--surface2); }
-  a.trigger-row:focus-visible, tr.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .trigger-row { color: var(--text); cursor: pointer; }
+  .trigger-row:hover, tr.clickable:hover { background: var(--surface2); }
+  .trigger-row:focus-visible, tr.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  a.sym { font-weight: 700; color: var(--accent); }
   .trigger-row.new { box-shadow: inset 3px 0 0 var(--yellow); }
   .when { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
   .status { font-size: 0.8rem; color: var(--muted); }

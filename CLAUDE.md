@@ -273,6 +273,19 @@ verbatim from the real files, chosen to preserve every behaviour the seed tests
 assert. The full exports and `alerts_in/` stay out of git; nothing depends on
 them, and the old six-column schema is specimen'd by `tests/fixtures/sample_alerts.csv`.
 
+## TradingView chart links need an exchange prefix
+
+`chart/?symbol=PPL` opens whatever TradingView ranks first, and its symbol
+search (checked 2026-09-13) puts Pakistan Petroleum (PSX) above PPL Corp
+(NYSE). `src/tradingview.ts` prefixes the exchange from the FMP profile cache,
+using uniquetrades-congress's mapping. FMP calls NYSE Arca ETFs (BIL, VFH, KRE)
+`AMEX`, which is also TradingView's prefix for them, so that isn't a bug.
+
+Profiles cached before 2026-09-13 have no `exchange` key. `profileNeedsFetch`
+treats those as missing, so the next `profile fetch --all-known` refetches
+them (a `null` exchange means FMP had none, and is not refetched). Until then
+those links fall back to the bare symbol, and `dashboard` says how many.
+
 ## Ticker symbols in these exports are not all US listings
 
 `PPL` appears at both `37.14` and `231.55`, and the `231.55` one fired at

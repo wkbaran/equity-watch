@@ -6,6 +6,34 @@ import { scoreRevisit } from "../src/alerts/revisit.js";
 import { emptyHoldingsStore, type HoldingsStore } from "../src/holdings/models.js";
 import type { Quote } from "../src/providers/schwab.js";
 import { dashboardFingerprint, siteDocument } from "../src/web/site.js";
+import { buildAlertRows } from "../src/web/alertsPage.js";
+
+describe("chart links", () => {
+  const exchanges = new Map([
+    ["PPL", "NYSE"],
+    ["BIL", "AMEX"],
+  ]);
+
+  it("prefix the exchange on every row and publish prefixes for symbols without a row", () => {
+    const d = base({
+      alerts: [staticAlert({ symbol: "PPL" })],
+      revisits: [revisit({ symbol: "PPL" })],
+      holdings: holdingsWith("BIL", 10, 90),
+      exchanges,
+    });
+    const ppl = "https://www.tradingview.com/chart/?symbol=NYSE%3APPL";
+    expect(d.revisitQueue[0].chartUrl).toBe(ppl);
+    expect(d.recentTriggers[0].chartUrl).toBe(ppl);
+    expect(d.tradingViewPrefixes).toEqual({ PPL: "NYSE", BIL: "AMEX" });
+    expect(buildAlertRows([staticAlert({ symbol: "PPL" })], new Map(), new Set(), exchanges)[0].chartUrl).toBe(ppl);
+  });
+
+  it("fall back to the bare symbol with no cached exchange", () => {
+    const d = base({ revisits: [revisit()] });
+    expect(d.revisitQueue[0].chartUrl).toBe("https://www.tradingview.com/chart/?symbol=AAPL");
+    expect(d.tradingViewPrefixes).toEqual({});
+  });
+});
 
 const NOW = new Date("2026-09-12T12:00:00.000Z");
 

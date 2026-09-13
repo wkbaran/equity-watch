@@ -101,6 +101,22 @@
   const heldTag = (t) => (t.heldPosition ? h("span", { class: "tag held", text: "held" }) : null);
   const muted = (text) => h("span", { class: "muted", text });
 
+  // Every displayed ticker links to its TradingView chart. The click stops
+  // there so a ticker inside a clickable row or toast doesn't also open details.
+  // Rows carry a chartUrl built server-side; symbols without a row (holdings,
+  // stories, quiet notes) use the document's exchange prefixes, since a bare
+  // symbol like PPL opens a foreign listing (src/tradingview.ts).
+  const tvUrl = (symbol) => {
+    const prefix = current?.tradingViewPrefixes?.[symbol];
+    return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(prefix ? `${prefix}:${symbol}` : symbol)}`;
+  };
+  const symbolLink = (symbol, href = tvUrl(symbol)) =>
+    h("a", { class: "sym", href, target: "_blank", rel: "noopener", text: symbol, onclick: (e) => e.stopPropagation() });
+  // For generated sentences that open with the ticker ("MKS: watching since…").
+  function linkLeadingSymbol(text, symbol) {
+    return symbol && text.startsWith(symbol) ? [symbolLink(symbol), text.slice(symbol.length)] : [text];
+  }
+
   const SESSION_LABEL = { pre: "pre-market", regular: "regular hours", post: "after hours" };
   const KIND_LABEL = { static: "Static", trailing: "Trailing", volume: "Volume", ma: "Moving average" };
   // Plain names for analysis.ts verdicts. Kept literal: NO_CLOSE_CONFIRM in
@@ -175,7 +191,7 @@
           h(
             "div",
             {},
-            h("div", { class: "headline" }, h("a", { class: "plain", href: triggerHash(r.id), text: r.headline }), r.heldPosition ? h("span", { class: "tag held", text: "held" }) : null),
+            h("div", { class: "headline" }, symbolLink(r.symbol, r.chartUrl), " ", h("a", { class: "plain", href: triggerHash(r.id), text: bareHeadline(r) }), heldTag(r)),
             h(
               "div",
               { class: "sub" },
@@ -199,12 +215,22 @@
     );
   }
 
+  // A div rather than an <a>: the ticker inside is its own link, and links can't nest.
   function triggerRow(t) {
+    const open = () => (location.hash = triggerHash(t.id));
     return h(
-      "a",
-      { class: `trigger-row${freshIds.has(t.id) ? " new" : ""}`, href: triggerHash(t.id) },
+      "div",
+      {
+        class: `trigger-row clickable${freshIds.has(t.id) ? " new" : ""}`,
+        role: "link",
+        tabindex: "0",
+        onclick: open,
+        onkeydown: (e) => {
+          if (e.key === "Enter") open();
+        },
+      },
       h("span", { class: "when", text: when(t.triggeredAt) }),
-      h("span", {}, h("strong", { text: t.symbol }), " ", bareHeadline(t), heldTag(t)),
+      h("span", {}, symbolLink(t.symbol, t.chartUrl), " ", bareHeadline(t), heldTag(t)),
       h("span", { class: "status", text: t.status })
     );
   }
@@ -224,7 +250,7 @@
     $("stories-section").hidden = stories.length === 0;
     $("stories").replaceChildren(
       ...stories.map((s) =>
-        h("div", { class: "story" }, h("div", { class: "headline", text: s.summary }), h("ol", {}, ...s.lines.map((l) => h("li", { text: l.text }))))
+        h("div", { class: "story" }, h("div", { class: "headline" }, ...linkLeadingSymbol(s.summary, s.symbol)), h("ol", {}, ...s.lines.map((l) => h("li", { text: l.text }))))
       )
     );
   }
@@ -276,7 +302,7 @@
       return h(
         "tr",
         { class: r.ignored ? "ignored" : null, title: r.ignored ? "Not alerted (ignoreSymbols)" : null },
-        h("td", {}, r.symbol, r.stops.length ? h("span", { class: "tag", text: `stop ${r.stops.join(", ")}` }) : null),
+        h("td", {}, symbolLink(r.symbol), r.stops.length ? h("span", { class: "tag", text: `stop ${r.stops.join(", ")}` }) : null),
         h("td", { text: r.shares }),
         h("td", { text: money(r.basis) }),
         h("td", { text: money(r.price) }),
@@ -291,7 +317,8 @@
   function renderQuiet(notes, total) {
     $("quiet-section").hidden = notes.length === 0;
     $("quiet-summary").textContent = `${total} watched a while with nothing since${total > notes.length ? ` (showing ${notes.length})` : ""}`;
-    $("quiet").replaceChildren(...notes.map((n) => h("li", { text: n })));
+    // Notes are plain strings that open with "SYMBOL:" (quietWatchNote).
+    $("quiet").replaceChildren(...notes.map((n) => h("li", {}, ...linkLeadingSymbol(n, n.match(/^([^\s:]+):/)?.[1]))));
   }
 
   function renderUpdated() {
@@ -397,7 +424,7 @@
             if (e.key === "Enter") open(a.id);
           },
         },
-        h("td", {}, h("strong", { text: a.symbol })),
+        h("td", {}, symbolLink(a.symbol, a.chartUrl)),
         h("td", { class: "cond", text: a.condition }),
         h("td", {}, money(a.level ?? a.movingLevel), a.level === null && a.movingLevel !== null ? h("span", { class: "tag", text: "moving" }) : null),
         h("td", { text: money(a.price) }),
@@ -488,7 +515,7 @@
     );
 
     return [
-      h("h2", { class: "drawer-title" }, h("strong", { text: t.symbol }), " ", bareHeadline(t), heldTag(t)),
+      h("h2", { class: "drawer-title" }, symbolLink(t.symbol, t.chartUrl), " ", bareHeadline(t), heldTag(t)),
       h("dl", { class: "kv-list" }, ...rows),
       h(
         "div",
@@ -536,7 +563,7 @@
 
     const triggers = (current?.recentTriggers ?? []).filter((t) => t.alertId === a.id);
     return [
-      h("h2", { class: "drawer-title" }, h("strong", { text: a.symbol }), " ", muted(KIND_LABEL[a.kind] ?? a.kind)),
+      h("h2", { class: "drawer-title" }, symbolLink(a.symbol, a.chartUrl), " ", muted(KIND_LABEL[a.kind] ?? a.kind)),
       h("dl", { class: "kv-list" }, ...rows),
       h("h3", { class: "drawer-sub", text: "Recent triggers" }),
       triggers.length ? h("div", { class: "card" }, ...triggers.map(triggerRow)) : h("p", { class: "muted", text: "None in the recent window." }),
@@ -641,7 +668,8 @@
       h(
         "div",
         { class: t.id ? "t-body" : null, onclick: t.id ? () => (location.hash = triggerHash(t.id)) : null },
-        h("span", { class: "t-sym", text: t.symbol }),
+        // The "+N more" toast reuses the symbol slot for a count, which isn't a ticker.
+        t.id ? symbolLink(t.symbol, t.chartUrl) : h("span", { class: "t-sym", text: t.symbol }),
         " ",
         t.heldPosition === undefined ? t.headline : bareHeadline(t),
         heldTag(t)

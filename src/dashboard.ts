@@ -32,6 +32,7 @@ import {
   type TickerStory,
 } from "./narrative.js";
 import type { Quote } from "./providers/schwab.js";
+import { mapExchange, tradingViewUrl } from "./tradingview.js";
 
 export interface DashboardSummary {
   liveAlerts: number;
@@ -164,6 +165,12 @@ export interface Dashboard {
   quietWatches: string[];
   /** How many qualified in total, before the display cap. */
   quietTotal: number;
+  /**
+   * TradingView exchange prefix by symbol, for symbols shown without a row
+   * carrying a chartUrl (holdings, stories, quiet notes). Symbols with no
+   * known exchange are absent; a renderer links them bare.
+   */
+  tradingViewPrefixes: Record<string, string>;
 }
 
 export interface DashboardInputs {
@@ -189,13 +196,11 @@ export interface DashboardInputs {
   includeApproaching?: boolean;
   /** Symbols excluded from alerting (TuningConfig.ignoreSymbols). */
   ignoredSymbols?: Set<string>;
+  /** Symbol to FMP exchange (exchangesFromProfiles), so chart links open the right listing. */
+  exchanges?: Map<string, string>;
 }
 
 const RECENT_TRIGGER_CAP = 100;
-
-function chartUrl(symbol: string): string {
-  return `https://www.tradingview.com/chart/?symbol=${symbol}`;
-}
 
 function round(n: number, places = 2): number {
   const f = 10 ** places;
@@ -210,6 +215,8 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
 
   const ignored = inputs.ignoredSymbols ?? new Set<string>();
   const isIgnored = (symbol: string) => ignored.has(symbol.toUpperCase());
+  const exchanges = inputs.exchanges ?? new Map<string, string>();
+  const chartUrl = (symbol: string) => tradingViewUrl(symbol, exchanges.get(symbol));
 
   const live = alerts.filter((a) => a.status === "live" && !isIgnored(a.symbol));
   const heldSymbols = new Set(holdings.lots.map((l) => l.symbol.toUpperCase()));
@@ -404,6 +411,21 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       };
     });
 
+  const stories = buildStories(
+    revisits.filter((e) => !isIgnored(e.symbol)),
+    narrativeCtx,
+    { limit: inputs.storyLimit ?? 5 }
+  );
+
+  const tradingViewPrefixes: Record<string, string> = {};
+  const shown = [...holdingRows.map((r) => r.symbol), ...stories.map((s) => s.symbol), ...live.map((a) => a.symbol)];
+  for (const symbol of [...new Set(shown)].sort()) {
+    const prefix = mapExchange(exchanges.get(symbol));
+    if (prefix !== null) {
+      tradingViewPrefixes[symbol] = prefix;
+    }
+  }
+
   return {
     generatedAt: now.toISOString(),
     summary: {
@@ -421,13 +443,10 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
     approaching: approachingShown,
     approachingTotal: includeApproaching ? approachingTotal : 0,
     holdings: holdingRows,
-    stories: buildStories(
-      revisits.filter((e) => !isIgnored(e.symbol)),
-      narrativeCtx,
-      { limit: inputs.storyLimit ?? 5 }
-    ),
+    stories,
     quietWatches,
     quietTotal: quietTotal.count,
+    tradingViewPrefixes,
   };
 }
 

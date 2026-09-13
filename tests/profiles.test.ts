@@ -7,7 +7,7 @@ import type { StaticAlert } from "../src/alerts/models.js";
 import { saveHoldingsStore } from "../src/holdings/store.js";
 import { emptyHoldingsStore, type Lot } from "../src/holdings/models.js";
 import { DailyBudget } from "../src/profiles/budget.js";
-import { loadCachedProfile, listCachedProfiles, saveCachedProfile } from "../src/profiles/store.js";
+import { loadCachedProfile, listCachedProfiles, profileNeedsFetch, saveCachedProfile } from "../src/profiles/store.js";
 import { gatherKnownSymbols } from "../src/profiles/universe.js";
 import type { CompanyProfile } from "../src/providers/fmp.js";
 
@@ -58,9 +58,19 @@ describe("profile cache store", () => {
       sector: "Technology",
       industry: "Consumer Electronics",
       description: "Makes phones.",
+      exchange: "NASDAQ",
     };
     saveCachedProfile(dir, profile);
     expect(loadCachedProfile(dir, "AAPL")).toEqual(profile);
+  });
+
+  it("refetches profiles cached before the exchange was recorded, but not ones FMP had none for", () => {
+    const base = { symbol: "PPL", companyName: null, sector: null, industry: null, description: null };
+    expect(profileNeedsFetch(null, false)).toBe(true);
+    expect(profileNeedsFetch(base, false)).toBe(true);
+    expect(profileNeedsFetch({ ...base, exchange: "NYSE" }, false)).toBe(false);
+    expect(profileNeedsFetch({ ...base, exchange: null }, false)).toBe(false);
+    expect(profileNeedsFetch({ ...base, exchange: "NYSE" }, true)).toBe(true);
   });
 
   it("returns null for an uncached symbol", () => {
