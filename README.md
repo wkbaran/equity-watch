@@ -1,13 +1,20 @@
-# tradingview-alert-analysis
+# equity-watch
 
-Turns a raw TradingView "Alerts Log" CSV export into a short list of alerts
-worth actually looking at again, specifically: **confirmed breakouts past
-resistance on rising volume**.
+A self-managed alert engine for equities, built to replace a capped, paid
+alert subscription. It watches price levels, trailing stops, volume, and
+moving averages against Schwab market data. Alerts never disarm; every
+trigger lands in a revisit queue with a proposed next level. A browser
+dashboard at watch.billbaran.us shows the queue, recent triggers, and every
+live alert.
 
-## Why
+It started as a way to confirm TradingView alerts, and it can still analyze
+a TradingView alert-log export: `analyze` separates **confirmed breakouts past
+resistance on rising volume** from noise.
 
-A TradingView price-crossing alert only tells you the price touched a
-number at some point intraday. It doesn't tell you whether:
+## Why confirm breakouts
+
+A price-crossing alert only tells you the price touched a number at some
+point intraday. It doesn't tell you whether:
 
 - that number was a real resistance level (a recent swing high) or an
   arbitrary threshold,
@@ -717,10 +724,10 @@ then copy the outputs into `.env` (`S3_BUCKET`, `AWS_REGION`,
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`):
 
 ```bash
-aws cloudformation deploy --region us-east-1 --stack-name tv-alerts-dashboard \
+aws cloudformation deploy --region us-east-1 --stack-name equity-watch-dashboard \
   --template-file cloudformation.yaml --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides BucketName=tv-alerts-yourname
-aws cloudformation describe-stacks --region us-east-1 --stack-name tv-alerts-dashboard --query 'Stacks[0].Outputs'
+  --parameter-overrides BucketName=equity-watch-billbaran
+aws cloudformation describe-stacks --region us-east-1 --stack-name equity-watch-dashboard --query 'Stacks[0].Outputs'
 ```
 
 `--skip-unchanged` publishes only when something happened (a trigger, a status

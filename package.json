@@ -1,10 +1,10 @@
 {
-  "name": "tv-alerts",
+  "name": "equity-watch",
   "version": "1.0.0",
-  "description": "Confirm TradingView breakout alerts against real OHLCV data before you look at them again.",
+  "description": "Watch equities for price, moving-average, and volume events, and queue what needs a decision.",
   "type": "module",
   "bin": {
-    "tv-alerts": "./dist/cli.js"
+    "equity-watch": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

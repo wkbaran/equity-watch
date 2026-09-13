@@ -15,8 +15,11 @@
   "use strict";
 
   const POLL_MS = 60_000;
-  const SEEN_KEY = "tva.seenTriggers";
-  const THEME_KEY = "tva-theme";
+  const SEEN_KEY = "equity-watch.seenTriggers";
+  const THEME_KEY = "equity-watch.theme";
+  // Keys from before the project was renamed, read as a fallback so a browser
+  // keeps its seen triggers and theme. index.html reads the old theme key too.
+  const LEGACY_SEEN_KEY = "tva.seenTriggers";
   const CLI = "node dist/cli.js";
 
   const $ = (id) => document.getElementById(id);
@@ -41,7 +44,7 @@
 
   function loadSeen() {
     try {
-      const raw = localStorage.getItem(SEEN_KEY);
+      const raw = localStorage.getItem(SEEN_KEY) ?? localStorage.getItem(LEGACY_SEEN_KEY);
       return raw === null ? null : new Set(JSON.parse(raw));
     } catch {
       return null;

@@ -7,7 +7,8 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔔</text></svg>">
 <script>
   // Apply a saved light preference before first paint, so the page doesn't flash dark.
-  try { if (localStorage.getItem("tva-theme") === "light") document.documentElement.setAttribute("data-theme", "light"); } catch (e) {}
+  // "tva-theme" is the key from before the project was renamed.
+  try { if ((localStorage.getItem("equity-watch.theme") ?? localStorage.getItem("tva-theme")) === "light") document.documentElement.setAttribute("data-theme", "light"); } catch (e) {}
 </script>
 <style>
   /* Palette copied from uniquetrades-congress (Catppuccin Mocha / Latte). Dark is the default. */

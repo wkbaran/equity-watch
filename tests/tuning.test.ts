@@ -98,7 +98,7 @@ describe("loadTuningConfig", () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "tv-alerts-tuning-test-"));
+    dir = mkdtempSync(join(tmpdir(), "equity-watch-tuning-test-"));
   });
 
   afterEach(() => {

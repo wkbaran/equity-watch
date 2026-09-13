@@ -1734,13 +1734,13 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
 }
 
 function buildProgram(): Command {
-  const program = new Command("tv-alerts");
+  const program = new Command("equity-watch");
 
   const withCommon = (cmd: Command): Command =>
     cmd
       .option("--app-key <key>", "Schwab App Key (or SCHWAB_APP_KEY in env/.env)")
       .option("--app-secret <secret>", "Schwab App Secret (or SCHWAB_APP_SECRET in env/.env)")
-      .option("--token-path <path>", "Where to cache Schwab OAuth tokens", join(homedir(), ".tv_alerts", "schwab_tokens.json"));
+      .option("--token-path <path>", "Where to cache Schwab OAuth tokens", join(homedir(), ".equity_watch", "schwab_tokens.json"));
 
   withCommon(program.command("schwab-login"))
     .description("One-time interactive Schwab OAuth login")

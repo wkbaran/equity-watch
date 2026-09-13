@@ -141,7 +141,7 @@ export class SchwabAuth {
     if (!this.state) {
       throw new SchwabAuthError(
         "No cached Schwab tokens found. Run authorizeInteractive() first " +
-          "(e.g. `tv-alerts schwab-login`)."
+          "(e.g. `equity-watch schwab-login`)."
       );
     }
 
@@ -171,7 +171,7 @@ export class SchwabAuth {
   async getAccessToken(): Promise<string> {
     if (!this.state) {
       throw new SchwabAuthError(
-        "No cached Schwab tokens found. Run authorizeInteractive() first " + "(e.g. `tv-alerts schwab-login`)."
+        "No cached Schwab tokens found. Run authorizeInteractive() first " + "(e.g. `equity-watch schwab-login`)."
       );
     }
     if (Date.now() / 1000 >= this.state.accessTokenExpiresAt - ACCESS_TOKEN_SAFETY_MARGIN_SECONDS) {

@@ -14,7 +14,7 @@ import type { CompanyProfile } from "../src/providers/fmp.js";
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "tv-alerts-profiles-test-"));
+  dir = mkdtempSync(join(tmpdir(), "equity-watch-profiles-test-"));
 });
 
 afterEach(() => {

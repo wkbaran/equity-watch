@@ -175,7 +175,7 @@ describe("checkAlerts", () => {
     // anchor-vs-price "side" field, or a brand new alert fires on its very
     // first check even though price never moved.
     const market = fakeMarket({ prices: { TEST: 200 } });
-    const added = await addAlert(mkdtempSync(join(tmpdir(), "tv-alerts-regress-")) + "/alerts.json", {
+    const added = await addAlert(mkdtempSync(join(tmpdir(), "equity-watch-regress-")) + "/alerts.json", {
       kind: "static",
       symbol: "TEST",
       level: 150, // below the live price of 200
@@ -409,7 +409,7 @@ describe("addAlert", () => {
   let path: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "tv-alerts-test-"));
+    dir = mkdtempSync(join(tmpdir(), "equity-watch-test-"));
     path = join(dir, "alerts.json");
   });
 

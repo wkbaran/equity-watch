@@ -55,7 +55,7 @@ node dist/cli.js schwab-login
 
 This opens (or prints) a Schwab login URL, and after you approve access it
 asks you to paste back the URL you were redirected to. Tokens are cached
-to `~/.tv_alerts/schwab_tokens.json` (override with `--token-path`) and
+to `~/.equity_watch/schwab_tokens.json` (override with `--token-path`) and
 refreshed automatically after that until they expire.
 
 ## 4. Run the analysis

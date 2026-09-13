@@ -14,7 +14,7 @@ describe("writeAlertTriggerReport", () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "tv-alerts-report-test-"));
+    dir = mkdtempSync(join(tmpdir(), "equity-watch-report-test-"));
   });
 
   afterEach(() => {

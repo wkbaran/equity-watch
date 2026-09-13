@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  TradingView alert dashboard — static site hosting.
+  equity-watch dashboard — static site hosting.
   S3 bucket (private) + CloudFront (HTTPS, optional basic auth) + IAM publish user.
   Deploy in us-east-1: ACM certificates used by CloudFront must live there.
 
@@ -15,7 +15,7 @@ Parameters:
 
   BucketName:
     Type: String
-    Description: S3 bucket name (globally unique, e.g. tv-alerts-dashboard-yourname).
+    Description: S3 bucket name (globally unique, e.g. equity-watch-yourname).
 
   EnableBasicAuth:
     Type: String
@@ -185,7 +185,7 @@ Resources:
   PublishUser:
     Type: AWS::IAM::User
     Properties:
-      UserName: !Sub 'tv-alerts-publisher-${BucketName}'
+      UserName: !Sub 'equity-watch-publisher-${BucketName}'
       Policies:
         - PolicyName: DashboardPublish
           PolicyDocument:
