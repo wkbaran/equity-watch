@@ -112,8 +112,12 @@
     const prefix = current?.tradingViewPrefixes?.[symbol];
     return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(prefix ? `${prefix}:${symbol}` : symbol)}`;
   };
+  // Every chart opens in one named tab, so clicking through tickers reuses it
+  // instead of piling up tabs. No rel="noopener" on these: a tab opened with
+  // noopener can't be found by name again, so each click would open a new one.
+  const CHART_TARGET = "tradingview";
   const symbolLink = (symbol, href = tvUrl(symbol)) =>
-    h("a", { class: "sym", href, target: "_blank", rel: "noopener", text: symbol, onclick: (e) => e.stopPropagation() });
+    h("a", { class: "sym", href, target: CHART_TARGET, text: symbol, onclick: (e) => e.stopPropagation() });
   // For generated sentences that open with the ticker ("MKS: watching since…").
   function linkLeadingSymbol(text, symbol) {
     return symbol && text.startsWith(symbol) ? [symbolLink(symbol), text.slice(symbol.length)] : [text];
@@ -233,7 +237,7 @@
               "div",
               { class: "actions" },
               h("a", { href: triggerHash(r.id), text: "Details" }),
-              h("a", { href: r.chartUrl, target: "_blank", rel: "noopener", text: "Chart" }),
+              h("a", { href: r.chartUrl, target: CHART_TARGET, text: "Chart" }),
               r.suggestedLevel !== null ? copyButton(`Copy apply → ${r.suggestedLevel}`, `${CLI} alert revisit apply ${r.id}`) : null,
               copyButton("Copy dismiss", `${CLI} alert revisit dismiss ${r.id}`)
             )
@@ -584,7 +588,7 @@
       h(
         "div",
         { class: "actions", style: "margin-top:1.25rem" },
-        h("a", { href: t.chartUrl, target: "_blank", rel: "noopener", text: "Chart" }),
+        h("a", { href: t.chartUrl, target: CHART_TARGET, text: "Chart" }),
         t.status === "open" && t.suggestedLevel !== null ? copyButton(`Copy apply → ${t.suggestedLevel}`, `${CLI} alert revisit apply ${t.id}`) : null,
         t.status === "open" ? copyButton("Copy dismiss", `${CLI} alert revisit dismiss ${t.id}`) : null
       ),
@@ -635,7 +639,7 @@
       h(
         "div",
         { class: "actions", style: "margin-top:1.25rem" },
-        h("a", { href: a.chartUrl, target: "_blank", rel: "noopener", text: "Chart" }),
+        h("a", { href: a.chartUrl, target: CHART_TARGET, text: "Chart" }),
         copyButton("Copy remove", `${CLI} alert remove ${a.id}`)
       ),
     ];
