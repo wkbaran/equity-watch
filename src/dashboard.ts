@@ -17,9 +17,16 @@
  * spreadsheet. The CSV writers stay as they are for the event logs.
  */
 
-import { effectiveTrigger, type Alert } from "./alerts/models.js";
+import { effectiveTrigger, type Alert, type AlertDirection, type CrossDirection } from "./alerts/models.js";
 import { describeAlertCondition } from "./alerts/describe.js";
-import { explainPriority, type RevisitEntry, type RevisitMa, type RevisitVolume } from "./alerts/revisit.js";
+import { entryDirection, reversalOf, tradingDaysAfter } from "./alerts/reversion.js";
+import {
+  explainPriority,
+  type RevisitEntry,
+  type RevisitFollowUp,
+  type RevisitMa,
+  type RevisitVolume,
+} from "./alerts/revisit.js";
 import { computeBasis, type HoldingsStore } from "./holdings/models.js";
 import type { Session } from "./marketHours.js";
 import {
@@ -46,11 +53,31 @@ export interface DashboardSummary {
   quotesUnavailable: number;
 }
 
-export interface RevisitRow {
+/**
+ * The first crossing back against a fire, precomputed so a renderer doesn't
+ * need the trading calendar. Recorded events only, nothing relative to now.
+ */
+export interface ReversalSummary {
+  at: string;
+  price: number;
+  /** Trading days after the fire's own day: 0 is the same day. */
+  tradingDaysAfter: number;
+}
+
+/** Fields every row describing one fire carries about the crossing and what followed it. */
+export interface CrossingDetails {
+  /** Which way price crossed the level. Null for volume triggers and moving-average touches. */
+  direction: CrossDirection | null;
+  /** Later crossings of the same level inside the reversion window, oldest first. */
+  followUps: RevisitFollowUp[];
+  reversal: ReversalSummary | null;
+}
+
+export interface RevisitRow extends CrossingDetails {
   id: string;
   symbol: string;
   priority: number | null;
-  /** Plain-English one-liner: "TGT broke resistance with volume". */
+  /** Plain-English one-liner: "TGT crossed above 110 on volume and held". */
   headline: string;
   /** What it's waiting on, as a sentence. Null when nothing is pending. */
   action: string | null;
@@ -79,7 +106,7 @@ export interface RevisitRow {
  * Also carries everything a trigger's detail view shows, so a renderer never
  * needs the stores themselves.
  */
-export interface TriggerRow {
+export interface TriggerRow extends CrossingDetails {
   id: string;
   alertId: string;
   symbol: string;
@@ -124,6 +151,8 @@ export interface ApproachingRow {
   symbol: string;
   kind: Alert["kind"];
   side: string | null;
+  /** Which crossings fire a static alert. Null for other kinds. */
+  direction: AlertDirection | null;
   trigger: number | null;
   price: number;
   /** Percent price must move to fire. Negative means the condition is already met but gated on volume. */
@@ -207,8 +236,28 @@ function round(n: number, places = 2): number {
   return Math.round(n * f) / f;
 }
 
+export function crossingDetails(e: RevisitEntry): CrossingDetails {
+  const reversal = reversalOf(e);
+  return {
+    direction: entryDirection(e),
+    followUps: e.followUps ?? [],
+    reversal:
+      reversal === null
+        ? null
+        : {
+            at: reversal.at,
+            price: reversal.price,
+            tradingDaysAfter: tradingDaysAfter(new Date(e.triggeredAt), new Date(reversal.at)),
+          },
+  };
+}
+
 export function buildDashboard(inputs: DashboardInputs): Dashboard {
-  const { alerts, revisits, holdings, quotes, now } = inputs;
+  const { alerts, holdings, quotes, now } = inputs;
+  // Legacy follow-up entries are already folded onto the fire they follow
+  // (its followUps). Counting or listing them again would show one level's
+  // chop as several triggers, which is what folding exists to stop.
+  const revisits = inputs.revisits.filter((e) => e.followUpOf === undefined);
   const windowDays = inputs.windowDays ?? 7;
   const limit = inputs.limit ?? 25;
   const withinPct = inputs.approachingWithinPct ?? 5;
@@ -249,6 +298,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       why: e.signals ? explainPriority(e.signals) : null,
       heldPosition: heldSymbols.has(e.symbol.toUpperCase()),
       chartUrl: chartUrl(e.symbol),
+      ...crossingDetails(e),
     }));
 
   const includeApproaching = inputs.includeApproaching ?? false;
@@ -277,6 +327,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
         symbol: alert.symbol,
         kind: alert.kind,
         side: null,
+        direction: null,
         trigger: null,
         price,
         distancePct: null,
@@ -299,6 +350,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       symbol: alert.symbol,
       kind: alert.kind,
       side: alert.side,
+      direction: alert.kind === "static" ? alert.direction : null,
       trigger: round(trigger),
       price,
       distancePct,
@@ -408,6 +460,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
           e.watchingSinceApprox ?? false
         ),
         ma: e.ma ?? null,
+        ...crossingDetails(e),
       };
     });
 

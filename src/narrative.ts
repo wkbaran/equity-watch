@@ -2,9 +2,10 @@
  * Plain-English explanations of what happened, for a glanceable display.
  *
  * Two levels:
- *   - `triggerHeadline` - one line per trigger ("TGT broke resistance with
- *     volume", "Holding MKS broke support"), which is what a small always-on
- *     dashboard shows instead of a row of numbers.
+ *   - `triggerHeadline` - one line per trigger ("TGT crossed above 50 on
+ *     volume", "Holding MKS crossed below 110, then climbed back above
+ *     it the same day"), which is what a small always-on dashboard shows
+ *     instead of a row of numbers.
  *   - `tickerStory` - the chronological thread for one ticker across repeated
  *     triggers and the re-levels between them, so a name you've been chasing
  *     up reads as one narrative rather than five disconnected events.
@@ -13,12 +14,18 @@
  * money decisions and get rendered unattended on a device with no way to
  * check them, so they must be reproducible, free, instant, and incapable of
  * inventing a fact that isn't in the verdict. Everything stated here is read
- * directly off a RevisitEntry's recorded signals.
+ * directly off a RevisitEntry's recorded signals and follow-ups.
+ *
+ * No "support" or "resistance": those name levels the market has tested
+ * repeatedly, and an alert level is just a number someone picked. Every line
+ * says what price did relative to the alert's level, and names the level.
  *
  * Written for e-ink: short lines, no colour, no emoji, no box-drawing, and
  * nothing that depends on a monospace grid to parse.
  */
 
+import type { CrossDirection } from "./alerts/models.js";
+import { endedOnFiredSide, entryDirection, reversalOf, tradingDaysAfter } from "./alerts/reversion.js";
 import type { RevisitEntry } from "./alerts/revisit.js";
 import { maLabel } from "./indicators/movingAverage.js";
 import { describeSession, type Session } from "./marketHours.js";
@@ -32,46 +39,99 @@ function pct(n: number): string {
   return `${Math.abs(n) < 10 ? Math.abs(n).toFixed(1) : Math.round(Math.abs(n))}%`;
 }
 
-/**
- * Whether the entry describes price moving up through its level or down
- * through it. Read off the trigger rather than the alert's stored side, so a
- * re-levelled alert can't retroactively change what a past event said.
- */
-function direction(entry: RevisitEntry): "up" | "down" | null {
-  if (entry.levelAtTrigger === null) {
-    return null;
-  }
-  return entry.triggerPrice >= entry.levelAtTrigger ? "up" : "down";
+/** "above" for an upward crossing, "below" for a downward one. */
+function sideOf(dir: CrossDirection): string {
+  return dir === "up" ? "above" : "below";
+}
+
+function otherSide(dir: CrossDirection): string {
+  return dir === "up" ? "below" : "above";
+}
+
+/** Trading days after the fire, as words: "the same day", "the next day", "2 days later". */
+export function dayPhrase(days: number): string {
+  return days === 0 ? "the same day" : days === 1 ? "the next day" : `${days} days later`;
 }
 
 /**
- * The core phrase: what the price actually did, qualified by how well it was
- * confirmed. "Broke resistance" is a stronger claim than "tagged" and is only
- * used where the verdict supports it.
+ * The core phrase: what the price did against the level, qualified by how well
+ * the verdict confirmed it. Claims about holding are only made where the
+ * verdict supports them, and NO_CLOSE_CONFIRM never reads as a completed move.
+ *
+ * With a recorded reversal, hold claims are left to the reversal clause, which
+ * says exactly when price went back rather than restating it vaguely.
  */
-function movePhrase(entry: RevisitEntry): string {
-  const dir = direction(entry);
+function movePhrase(entry: RevisitEntry, dir: CrossDirection | null, reversed: boolean): string {
   const verdict = entry.signals?.verdict ?? null;
   const volumeConfirmed = (entry.signals?.volumeScore ?? 0) >= 0.5;
+  // A trailing alert's stored level is where it started, not what it fired at.
+  const trailing = entry.kind === "trailing";
+  const base = trailing
+    ? `hit its trailing trigger at ${entry.triggerPrice}`
+    : dir === null || entry.levelAtTrigger === null
+      ? "crossed its level"
+      : `crossed ${sideOf(dir)} ${entry.levelAtTrigger}`;
+  const extreme = dir === "down" ? "low" : "high";
+  const closedPast = trailing || dir === null ? "closed past it" : `closed ${sideOf(dir)} it`;
 
-  if (dir === "down") {
-    return verdict === "CONFIRMED_BREAKOUT" || verdict === "WATCH" ? "broke support" : "slipped below support";
-  }
-
+  // Both verdicts guarantee a close past the level on confirmed volume, and
+  // nothing more about holding: CONFIRMED_BREAKOUT includes "too soon to tell",
+  // and WATCH means volume faded *or* it failed to hold, without recording which.
   switch (verdict) {
     case "CONFIRMED_BREAKOUT":
-      return volumeConfirmed ? "broke resistance with volume" : "broke resistance and held";
+      return `${base} and ${closedPast} on volume`;
     case "WATCH":
-      return "broke resistance on volume but failed to hold";
+      return `${base} and ${closedPast} on volume${reversed ? "" : ", but volume faded or it didn't hold"}`;
     case "WATCH_WEAK":
-      return volumeConfirmed ? "pushed through on volume, but not at a real high" : "cleared its level on thin volume";
+      return volumeConfirmed ? `${base} on volume, well short of its recent ${extreme}` : `${base} on thin volume`;
     case "NO_CLOSE_CONFIRM":
-      return "tagged its level intraday but closed back below";
+      return trailing || dir === null
+        ? `${base} intraday but didn't close past it`
+        : `${base} intraday but closed back ${otherSide(dir)}`;
     case "NO":
-      return "crossed its level with nothing confirming it";
+      return `${base} with nothing confirming it`;
     default:
-      return volumeConfirmed ? "crossed its level on rising volume" : "crossed its level";
+      return volumeConfirmed ? `${base} on rising volume` : base;
   }
+}
+
+/** A follow-up count at or above this reads as a count rather than a sequence. */
+const MANY_CROSSINGS = 3;
+
+/**
+ * What price did at the level after the fire: when it went back, and whether
+ * it returned. Null when nothing reversed it.
+ */
+function reversalClause(entry: RevisitEntry, dir: CrossDirection | null): string | null {
+  const reversal = reversalOf(entry);
+  if (reversal === null || dir === null) {
+    return null;
+  }
+  const firedAt = new Date(entry.triggeredAt);
+  const followUps = entry.followUps ?? [];
+  const reversalDays = tradingDaysAfter(firedAt, new Date(reversal.at));
+  const wentBack = `${dir === "up" ? "fell" : "climbed"} back ${otherSide(dir)} it`;
+  // NO_CLOSE_CONFIRM already says it closed back past the level that day.
+  const implied = entry.signals?.verdict === "NO_CLOSE_CONFIRM" && reversalDays === 0;
+
+  if (followUps.length >= MANY_CROSSINGS) {
+    const ending = `ending ${endedOnFiredSide(entry) ? sideOf(dir) : otherSide(dir)} it`;
+    return implied
+      ? `then crossed it ${followUps.length - 1} more times, ${ending}`
+      : `then ${wentBack} ${dayPhrase(reversalDays)}, crossing it ${followUps.length} times in all, ${ending}`;
+  }
+
+  const after = followUps.slice(followUps.indexOf(reversal) + 1);
+  const returned = after.find((f) => f.direction === dir);
+  const cameBack =
+    returned === undefined
+      ? null
+      : `${dir === "up" ? "climbed" : "fell"} back ${sideOf(dir)} it ${dayPhrase(tradingDaysAfter(firedAt, new Date(returned.at)))}`;
+
+  if (implied) {
+    return cameBack === null ? null : `then ${cameBack}`;
+  }
+  return `then ${wentBack} ${dayPhrase(reversalDays)}${cameBack === null ? "" : ` and ${cameBack}`}`;
 }
 
 /** One line describing a single trigger. */
@@ -84,7 +144,7 @@ export function triggerHeadline(entry: RevisitEntry, ctx: NarrativeContext): str
   }
 
   const session = entry.session ?? null;
-  const sessionSuffix = session !== null && session !== "regular" ? `, in ${describeSession(session)}` : "";
+  const sessionSuffix = session !== null && session !== "regular" ? `in ${describeSession(session)}` : null;
 
   // Moving-average triggers say exactly what was recorded - which average and
   // whether price crossed or touched it - and nothing about breakout quality,
@@ -98,17 +158,27 @@ export function triggerHeadline(entry: RevisitEntry, ctx: NarrativeContext): str
         : entry.ma.event === "cross_up"
           ? `crossed above its ${label}`
           : `crossed below its ${label}`;
-    return `${subject} ${phrase}${sessionSuffix}`;
+    return `${subject} ${phrase}${sessionSuffix === null ? "" : `, ${sessionSuffix}`}`;
   }
 
-  const parts = [`${subject} ${movePhrase(entry)}`];
+  const dir = entryDirection(entry);
+  const reversal = reversalClause(entry, dir);
+  const parts = [`${subject} ${movePhrase(entry, dir, reversalOf(entry) !== null)}`];
+  // The session belongs to the fire, so it sits next to it rather than after
+  // a reversal that may have happened on another day.
+  if (sessionSuffix !== null) {
+    parts.push(sessionSuffix);
+  }
+  if (reversal !== null) {
+    parts.push(reversal);
+  }
 
   const move = entry.signals?.pctMovePastLevel ?? null;
   if (move !== null && Math.abs(move) >= 1) {
     parts.push(move >= 0 ? `now ${pct(move)} above it` : `now ${pct(move)} below it`);
   }
 
-  return parts.join(", ") + sessionSuffix;
+  return parts.join(", ");
 }
 
 /** A watch this long with this little movement is worth mentioning as dead weight. */
@@ -237,9 +307,14 @@ function shortDate(iso: string): string {
  * exposes is the chase: fired, re-levelled higher, fired again. That pattern
  * is invisible in a flat list of triggers but is the whole reason the revisit
  * queue exists.
+ *
+ * Legacy follow-up entries (`followUpOf`) are skipped: their crossing is
+ * already told as part of the fire they follow.
  */
 export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: NarrativeContext): TickerStory {
-  const entries = [...entriesInput].sort((a, b) => a.triggeredAt.localeCompare(b.triggeredAt));
+  const entries = entriesInput
+    .filter((e) => e.followUpOf === undefined)
+    .sort((a, b) => a.triggeredAt.localeCompare(b.triggeredAt));
   const held = ctx.heldSymbols.has(symbol.toUpperCase());
   const lines: StoryLine[] = [];
 
@@ -273,6 +348,7 @@ export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: N
   const triggers = entries.length;
   const applied = entries.filter((e) => e.status === "applied").length;
   const open = entries.filter((e) => e.status === "open").length;
+  const reversed = entries.filter((e) => reversalOf(e) !== null).length;
   const first = entries[0];
   const last = entries[entries.length - 1];
 
@@ -280,17 +356,20 @@ export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: N
   if (triggers === 0) {
     summary = `${symbol}: nothing on record.`;
   } else if (triggers === 1) {
-    summary = `${symbol} fired once, ${shortDate(first.triggeredAt)}${open > 0 ? ", still waiting on you" : ""}.`;
+    summary = `${symbol} fired once, ${shortDate(first.triggeredAt)}${reversed > 0 ? ", then reversed" : ""}${
+      open > 0 ? ", still waiting on you" : ""
+    }.`;
   } else {
     const climbed =
       first.levelAtTrigger !== null && last.levelAtTrigger !== null && last.levelAtTrigger > first.levelAtTrigger;
-    const held = `${symbol} has fired ${triggers} times since ${shortDate(first.triggeredAt)}`;
+    const fired = `${symbol} has fired ${triggers} times since ${shortDate(first.triggeredAt)}`;
     const chase = climbed
       ? `, walking its level from ${first.levelAtTrigger} up to ${last.levelAtTrigger}`
       : applied > 0
         ? `, re-levelled ${applied} time${applied === 1 ? "" : "s"}`
         : "";
-    summary = `${held}${chase}${open > 0 ? `, with ${open} still open` : ""}.`;
+    const reversals = reversed > 0 ? `, ${reversed} of them reversed` : "";
+    summary = `${fired}${chase}${reversals}${open > 0 ? `, with ${open} still open` : ""}.`;
   }
 
   return { symbol, held, lines, summary };
@@ -305,6 +384,10 @@ export function buildStories(
   const minTriggers = opts.minTriggers ?? 2;
   const bySymbol = new Map<string, RevisitEntry[]>();
   for (const e of entries) {
+    // A legacy follow-up is part of another fire, not a trigger of its own.
+    if (e.followUpOf !== undefined) {
+      continue;
+    }
     bySymbol.set(e.symbol, [...(bySymbol.get(e.symbol) ?? []), e]);
   }
 

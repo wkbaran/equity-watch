@@ -116,6 +116,11 @@
   .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
   .tag { display: inline-block; font-size: 0.72rem; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--subtext); margin-left: 6px; vertical-align: 1px; }
   .tag.held { border-color: var(--accent); color: var(--accent); }
+  .tag.reversed { border-color: var(--peach); color: var(--peach); }
+  .reversal-note { color: var(--peach); }
+  ol.timeline { margin: 0; padding-left: 18px; }
+  ol.timeline li { margin-bottom: 2px; }
+  ol.timeline li.reversal { color: var(--peach); }
 
   .trigger-row { display: grid; grid-template-columns: 110px 1fr auto; gap: 12px; padding: 0.55rem 1rem; border-top: 1px solid var(--border); align-items: baseline; }
   .trigger-row:first-child { border-top: 0; }
@@ -142,6 +147,7 @@
   #alerts-table th { cursor: default; }
   #alerts-table th:nth-child(2) { text-align: left; }
   #alerts-table td.cond { text-align: left; white-space: normal; min-width: 14rem; color: var(--subtext); }
+  #alerts-table th:nth-child(3), #alerts-table td.dir { text-align: left; }
   .bar-cell { width: 140px; }
   .bar { position: relative; height: 10px; background: var(--surface2); border-radius: 2px; }
   .bar::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--muted); }
@@ -192,6 +198,8 @@
   <h1 class="site-title">Alerts</h1>
   <nav class="site-nav" aria-label="Views">
     <a href="#/" data-nav="overview">Overview</a>
+    <a href="#/queue" data-nav="queue">Revisit queue <span id="nav-queue-count" class="nav-count"></span></a>
+    <a href="#/stories" data-nav="stories">Stories <span id="nav-stories-count" class="nav-count"></span></a>
     <a href="#/alerts" data-nav="alerts">Alerts <span id="nav-alerts-count" class="nav-count"></span></a>
   </nav>
   <span id="updated" class="meta">loading…</span>
@@ -209,16 +217,8 @@
   <section id="view-overview">
     <section id="tiles" class="tiles"></section>
 
-    <div class="section-header"><h2 class="section-title">Revisit queue</h2><span id="queue-count" class="section-count"></span></div>
-    <div id="queue" class="card"></div>
-
     <div class="section-header"><h2 class="section-title">Recent triggers</h2><span id="triggers-count" class="section-count"></span></div>
     <div id="triggers" class="card"></div>
-
-    <div id="stories-section" hidden>
-      <div class="section-header"><h2 class="section-title">Stories</h2></div>
-      <div id="stories" class="card"></div>
-    </div>
 
     <!-- Shown only when the published document has site.holdings = true (analysis.config.json: web.holdings). -->
     <div id="holdings-section" hidden>
@@ -230,6 +230,16 @@
       <div class="section-header"><h2 class="section-title">Quiet watches</h2></div>
       <details class="card"><summary id="quiet-summary"></summary><ul id="quiet"></ul></details>
     </div>
+  </section>
+
+  <section id="view-queue" hidden>
+    <div class="section-header"><h2 class="section-title">Revisit queue</h2><span id="queue-count" class="section-count"></span></div>
+    <div id="queue" class="card"></div>
+  </section>
+
+  <section id="view-stories" hidden>
+    <div class="section-header"><h2 class="section-title">Stories</h2><span id="stories-count" class="section-count"></span></div>
+    <div id="stories" class="card"></div>
   </section>
 
   <section id="view-alerts" hidden>

@@ -8,7 +8,7 @@
  */
 
 import { describeAlertCondition } from "../alerts/describe.js";
-import { effectiveTrigger, type Alert, type AlertSide } from "../alerts/models.js";
+import { effectiveTrigger, type Alert, type AlertDirection, type AlertSide } from "../alerts/models.js";
 import type { Quote } from "../providers/schwab.js";
 import { tradingViewUrl } from "../tradingview.js";
 
@@ -26,6 +26,8 @@ export interface AlertRow {
    */
   movingLevel: number | null;
   side: AlertSide | null;
+  /** Which crossings of a static alert's level fire it. Null for other kinds. */
+  direction: AlertDirection | null;
   hasVolumeCondition: boolean;
   triggerCount: number;
   lastTriggeredAt: string | null;
@@ -65,6 +67,7 @@ export function buildAlertRows(
         level,
         movingLevel,
         side: a.kind === "static" || a.kind === "trailing" ? a.side : null,
+        direction: a.kind === "static" ? a.direction : null,
         hasVolumeCondition: a.kind === "volume" || ((a.kind === "static" || a.kind === "trailing") && a.volumeCondition !== undefined),
         triggerCount: a.triggerCount,
         lastTriggeredAt: a.lastTriggeredAt,

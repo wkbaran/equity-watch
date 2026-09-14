@@ -46,6 +46,22 @@ describe("revisit scoring", () => {
     expect(moveScore(-7)).toBe(0);
   });
 
+  it("scores a downward fire's move by how far price fell past the level", () => {
+    expect(moveScore(-10, "down")).toBe(1);
+    expect(moveScore(-5, "down")).toBe(0.5);
+    expect(moveScore(4, "down")).toBe(0); // back above: no urgency
+    expect(moveScore(10, null)).toBe(1); // no direction reads as upward
+
+    const { signals } = scoreRevisit({ pctMovePastLevel: -5, daysOpen: 0, heldPosition: false, direction: "down" });
+    expect(signals.pctMovePastLevel).toBe(-5); // stored raw
+    expect(signals.moveDirection).toBe("down");
+    expect(signals.moveScore).toBe(0.5);
+    expect(explainPriority(signals)).toContain("-5.0% past level");
+
+    const back = scoreRevisit({ pctMovePastLevel: 3, daysOpen: 0, heldPosition: false, direction: "down" });
+    expect(explainPriority(back.signals)).toContain("+3.0% back above level");
+  });
+
   it("scores a lone volume spike below the same spike on a rising trend", () => {
     const lone = volumeScore(2.0, 0.8);
     const trending = volumeScore(2.0, 1.5);
@@ -131,17 +147,18 @@ describe("suggestLevel", () => {
     expect(result.pctMovePastLevel).toBeCloseTo(-2, 5);
   });
 
-  it("proposes the lookback high when there is resistance overhead", () => {
+  it("proposes the lookback high when it sits above price", () => {
     const result = suggestLevel(bars([100, 108, 105], [100, 112, 106]), 100, params);
     expect(result.suggestedLevel).toBe(112);
     expect(result.basis).toBe("60d high");
     expect(result.pctMovePastLevel).toBeCloseTo(5, 5);
   });
 
-  it("adds a tolerance gap in new-high territory where no resistance is left", () => {
+  it("adds a tolerance gap in new-high territory where no higher recent high is left", () => {
     const result = suggestLevel(bars([100, 105, 110], [100, 105, 110]), 100, params);
     expect(result.suggestedLevel).toBe(112.2); // 110 * 1.02
     expect(result.basis).toMatch(/new-high territory/);
+    expect(result.basis).not.toMatch(/resistance|support/);
   });
 
   it("scales the new-high gap with the beta-adjusted tolerance", () => {
@@ -151,9 +168,9 @@ describe("suggestLevel", () => {
     expect(volatile.suggestedLevel).toBe(116.6); // 110 * 1.06
   });
 
-  it("is resistance-oriented, so callers must not apply it to a downside alert", () => {
-    // Documents why `alert seed` skips re-levelling for side==="below":
-    // handed a support level price has risen above, this proposes the 60d
+  it("only looks upward, so callers must not apply it to a downside alert", () => {
+    // Documents why `alert seed` and `revisit relevel` skip downward alerts:
+    // handed a downside level price has risen above, this proposes the 60d
     // HIGH, which would invert a "Crossing Down 91.00" into a breakout target.
     const result = suggestLevel(bars([91, 100, 110], [91, 105, 118]), 91, params);
     expect(result.suggestedLevel).toBe(118);

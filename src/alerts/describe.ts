@@ -25,7 +25,9 @@ export function describeAlertCondition(alert: Alert): string {
     case "trailing": {
       const price =
         alert.kind === "static"
-          ? `price crosses ${alert.level}`
+          ? alert.direction === "either"
+            ? `price crosses ${alert.level}`
+            : `price crosses ${alert.direction === "down" ? "below" : "above"} ${alert.level}`
           : `trailing ${alert.trailType === "percent" ? `${alert.trailValue}%` : `$${alert.trailValue}`} ` +
             `off the ${alert.side === "below" ? "low" : "high"} (started near ${alert.near})`;
       return alert.volumeCondition ? `${price} AND ${describeVolumeCondition(alert.volumeCondition)}` : price;

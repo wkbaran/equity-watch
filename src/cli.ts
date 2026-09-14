@@ -9,17 +9,27 @@ import { stringify } from "csv-stringify/sync";
 import { analyzeAlert, AnalysisParams } from "./analysis.js";
 import { revisitsToBreakoutAlerts } from "./alerts/bridge.js";
 import { suggestLevel } from "./alerts/relevel.js";
-import { buildSeedPlan, closeOnOrAfter, resolveLevel } from "./alerts/seed.js";
+import { buildSeedPlan, closeOnOrAfter, resolveLevel, seedDirection } from "./alerts/seed.js";
 import {
   addAlert,
   checkAlerts,
   type AddAlertInput,
   type BaselineResolver,
+  type FollowUpEvent,
   type MarketData,
   type WatchOrigin,
 } from "./alerts/engine.js";
 import { baselineKey, computeBaseline } from "./alerts/volumeBaseline.js";
-import { effectiveTrigger, type MaAlert, type MaApproach, type VolumeCondition, type VolumePeriodUnit } from "./alerts/models.js";
+import {
+  DEFAULT_ALERT_DIRECTION,
+  effectiveTrigger,
+  type AlertDirection,
+  type MaAlert,
+  type MaApproach,
+  type VolumeCondition,
+  type VolumePeriodUnit,
+} from "./alerts/models.js";
+import { endedOnFiredSide, entryDirection, reversalOf, reversionWindowFor } from "./alerts/reversion.js";
 import { DEFAULT_TOUCH_MARGIN_PCT, describeMaAlert, type DailyHistoryResolver } from "./alerts/maEngine.js";
 import { describeVolumeCondition } from "./alerts/describe.js";
 import { parseMaSpec, type MaSpec } from "./indicators/movingAverage.js";
@@ -33,9 +43,9 @@ import {
   type RevisitEntry,
 } from "./alerts/revisit.js";
 import {
-  appendRevisits,
   listRevisits,
   loadRevisits,
+  migrateDirectionStores,
   resolveRevisit,
   saveRevisits,
   sortByPriority,
@@ -677,6 +687,13 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
     console.error("Specify at most one of --level (static alert) or --near (trailing alert).");
     process.exit(1);
   }
+  // --direction means "which crossings fire" for both a static level and a
+  // moving-average cross, but a static level also accepts "either". Trailing
+  // and volume alerts have their direction built in.
+  if (opts.direction !== undefined && !hasLevel) {
+    console.error("--direction applies to --level (up|down|either) or --ma crosses (up|down).");
+    process.exit(1);
+  }
   // Parse the volume flags first: they decide whether a bare `alert add` is a
   // standalone volume alert, and they own their own validation messages.
   const volume = parseVolumeFlags(opts);
@@ -691,7 +708,15 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
       console.error("--trail-percent/--trail-amount only apply to trailing alerts (--near).");
       process.exit(1);
     }
-    input = { kind: "static", symbol: opts.symbol, level: parseFloat(opts.level!), volume };
+    let direction: AlertDirection = DEFAULT_ALERT_DIRECTION;
+    if (opts.direction !== undefined) {
+      if (opts.direction !== "up" && opts.direction !== "down" && opts.direction !== "either") {
+        console.error(`Invalid --direction "${opts.direction}" — expected up, down, or either.`);
+        process.exit(1);
+      }
+      direction = opts.direction;
+    }
+    input = { kind: "static", symbol: opts.symbol, level: parseFloat(opts.level!), direction, volume };
   } else if (hasNear) {
     const hasPercent = opts.trailPercent !== undefined;
     const hasAmount = opts.trailAmount !== undefined;
@@ -733,13 +758,14 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
   }
   const trigger = effectiveTrigger(a);
   const andVolume = a.volumeCondition ? ` AND ${formatVolumeCondition(a.volumeCondition)}` : "";
+  const direction = a.kind === "static" ? `, fires on ${a.direction === "either" ? "either crossing" : `${a.direction} crosses`}` : "";
   if (result.replaced) {
     console.log(
       `Replaced ${result.replaced.kind} alert ${result.replaced.id} — added ${a.kind} alert ${a.id} ` +
-        `(${a.symbol}, ${a.side}, trigger ${trigger}${andVolume}).`
+        `(${a.symbol}, ${a.side}, trigger ${trigger}${andVolume}${direction}).`
     );
   } else {
-    console.log(`Added ${a.kind} alert ${a.id} (${a.symbol}, ${a.side}, trigger ${trigger}${andVolume}).`);
+    console.log(`Added ${a.kind} alert ${a.id} (${a.symbol}, ${a.side}, trigger ${trigger}${andVolume}${direction}).`);
   }
 }
 
@@ -783,7 +809,7 @@ function watchOriginFor(
  * One-time migration of the TradingView exports into this engine's store.
  *
  * Every candidate's level is re-derived against real bars: a level price has
- * already run past is replaced with the current resistance, while a level
+ * already run past is replaced with a level off the recent high, while a level
  * still ahead of price is kept as-is (it is a perfectly good target and
  * re-deriving would throw it away).
  */
@@ -903,10 +929,10 @@ async function cmdAlertSeed(opts: AlertSeedOpts): Promise<void> {
       continue;
     }
 
-    // suggestLevel is resistance-oriented: it proposes the level price would
-    // have to break *up* through. Applying it to a stated downside alert would
+    // suggestLevel only looks upward: it proposes the level price would have
+    // to break *up* through. Applying it to a stated downside alert would
     // invert the alert's meaning - CHEF's "Crossing Down 91.00" would become a
-    // breakout target at the 60d high. A support level that price has since
+    // breakout target at the 60d high. A downside level that price has since
     // risen above is still exactly the level you want to be warned about, so
     // downside candidates keep theirs.
     const suggestion = candidate.side === "below" ? null : suggestLevel(bars, baseLevel, params);
@@ -920,12 +946,12 @@ async function cmdAlertSeed(opts: AlertSeedOpts): Promise<void> {
     if (opts.dryRun) {
       const note =
         suggestion === null
-          ? `${level}  (unchanged — downside alert, level kept as support)`
+          ? `${level}  (unchanged — downside alert, level kept)`
           : suggestion.suggestedLevel !== null
             ? `${baseLevel} → ${level}  (${suggestion.basis})`
             : `${level}  (unchanged — ${suggestion.basis})`;
       const vol = candidate.volume ? ` AND ${formatVolumeCondition(candidate.volume)}` : "";
-      console.log(`  ${candidate.symbol.padEnd(6)} ${note}${vol}`);
+      console.log(`  ${candidate.symbol.padEnd(6)} ${seedDirection(candidate.side).padEnd(6)} ${note}${vol}`);
       created++;
       continue;
     }
@@ -936,6 +962,8 @@ async function cmdAlertSeed(opts: AlertSeedOpts): Promise<void> {
         kind: "static",
         symbol: candidate.symbol,
         level,
+        // A stated "Crossing Down" stays a downward alert; everything else is the default.
+        direction: seedDirection(candidate.side),
         ...(candidate.volume ? { volume: candidate.volume } : {}),
         ...watchOriginFor(candidate, bars),
       },
@@ -951,7 +979,7 @@ async function cmdAlertSeed(opts: AlertSeedOpts): Promise<void> {
 
   console.log(
     `\n${opts.dryRun ? "Would create" : "Created"} ${created} alert(s): ` +
-      `${relevelled} re-levelled to current resistance, ${kept} kept at their TradingView level` +
+      `${relevelled} re-levelled off the recent high, ${kept} kept at their TradingView level` +
       (dropped > 0 ? `, ${dropped} dropped (implausible level)` : "") +
       (failed > 0 ? `, ${failed} failed` : "") +
       (skippedIgnored > 0 ? `, ${skippedIgnored} on the ignore list` : "") +
@@ -991,9 +1019,10 @@ function cmdAlertList(opts: AlertListOpts): void {
     const anchor = a.kind === "static" ? a.level : a.near;
     const trail = a.kind === "trailing" ? `${a.trailValue}${a.trailType === "percent" ? "%" : "$"}` : "-";
     const andVolume = a.volumeCondition ? ` AND ${formatVolumeCondition(a.volumeCondition)}` : "";
+    const direction = a.kind === "static" ? ` direction=${a.direction}` : "";
     console.log(
       `${a.id}  ${a.kind.padEnd(8)} ${a.symbol.padEnd(6)} ${a.side.padEnd(5)} ` +
-        `anchor=${anchor} trail=${trail} status=${a.status} trigger=${effectiveTrigger(a)}${andVolume}`
+        `anchor=${anchor} trail=${trail}${direction} status=${a.status} trigger=${effectiveTrigger(a)}${andVolume}`
     );
   }
 }
@@ -1039,32 +1068,82 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
   }
 
   const alerts = loadAlerts(opts.alertsFile);
-  const ignored = ignoredSymbols(loadTuningConfig(opts.config));
+  const config = loadTuningConfig(opts.config);
+  const ignored = ignoredSymbols(config);
   const market = buildMarketData(opts);
-  const { checked, triggered, revisits, warnings } = await checkAlerts(
+  // The whole queue, not just open entries: a crossing folds onto its fire
+  // whether or not that entry has been dismissed.
+  const stored = loadRevisits(opts.revisitsFile);
+  const { checked, triggered, revisits, followUps, updatedRevisits, warnings } = await checkAlerts(
     alerts,
     market,
     [new ConsoleNotifier()],
     session,
     ignored,
     buildBaselineResolver(market),
-    buildDailyHistoryResolver(market)
+    buildDailyHistoryResolver(market),
+    { existingRevisits: stored, reversionWindowDays: (symbol) => reversionWindowFor(symbol, config) }
   );
   for (const warning of warnings) {
     console.error(`  ! ${warning}`);
   }
+  for (const event of followUps) {
+    console.log(describeFollowUpEvent(event));
+  }
   saveAlerts(opts.alertsFile, alerts);
-  appendRevisits(opts.revisitsFile, revisits);
+  // Follow-ups were appended onto the stored entries in place, so saving the
+  // loaded array carries them.
+  if (revisits.length > 0 || updatedRevisits.length > 0) {
+    saveRevisits(opts.revisitsFile, [...stored, ...revisits]);
+  }
   console.log(
-    `Checked ${checked} alert(s), ${triggered.length} triggered. ` +
+    `Checked ${checked} alert(s), ${triggered.length} triggered, ${followUps.length} later crossing(s) folded onto earlier fires. ` +
       `All ${checked} remain live; ${revisits.length} entry(ies) queued for revisit.`
   );
   if (triggered.length > 0) {
     const outPath = defaultAlertTriggerReportPath(new Date());
     writeAlertTriggerReport(triggered, outPath);
     console.log(`Wrote ${triggered.length} triggered alert(s) to ${outPath}`);
-    console.log(`Queue is now ${listRevisits(opts.revisitsFile).length} open — 'alert revisit list' to review.`);
+    const open = listRevisits(opts.revisitsFile).filter((e) => e.followUpOf === undefined).length;
+    console.log(`Queue is now ${open} open — 'alert revisit list' to review.`);
   }
+}
+
+function sideWord(direction: "up" | "down"): string {
+  return direction === "up" ? "above" : "below";
+}
+
+/** One terminal line for a folded crossing. Template-only, like the rest of the CLI's output. */
+function describeFollowUpEvent(event: FollowUpEvent): string {
+  const { entry, followUp, reversal } = event;
+  const fired = entryDirection(entry);
+  const firedOn = localDateString(new Date(entry.triggeredAt));
+  const what = fired === null ? "fire" : `${fired} fire`;
+  if (reversal) {
+    return (
+      `  ~ ${entry.symbol} crossed back ${sideWord(followUp.direction)} ${entry.levelAtTrigger} at ${followUp.price}: ` +
+      `reversal of the ${what} on ${firedOn} (revisit ${entry.id})`
+    );
+  }
+  return (
+    `  ~ ${entry.symbol} crossed ${sideWord(followUp.direction)} ${entry.levelAtTrigger} again at ${followUp.price}: ` +
+    `crossing ${entry.followUps?.length ?? 1} since the ${what} on ${firedOn} (revisit ${entry.id})`
+  );
+}
+
+/** The follow-up line under a revisit entry, or null when nothing crossed after it fired. */
+function describeFollowUps(entry: RevisitEntry): string | null {
+  const followUps = entry.followUps ?? [];
+  if (followUps.length === 0) {
+    return null;
+  }
+  const parts = [`${followUps.length} later crossing(s)`];
+  const reversal = reversalOf(entry);
+  if (reversal !== null) {
+    parts.push(`reversed ${sideWord(reversal.direction)} the level at ${reversal.price} on ${localDateString(new Date(reversal.at))}`);
+  }
+  parts.push(endedOnFiredSide(entry) ? "last crossing left price on the side it fired to" : "last crossing left price back across the level");
+  return parts.join("; ");
 }
 
 interface RevisitListOpts extends AlertCommonOpts {
@@ -1074,17 +1153,29 @@ interface RevisitListOpts extends AlertCommonOpts {
 
 function cmdRevisitList(opts: RevisitListOpts): void {
   const status = opts.status === "all" ? "all" : (opts.status as "open" | "applied" | "dismissed");
-  const entries = sortByPriority(listRevisits(opts.revisitsFile, { status }));
+  // Entries the migration folded are crossings already listed under their fire.
+  const matching = listRevisits(opts.revisitsFile, { status });
+  const entries = sortByPriority(matching.filter((e) => e.followUpOf === undefined));
+  const hidden = matching.length - entries.length;
   if (entries.length === 0) {
     console.log(`No ${opts.status} revisit entries.`);
     return;
   }
   const shown = opts.limit ? entries.slice(0, opts.limit) : entries;
-  console.log(`${entries.length} ${opts.status} entry(ies)${shown.length < entries.length ? `, showing ${shown.length}` : ""}:\n`);
+  console.log(
+    `${entries.length} ${opts.status} entry(ies)${shown.length < entries.length ? `, showing ${shown.length}` : ""}` +
+      `${hidden > 0 ? ` (${hidden} folded into earlier fires, not shown)` : ""}:\n`
+  );
   for (const e of shown) {
     const pri = e.priority === null ? "  -  " : e.priority.toFixed(1).padStart(5);
     const level = e.levelAtTrigger === null ? "-" : String(e.levelAtTrigger);
-    console.log(`${pri}  ${e.id}  ${e.symbol.padEnd(6)} ${e.kind.padEnd(8)} fired ${level} @ ${e.triggerPrice} on ${e.triggeredAt.slice(0, 10)}`);
+    const direction = entryDirection(e);
+    const fired = direction === null ? `fired ${level}` : `fired ${direction} through ${level}`;
+    console.log(`${pri}  ${e.id}  ${e.symbol.padEnd(6)} ${e.kind.padEnd(8)} ${fired} @ ${e.triggerPrice} on ${e.triggeredAt.slice(0, 10)}`);
+    const followUpLine = describeFollowUps(e);
+    if (followUpLine !== null) {
+      console.log(`         ${followUpLine}`);
+    }
     if (e.suggestedLevel !== null) {
       console.log(`         suggested new level: ${e.suggestedLevel}${e.suggestionBasis ? ` (${e.suggestionBasis})` : ""}`);
     }
@@ -1110,7 +1201,8 @@ interface RevisitRelevelOpts extends AlertCommonOpts {
  * only has anything new to say once a day.
  */
 async function cmdRevisitRelevel(opts: RevisitRelevelOpts): Promise<void> {
-  let entries = listRevisits(opts.revisitsFile, { status: "open" });
+  // Folded entries are crossings, not fires: their fire carries the level and gets the score.
+  let entries = listRevisits(opts.revisitsFile, { status: "open" }).filter((e) => e.followUpOf === undefined);
   if (opts.symbol && opts.symbol.length > 0) {
     const wanted = new Set(opts.symbol.map((s) => s.toUpperCase()));
     entries = entries.filter((e) => wanted.has(e.symbol.toUpperCase()));
@@ -1163,12 +1255,19 @@ async function cmdRevisitRelevel(opts: RevisitRelevelOpts): Promise<void> {
     for (const entry of symbolEntries) {
       const target = all.find((e) => e.id === entry.id)!;
       const levelled = suggestLevel(bars, entry.levelAtTrigger, params);
+      const direction = entryDirection(entry);
       // A moving-average alert's level is the average itself. There's nothing
       // to re-level it to, but the move past it still counts toward priority.
+      // suggestLevel only proposes levels overhead (the lookback high), so for
+      // a downward fire it would invert the alert; `alert seed` skips downside
+      // candidates for the same reason. The move still scores, relative to
+      // the fire's direction.
       const suggestion =
         entry.kind === "ma"
           ? { ...levelled, suggestedLevel: null, basis: "moving-average alert: its level moves with the average" }
-          : levelled;
+          : direction === "down"
+            ? { ...levelled, suggestedLevel: null, basis: "downward fire: re-levelling only proposes levels above price" }
+            : levelled;
 
       // Reuse the full breakout pipeline for the verdict and volume signals
       // rather than recomputing a second, subtly different version here.
@@ -1183,6 +1282,7 @@ async function cmdRevisitRelevel(opts: RevisitRelevelOpts): Promise<void> {
           heldPosition: heldSymbols.has(symbol.toUpperCase()),
           volumeRatio: verdict?.volumeRatio ?? null,
           volumeTrendRatio: verdict?.volumeTrendRatio ?? null,
+          direction,
         },
         DEFAULT_REVISIT_WEIGHTS
       );
@@ -1220,6 +1320,11 @@ function cmdRevisitResolve(id: string, action: "applied" | "dismissed", opts: Al
     return;
   }
 
+  if (entry.followUpOf !== undefined) {
+    console.error(`Revisit ${id} (${entry.symbol}) is a later crossing of revisit ${entry.followUpOf}; apply that one instead.`);
+    process.exit(1);
+  }
+
   if (entry.suggestedLevel === null) {
     console.error(
       `Revisit ${id} (${entry.symbol}) has no suggested level yet — run 'alert relevel' first, ` +
@@ -1238,6 +1343,8 @@ function cmdRevisitResolve(id: string, action: "applied" | "dismissed", opts: Al
     process.exit(1);
   }
 
+  // Only the level moves. `direction` is left as it is: re-levelling says
+  // where to watch, not which crossing matters.
   const previous = alert.level;
   alert.level = entry.suggestedLevel;
   // Record the move on the entry itself so the ticker story can say what you
@@ -1252,6 +1359,32 @@ function cmdRevisitResolve(id: string, action: "applied" | "dismissed", opts: Al
   saveAlerts(opts.alertsFile, alerts);
   resolveRevisit(opts.revisitsFile, id, "applied");
   console.log(`${entry.symbol}: alert ${alert.id} re-levelled ${previous} → ${alert.level}. Revisit ${id} marked applied.`);
+}
+
+interface MigrateDirectionsOpts extends AlertCommonOpts {
+  config: string;
+}
+
+/**
+ * One-time move onto directional alerts: every static alert becomes "up", and
+ * the queue's back-and-forth crossings fold onto the fires they followed.
+ * Safe to re-run; see migrateDirectionStores.
+ */
+function cmdAlertMigrateDirections(opts: MigrateDirectionsOpts): void {
+  const config = loadTuningConfig(opts.config);
+  const result = migrateDirectionStores(opts.alertsFile, opts.revisitsFile, (symbol) => reversionWindowFor(symbol, config));
+  for (const backup of result.backups) {
+    console.log(`Backed up to ${backup}`);
+  }
+  console.log(
+    `Static alerts: ${result.staticAlerts}, ${result.directionsChanged} set to direction "up" ` +
+      `(${result.staticAlerts - result.directionsChanged} already were).`
+  );
+  const { fold } = result;
+  console.log(
+    `Revisit queue: ${fold.directionsRecorded} entry(ies) given a direction, ${fold.folded} folded onto ` +
+      `${fold.anchorsWithFollowUps} earlier fire(s), ${fold.dismissed} open crossing(s) against the alert's direction dismissed.`
+  );
 }
 
 interface HoldingsCommonOpts extends CommonOpts {
@@ -1796,7 +1929,7 @@ function buildProgram(): Command {
         "side is inferred vs. the live price"
     )
     .requiredOption("--symbol <symbol>", "Ticker symbol")
-    .option("--level <price>", "Static alert: fire once when price crosses this level")
+    .option("--level <price>", "Static alert: fire when price crosses this level in --direction (default up)")
     .option("--near <price>", "Trailing alert: reference price used to seed the watermark and infer side")
     .option("--trail-percent <n>", "Trailing alert: trail distance as a percent")
     .option("--trail-amount <n>", "Trailing alert: trail distance as a dollar amount")
@@ -1820,7 +1953,10 @@ function buildProgram(): Command {
       "--touch [marginPct]",
       `With --ma: fire when price comes within this percent of the average instead (default ${DEFAULT_TOUCH_MARGIN_PCT})`
     )
-    .option("--direction <up|down>", "With --ma (cross): only fire on crosses in this direction")
+    .option(
+      "--direction <dir>",
+      `With --level: which crossings fire, up|down|either (default ${DEFAULT_ALERT_DIRECTION}). With --ma (cross): up|down`
+    )
     .option("--from <above|below>", "With --ma --touch: only fire when price approaches from this side")
     .action((opts: AlertAddOpts) => cmdAlertAdd(opts));
 
@@ -1856,6 +1992,14 @@ function buildProgram(): Command {
     .description("List alerts (live only by default; alerts never disarm)")
     .option("--all", "Include triggered/cancelled alerts")
     .action((opts: AlertListOpts) => cmdAlertList(opts));
+
+  withAlertCommon(alertCmd.command("migrate-directions"))
+    .description(
+      'One-time: set every static alert to direction "up" and fold the revisit queue\'s repeat crossings ' +
+        "onto the fires they followed (backs both files up to .cache/backups/ first; safe to re-run)"
+    )
+    .option("--config <path>", "Per-ticker tuning config (holdDays sets each symbol's window)", "analysis.config.json")
+    .action((opts: MigrateDirectionsOpts) => cmdAlertMigrateDirections(opts));
 
   withAlertCommon(alertCmd.command("remove <id>"))
     .description("Remove an alert by id")

@@ -185,6 +185,7 @@ describe("checkAlerts with moving-average alerts", () => {
       kind: "ma",
       levelAtTrigger: 100,
       triggerPrice: 101,
+      direction: "up",
       ma: { maType: "sma", period: 3, timeframe: "1D", event: "cross_up", approachedFrom: "below" },
     });
     expect(alert).toMatchObject({ triggerCount: 1, lastSide: "below", lastEvent: "cross_up" });

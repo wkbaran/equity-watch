@@ -18,13 +18,13 @@
  *
  * Levels are NOT finalised here - this only records the best level TradingView
  * knew about. Whether that level is still valid, or price has pushed past it
- * and needs a fresh resistance, is decided against real bars by relevel.ts.
+ * and needs a fresh level, is decided against real bars by relevel.ts.
  */
 
 import { readFileSync } from "node:fs";
 import { parse as parseCsv } from "csv-parse/sync";
 import { classifyDescription } from "../parse.js";
-import type { VolumeCondition } from "./models.js";
+import { DEFAULT_ALERT_DIRECTION, type AlertDirection, type VolumeCondition } from "./models.js";
 import { marketDate } from "../marketHours.js";
 import { zonedTimeToUtc } from "../timezone.js";
 
@@ -321,6 +321,16 @@ export function buildSeedPlan(listPath: string, logPath: string | null): SeedPla
 
   candidates.sort((a, b) => a.symbol.localeCompare(b.symbol));
   return { candidates, skipped, rowsRead: { list: listRows.length, log: logRows.length } };
+}
+
+/**
+ * The direction a seeded static alert watches. `side` is only ever set from
+ * a stated "Crossing Up"/"Crossing Down" (and only when every stated
+ * direction on the ticker agrees), so it is safe to carry through. A plain
+ * "Crossing 50" states nothing and gets the default, like any other new alert.
+ */
+export function seedDirection(side: SeedCandidate["side"]): AlertDirection {
+  return side === "below" ? "down" : side === "above" ? "up" : DEFAULT_ALERT_DIRECTION;
 }
 
 /**

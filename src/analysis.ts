@@ -1,17 +1,22 @@
 /**
- * Confirm whether a TradingView "Crossing" alert was a real resistance
- * breakout backed by rising volume, versus noise.
+ * Confirm whether a price-level crossing was a real move through the level,
+ * backed by volume, versus noise.
  *
- * A single price-cross alert only tells you TradingView saw the price touch
- * a level intraday. It says nothing about:
- *   - whether the level was actually a meaningful resistance (a recent swing
- *     high) rather than an arbitrary number,
- *   - whether price *closed* above it (a wick through and back is not a
- *     breakout),
+ * A single price-cross alert only tells you price touched a level intraday.
+ * It says nothing about:
+ *   - whether the level sits at a recent extreme (a swing high for an upward
+ *     crossing, a swing low for a downward one) rather than being an arbitrary
+ *     number in the middle of the range,
+ *   - whether price *closed* past it (a wick through and back is not a move),
  *   - whether volume confirmed the move, and
- *   - whether the breakout held on subsequent days rather than failing.
+ *   - whether closes stayed past the level on subsequent days.
  *
- * `analyzeAlert` checks all four using daily OHLCV bars around the alert.
+ * `analyzeAlert` checks all four using daily OHLCV bars around the alert, in
+ * the direction the alert crossed (`Alert.direction`, absent = up). The
+ * verdict names and BreakoutVerdict field names are upside-flavoured for
+ * historical reasons and kept because they are persisted; for a downward
+ * crossing `nearRecentHigh` means near the recent low and `heldAboveLevel`
+ * means held below.
  */
 
 import type { Alert, BreakoutVerdict, PriceBar } from "./models.js";
@@ -23,11 +28,11 @@ export interface AnalysisParams {
   volumeRatioThreshold: number;
   /** Window (in trading days, including the breakout day) used to check that volume was trending up into the breakout, not just a lone spike. */
   volumeTrendDays: number;
-  /** How far back to look for the swing high that makes `level` a meaningful resistance rather than an arbitrary crossing. */
+  /** How far back to look for the swing high (or, for a downward crossing, swing low) that makes `level` meaningful rather than arbitrary. */
   recentHighLookbackDays: number;
-  /** `level` counts as "near/above the recent high" if it's within this fraction below the highest high seen in the lookback window. */
+  /** `level` counts as "near the recent high" if within this fraction below the highest high (mirrored for a downward crossing: within this fraction above the lowest low). */
   recentHighTolerance: number;
-  /** Number of subsequent trading days the close must stay above `level` to call the breakout "held". */
+  /** Number of subsequent trading days the close must stay past `level`, in the crossing direction, to call the move "held". */
   holdDays: number;
   /** Minimum bars of prior history required before we'll trust the baseline/recent-high calculations at all. */
   minBaselineBars: number;
@@ -102,6 +107,11 @@ export function analyzeAlert(
     };
   }
   const level = alert.level;
+  const down = alert.direction === "down";
+  const past = down ? "below" : "above";
+  const back = down ? "above" : "below";
+  /** Whether a close is past the level in the crossing direction. */
+  const closedPast = (close: number) => (down ? close < level : close > level);
 
   const idx = findAlertBarIndex(bars, alert);
   if (idx === null) {
@@ -132,9 +142,19 @@ export function analyzeAlert(
     }
   }
 
-  const highWindow = bars.slice(Math.max(0, idx - params.recentHighLookbackDays), idx);
-  const recentHigh = highWindow.length > 0 ? Math.max(...highWindow.map((b) => b.high)) : null;
-  const nearRecentHigh = recentHigh !== null && level >= recentHigh * (1 - params.recentHighTolerance);
+  // The recent extreme on the side the crossing moved toward: the swing high
+  // for an upward crossing, the swing low for a downward one.
+  const extremeWindow = bars.slice(Math.max(0, idx - params.recentHighLookbackDays), idx);
+  let nearRecentHigh = false;
+  if (extremeWindow.length > 0) {
+    if (down) {
+      const recentLow = Math.min(...extremeWindow.map((b) => b.low));
+      nearRecentHigh = level <= recentLow * (1 + params.recentHighTolerance);
+    } else {
+      const recentHigh = Math.max(...extremeWindow.map((b) => b.high));
+      nearRecentHigh = level >= recentHigh * (1 - params.recentHighTolerance);
+    }
+  }
 
   const closeOnAlertDay = breakoutBar.close;
   const pctAboveLevel = ((closeOnAlertDay - level) / level) * 100;
@@ -142,7 +162,7 @@ export function analyzeAlert(
   const following = bars.slice(idx + 1, idx + 1 + params.holdDays);
   let daysHeld = 0;
   for (const bar of following) {
-    if (bar.close > level) {
+    if (closedPast(bar.close)) {
       daysHeld += 1;
     } else {
       break;
@@ -155,28 +175,29 @@ export function analyzeAlert(
     heldAboveLevel = daysHeld === params.holdDays;
   }
 
-  const closedAbove = closeOnAlertDay > level;
+  const closedPastLevel = closedPast(closeOnAlertDay);
   const volumeConfirmed = volumeRatio !== null && volumeRatio >= params.volumeRatioThreshold;
   const volumeGrowing = volumeTrendRatio === null || volumeTrendRatio >= 1.0;
 
+  const extreme = down ? "recent low" : "recent high";
   const notesParts: string[] = [
-    `close ${closedAbove ? "above" : "at/below"} level (${pctAboveLevel >= 0 ? "+" : ""}${pctAboveLevel.toFixed(1)}%)`,
+    `close ${closedPastLevel ? past : `at/${back}`} level (${pctAboveLevel >= 0 ? "+" : ""}${pctAboveLevel.toFixed(1)}%)`,
     volumeRatio !== null ? `volume ${volumeRatio.toFixed(2)}x ${params.baselineDays}d avg` : "volume ratio n/a",
   ];
   if (volumeTrendRatio !== null) {
     notesParts.push(`${trendDays}d volume trend ${volumeTrendRatio.toFixed(2)}x`);
   }
-  notesParts.push(nearRecentHigh ? "near/above recent high" : "well below recent high (weak resistance)");
+  notesParts.push(nearRecentHigh ? `near/${past} ${extreme}` : `well ${back} ${extreme} (arbitrary level)`);
   if (heldAboveLevel === true) {
-    notesParts.push(`held above level for ${daysHeld}/${params.holdDays}d`);
+    notesParts.push(`held ${past} level for ${daysHeld}/${params.holdDays}d`);
   } else if (heldAboveLevel === false) {
-    notesParts.push(`failed to hold - closed back below within ${params.holdDays}d`);
+    notesParts.push(`failed to hold - closed back ${back} within ${params.holdDays}d`);
   } else {
     notesParts.push("not enough time elapsed yet to confirm it held");
   }
 
   let verdict: string;
-  if (!closedAbove) {
+  if (!closedPastLevel) {
     verdict = "NO_CLOSE_CONFIRM";
   } else if (volumeConfirmed && nearRecentHigh && volumeGrowing && heldAboveLevel !== false) {
     verdict = "CONFIRMED_BREAKOUT";

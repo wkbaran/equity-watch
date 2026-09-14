@@ -23,7 +23,7 @@ const base = {
 };
 
 function makeStatic(overrides: Partial<StaticAlert> = {}): StaticAlert {
-  return { ...base, id: "s1", symbol: "TEST", kind: "static", side: "below", level: 100, lastKnownSide: "above", ...overrides };
+  return { ...base, id: "s1", symbol: "TEST", kind: "static", side: "below", direction: "up", level: 100, lastKnownSide: "above", ...overrides };
 }
 
 function makeTrailing(overrides: Partial<TrailingAlert> = {}): TrailingAlert {
@@ -87,9 +87,11 @@ const quotes = (map: Record<string, number>) => new Map(Object.entries(map).map(
 
 describe("describeAlertCondition", () => {
   it("describes each kind in words", () => {
-    expect(describeAlertCondition(makeStatic({ level: 110 }))).toBe("price crosses 110");
+    expect(describeAlertCondition(makeStatic({ level: 110 }))).toBe("price crosses above 110");
+    expect(describeAlertCondition(makeStatic({ level: 110, direction: "down" }))).toBe("price crosses below 110");
+    expect(describeAlertCondition(makeStatic({ level: 110, direction: "either" }))).toBe("price crosses 110");
     expect(describeAlertCondition(makeStatic({ level: 110, volumeCondition: { ratio: 1.5, mode: "period", periodValue: 30, periodUnit: "m" } }))).toBe(
-      "price crosses 110 AND volume >= 1.5x normal in last 30m"
+      "price crosses above 110 AND volume >= 1.5x normal in last 30m"
     );
     expect(describeAlertCondition(makeTrailing())).toBe("trailing 3% off the low (started near 100)");
     expect(describeAlertCondition(makeTrailing({ side: "above", trailType: "amount", trailValue: 2 }))).toBe(
@@ -111,8 +113,9 @@ describe("what a trigger records", () => {
   });
 
   it("records the condition of a price alert, with no volume block when it had no volume condition", async () => {
-    const { revisits } = await checkAlerts([makeStatic()], market({ TEST: { price: 95 } }), []);
-    expect(revisits[0].condition).toBe("price crosses 100");
+    // Price falls from above 100 to 95, so the alert must watch downward crosses to fire.
+    const { revisits } = await checkAlerts([makeStatic({ direction: "down" })], market({ TEST: { price: 95 } }), []);
+    expect(revisits[0].condition).toBe("price crosses below 100");
     expect(revisits[0].volume).toBeUndefined();
   });
 
@@ -134,8 +137,8 @@ describe("buildAlertRows", () => {
     const rows = buildAlertRows(alerts, quotes({ ZZZ: 105, AAA: 190, MMM: 91 }), new Set(["BIL"]));
 
     expect(rows.map((r) => r.id)).toEqual(["m1", "t1", "s1"]);
-    expect(rows[2]).toMatchObject({ condition: "price crosses 100", level: 100, movingLevel: null, price: 105, vsLevelPct: 5 });
-    expect(rows[0]).toMatchObject({ kind: "ma", level: null, movingLevel: 200, vsLevelPct: -5 });
+    expect(rows[2]).toMatchObject({ condition: "price crosses above 100", direction: "up", level: 100, movingLevel: null, price: 105, vsLevelPct: 5 });
+    expect(rows[0]).toMatchObject({ kind: "ma", direction: null, level: null, movingLevel: 200, vsLevelPct: -5 });
     // Trailing below: extreme 90, 3% bounce -> trigger 92.7.
     expect(rows[1]).toMatchObject({ level: null, movingLevel: 92.7 });
   });

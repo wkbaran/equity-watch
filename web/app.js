@@ -3,6 +3,8 @@
 // Views are hash routes, so the poller and notifications keep running
 // whichever one is open:
 //   #/              overview        (dashboard.json, polled every minute)
+//   #/queue         the revisit queue (dashboard.json)
+//   #/stories       multi-trigger stories (dashboard.json)
 //   #/alerts        every live alert (alerts.json, fetched while viewed)
 //   #/trigger/<id>  one trigger's details, in a drawer over the current view
 //   #/alert/<id>    one alert's details and its recent triggers
@@ -95,7 +97,7 @@
     });
 
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Headlines lead with the symbol ("Holding MKS broke support"). Where the
+  // Headlines lead with the symbol ("Holding MKS crossed below 110"). Where the
   // symbol is shown separately, drop it from the sentence; held becomes a tag.
   const bareHeadline = (t) => t.headline.replace(new RegExp(`^(Holding )?${escapeRe(t.symbol)} `), "");
   const heldTag = (t) => (t.heldPosition ? h("span", { class: "tag held", text: "held" }) : null);
@@ -120,17 +122,42 @@
   const SESSION_LABEL = { pre: "pre-market", regular: "regular hours", post: "after hours" };
   const KIND_LABEL = { static: "Static", trailing: "Trailing", volume: "Volume", ma: "Moving average" };
   // Plain names for analysis.ts verdicts. Kept literal: NO_CLOSE_CONFIRM in
-  // particular must never read as a breakout.
+  // particular must never read as a completed move. Worded for either
+  // direction, since a downward crossing is judged by the same verdicts.
   const VERDICT_LABEL = {
-    CONFIRMED_BREAKOUT: "Confirmed breakout",
-    WATCH: "Broke out on volume but didn't hold",
-    WATCH_WEAK: "Weak: thin volume or not at a real high",
+    CONFIRMED_BREAKOUT: "Confirmed: closed past the level on rising volume, and hasn't gone back",
+    WATCH: "Closed past the level on volume, but volume faded or it didn't hold",
+    WATCH_WEAK: "Weak: thin volume, or the level is far from the recent high or low",
     NO: "Not confirmed",
     NO_CLOSE_CONFIRM: "Didn't close past the level",
     INSUFFICIENT_DATA: "Not enough data to judge",
     SKIPPED: "Skipped",
     PROVIDER_ERROR: "Price data unavailable",
   };
+
+  // Static alerts' `direction`: which crossings fire them.
+  const DIRECTION_LABEL = { up: "Crosses up", down: "Crosses down", either: "Either way" };
+  const DIRECTION_DETAIL = {
+    up: "Upward crosses (price rising through the level)",
+    down: "Downward crosses (price falling through the level)",
+    either: "Crosses in either direction",
+  };
+  const SIDE_OF = { up: "above", down: "below" };
+
+  // Reversal: the first crossing back against a fire, precomputed in
+  // dashboard.ts. Trading days, so a Friday fire reversed Monday is "next day".
+  const dayText = (n) => (n === 0 ? "same day" : n === 1 ? "next day" : `${n} days later`);
+  function reversalText(t) {
+    if (!t.reversal || !t.direction) return null;
+    const verb = t.direction === "up" ? "fell back below" : "climbed back above";
+    // A trailing alert's stored level is where it started, not what it fired at.
+    const level = t.levelAtTrigger !== null && t.kind !== "trailing" ? t.levelAtTrigger : "it";
+    return `${verb} ${level} · ${dayText(t.reversal.tradingDaysAfter)}`;
+  }
+  const reversedTag = (t, withDay = false) =>
+    t.reversal
+      ? h("span", { class: "tag reversed", title: reversalText(t), text: withDay ? `reversed · ${dayText(t.reversal.tradingDaysAfter)}` : "reversed" })
+      : null;
 
   const triggerHash = (id) => `#/trigger/${encodeURIComponent(id)}`;
   const alertHash = (id) => `#/alert/${encodeURIComponent(id)}`;
@@ -191,14 +218,15 @@
           h(
             "div",
             {},
-            h("div", { class: "headline" }, symbolLink(r.symbol, r.chartUrl), " ", h("a", { class: "plain", href: triggerHash(r.id), text: bareHeadline(r) }), heldTag(r)),
+            h("div", { class: "headline" }, symbolLink(r.symbol, r.chartUrl), " ", h("a", { class: "plain", href: triggerHash(r.id), text: bareHeadline(r) }), heldTag(r), reversedTag(r)),
             h(
               "div",
               { class: "sub" },
-              `Fired ${r.levelAtTrigger ?? "–"} @ ${money(r.triggerPrice)} · ${when(r.triggeredAt)}`,
+              `Fired ${r.direction ? `${SIDE_OF[r.direction]} ` : ""}${r.levelAtTrigger ?? "–"} @ ${money(r.triggerPrice)} · ${when(r.triggeredAt)}`,
               r.session && r.session !== "regular" && SESSION_LABEL[r.session] ? ` · ${SESSION_LABEL[r.session]}` : "",
               r.action ? `. ${r.action}` : ""
             ),
+            r.reversal ? h("div", { class: "sub reversal-note", text: `Reversed: ${reversalText(r)}` }) : null,
             r.sinceWatching ? h("div", { class: "sub", text: r.sinceWatching }) : null,
             r.why ? h("div", { class: "why", text: r.why }) : null,
             h(
@@ -230,7 +258,7 @@
         },
       },
       h("span", { class: "when", text: when(t.triggeredAt) }),
-      h("span", {}, symbolLink(t.symbol, t.chartUrl), " ", bareHeadline(t), heldTag(t)),
+      h("span", {}, symbolLink(t.symbol, t.chartUrl), " ", bareHeadline(t), heldTag(t), reversedTag(t, true)),
       h("span", { class: "status", text: t.status })
     );
   }
@@ -247,7 +275,11 @@
   }
 
   function renderStories(stories) {
-    $("stories-section").hidden = stories.length === 0;
+    $("stories-count").textContent = stories.length ? `(${stories.length})` : "";
+    if (stories.length === 0) {
+      $("stories").replaceChildren(h("div", { class: "empty", text: "No symbol has fired more than once yet." }));
+      return;
+    }
     $("stories").replaceChildren(
       ...stories.map((s) =>
         h("div", { class: "story" }, h("div", { class: "headline" }, ...linkLeadingSymbol(s.summary, s.symbol)), h("ol", {}, ...s.lines.map((l) => h("li", { text: l.text }))))
@@ -332,6 +364,8 @@
     current = d;
     renderUpdated();
     $("nav-alerts-count").textContent = `(${d.summary.liveAlerts})`;
+    $("nav-queue-count").textContent = `(${d.revisitQueue.length})`;
+    $("nav-stories-count").textContent = `(${d.stories.length})`;
     // The publisher decides this, not the page: with holdings off they are
     // absent from dashboard.json entirely, not merely hidden here.
     const showHoldings = d.site?.holdings === true;
@@ -411,7 +445,7 @@
       .sort(ALERT_SORTS[alertsFilter.sort] ?? ALERT_SORTS.symbol);
     $("alerts-status").textContent = `${rows.length} of ${alertsDoc.alerts.length} · prices ${ago(alertsDoc.generatedAt)}`;
 
-    const head = h("tr", {}, ...["Symbol", "Condition", "Level", "Price", "vs level", "Fired", "Last fired"].map((l) => h("th", { text: l })));
+    const head = h("tr", {}, ...["Symbol", "Condition", "Direction", "Level", "Price", "vs level", "Fired", "Last fired"].map((l) => h("th", { text: l })));
     const open = (id) => (location.hash = alertHash(id));
     const body = rows.map((a) =>
       h(
@@ -426,6 +460,7 @@
         },
         h("td", {}, symbolLink(a.symbol, a.chartUrl)),
         h("td", { class: "cond", text: a.condition }),
+        h("td", { class: "dir", text: a.direction ? DIRECTION_LABEL[a.direction] ?? a.direction : "–" }),
         h("td", {}, money(a.level ?? a.movingLevel), a.level === null && a.movingLevel !== null ? h("span", { class: "tag", text: "moving" }) : null),
         h("td", { text: money(a.price) }),
         h("td", { text: pct(a.vsLevelPct) }),
@@ -434,7 +469,7 @@
       )
     );
     if (body.length === 0) {
-      table.replaceChildren(h("tbody", {}, h("tr", {}, h("td", { class: "empty", colspan: "7", text: "No alerts match." }))));
+      table.replaceChildren(h("tbody", {}, h("tr", {}, h("td", { class: "empty", colspan: "8", text: "No alerts match." }))));
       return;
     }
     table.replaceChildren(h("thead", {}, head), h("tbody", {}, ...body));
@@ -481,6 +516,35 @@
       const vs = t.levelAtTrigger ? muted(` (price ${pct(((t.triggerPrice - t.levelAtTrigger) / t.levelAtTrigger) * 100)})`) : "";
       rows.push(kv(t.ma ? "Average at trigger" : "Level at trigger", money(t.levelAtTrigger), vs));
     }
+    if (t.direction) {
+      rows.push(kv("Direction", `Crossed ${SIDE_OF[t.direction]} ${t.ma ? "the average" : "the level"}`));
+    }
+
+    // Later crossings of the same level, folded onto this fire by the engine.
+    const followUps = t.followUps ?? [];
+    if (followUps.length > 0) {
+      const levelText = t.levelAtTrigger !== null && t.kind !== "trailing" ? ` ${money(t.levelAtTrigger)}` : " the level";
+      rows.push(
+        kv(
+          "Since it fired",
+          h(
+            "ol",
+            { class: "timeline" },
+            ...followUps.map((f) => {
+              const isReversal = t.reversal !== null && t.reversal !== undefined && f.at === t.reversal.at;
+              return h(
+                "li",
+                { class: isReversal ? "reversal" : null },
+                h("span", { class: "when", text: when(f.at) }),
+                ` crossed ${SIDE_OF[f.direction] ?? f.direction}${levelText} at ${money(f.price)}`,
+                f.session && f.session !== "regular" && SESSION_LABEL[f.session] ? ` · ${SESSION_LABEL[f.session]}` : "",
+                isReversal ? h("span", { class: "tag reversed", text: `reversed · ${dayText(t.reversal.tradingDaysAfter)}` }) : null
+              );
+            })
+          )
+        )
+      );
+    }
 
     const hasVolumeCondition = t.kind === "volume" || /\bvolume\b/.test(t.condition ?? "");
     if (t.volume) {
@@ -515,7 +579,7 @@
     );
 
     return [
-      h("h2", { class: "drawer-title" }, symbolLink(t.symbol, t.chartUrl), " ", bareHeadline(t), heldTag(t)),
+      h("h2", { class: "drawer-title" }, symbolLink(t.symbol, t.chartUrl), " ", bareHeadline(t), heldTag(t), reversedTag(t)),
       h("dl", { class: "kv-list" }, ...rows),
       h(
         "div",
@@ -538,6 +602,7 @@
     }
 
     const rows = [kv("Condition", a.condition), kv("Kind", KIND_LABEL[a.kind] ?? a.kind)];
+    if (a.direction) rows.push(kv("Fires on", DIRECTION_DETAIL[a.direction] ?? a.direction));
     if (a.level !== null) {
       rows.push(kv("Level", money(a.level)));
     } else if (a.movingLevel !== null) {
@@ -596,9 +661,12 @@
 
   // ---- routing --------------------------------------------------------------
 
+  // Views with their own hash; anything unrecognized is the overview.
+  const BASE_VIEWS = ["queue", "stories", "alerts"];
+
   function parseRoute() {
     const [view, id] = location.hash.replace(/^#\/?/, "").split("/");
-    if (view === "alerts") return { base: "alerts", drawer: null };
+    if (BASE_VIEWS.includes(view)) return { base: view, drawer: null };
     if ((view === "trigger" || view === "alert") && id) return { base: null, drawer: { type: view, id: decodeURIComponent(id) } };
     return { base: "overview", drawer: null };
   }
@@ -606,8 +674,7 @@
   function applyRoute() {
     const route = parseRoute();
     if (route.base) baseView = route.base;
-    $("view-overview").hidden = baseView !== "overview";
-    $("view-alerts").hidden = baseView !== "alerts";
+    for (const view of ["overview", ...BASE_VIEWS]) $(`view-${view}`).hidden = baseView !== view;
     for (const link of document.querySelectorAll("[data-nav]")) {
       if (link.dataset.nav === baseView) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
@@ -617,7 +684,7 @@
     renderDrawer(route.drawer);
   }
 
-  const closeDrawer = () => (location.hash = baseView === "alerts" ? "#/alerts" : "#/");
+  const closeDrawer = () => (location.hash = baseView === "overview" ? "#/" : `#/${baseView}`);
 
   // ---- notifications --------------------------------------------------------
 

@@ -106,9 +106,37 @@ follow that are easy to get wrong:
   drop out of `checkAlerts`.
 
 Re-fire suppression differs per kind and is *not* uniform: static alerts use
-`lastKnownSide`, trailing alerts reset `extremePrice`, and volume conditions
+`lastKnownSide` plus direction and follow-up folding (next section), trailing alerts reset `extremePrice`, and volume conditions
 use `mutedUntil` because a crossed volume threshold stays crossed and would
 otherwise fire on every poll.
+
+## Static alerts watch one direction, and crossings back fold onto the fire
+
+Until 2026-09-14 a static alert fired on *any* change of `lastKnownSide`, so
+it fired both ways. `side` was never a direction: it only records where price
+was at creation, for the one-alert-per-symbol+side rule. In real data, levels
+chopped across every 15-30 minutes, and each crossing became its own queue entry.
+The narrative called the crossing back "slipped below support".
+
+- **`StaticAlert.direction`** is `up` (default), `down`, or `either`. The
+  user set every existing alert to `up`. Don't infer a direction from `side`.
+- **Crossings inside the reversion window fold onto the fire** as
+  `RevisitEntry.followUps`. The window is `holdDays` trading days, and the
+  fire's own day is day 0. Both directions fold, with no volume check. The
+  first follow-up against the fire is the reversal (`reversalOf` in
+  `src/alerts/reversion.ts`). That is the signal the user wants.
+- **Outside the window**, a crossing against `direction` records nothing. "It
+  is below the alert now" is explicitly not news.
+- **Don't say "support" or "resistance".** To the user those mean a level the
+  market has tested repeatedly, not an alert they typed. Say "crossed above 50".
+- **Legacy entries**: `alert migrate-directions` marked old follow-up entries
+  with `followUpOf` (skip them everywhere). It also dismissed open
+  counter-direction entries outside any window. Don't count `followUpOf`
+  entries as triggers.
+- The trading-day count skips weekends but knows no holidays, so a holiday
+  stretches the window by a day. MA and trailing alerts don't fold follow-ups.
+- `analyzeAlert` is direction-aware. Before this, a downward trigger was judged
+  as an upside breakout, so a real close below the level got `NO_CLOSE_CONFIRM`.
 
 ## Schwab's `/markets` response keys the product two different ways
 

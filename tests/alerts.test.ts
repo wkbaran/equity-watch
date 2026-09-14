@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MarketData } from "../src/alerts/engine.js";
 import { addAlert, checkAlerts } from "../src/alerts/engine.js";
 import type { Alert, StaticAlert, TrailingAlert, VolumeAlert } from "../src/alerts/models.js";
+import { endedOnFiredSide, reversalOf } from "../src/alerts/reversion.js";
+import type { RevisitEntry } from "../src/alerts/revisit.js";
 import { loadAlerts } from "../src/alerts/store.js";
 import type { PriceBar } from "../src/models.js";
 import type { Quote } from "../src/providers/schwab.js";
@@ -58,6 +60,7 @@ function makeStatic(overrides: Partial<StaticAlert> = {}): StaticAlert {
     priceAtWatchStart: null,
     triggerSnapshot: null,
     kind: "static",
+    direction: "either",
     level: 100,
     lastKnownSide: "above",
     ...overrides,
@@ -138,7 +141,7 @@ describe("checkAlerts", () => {
     expect(alert.triggerCount).toBe(1);
   });
 
-  it("fires again on a genuine re-cross, queueing a second revisit entry", async () => {
+  it("fires again on a genuine re-cross when given no revisit history to fold onto", async () => {
     const alert = makeStatic({ level: 100, lastKnownSide: "above" });
     await checkAlerts([alert], fakeMarket({ prices: { TEST: 95 } }), []);
     expect(alert.triggerCount).toBe(1);
@@ -223,10 +226,11 @@ describe("checkAlerts", () => {
 
   it("triggers a below trailing alert once the bounce meets the trail threshold", async () => {
     const alert = makeTrailing({ side: "below", extremePrice: 97, trailType: "percent", trailValue: 3 });
-    const { triggered } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 100 } }), []); // 97 * 1.03 = 99.91
+    const { triggered, revisits } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 100 } }), []); // 97 * 1.03 = 99.91
     expect(triggered).toHaveLength(1);
     expect(alert.status).toBe("live");
     expect(alert.lastTriggerPrice).toBe(100);
+    expect(revisits[0].direction).toBe("up"); // a bounce off the low
 
     // The snapshot preserves the watermark reached before the bounce, even
     // if a future rearm/edit changes extremePrice on the live record.
@@ -245,9 +249,171 @@ describe("checkAlerts", () => {
     const { triggered: t2 } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 101.5 } }), []);
     expect(t2).toHaveLength(0); // pullback of 1.5, short of the $2 trail
 
-    const { triggered: t3 } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 101 } }), []); // 103 - 2 = 101
+    const { triggered: t3, revisits } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 101 } }), []); // 103 - 2 = 101
     expect(t3).toHaveLength(1);
     expect(alert.status).toBe("live");
+    expect(revisits[0].direction).toBe("down"); // a pullback off the high
+  });
+
+  describe("directions and reversion folding", () => {
+    // 2026-09-11 is a Friday; 14:00Z is 10:00 Eastern.
+    const FRI = "2026-09-11T14:00:00.000Z";
+
+    /** One poll at a pinned time against a running copy of the revisit store. */
+    function poller(alert: StaticAlert) {
+      const store: RevisitEntry[] = [];
+      return {
+        store,
+        async check(price: number, nowIso: string, volume = 0) {
+          const result = await checkAlerts(
+            [alert],
+            fakeMarket({ prices: { TEST: price }, volumes: { TEST: volume } }),
+            [],
+            "regular",
+            undefined,
+            undefined,
+            undefined,
+            { existingRevisits: store, now: new Date(nowIso) }
+          );
+          store.push(...result.revisits);
+          return result;
+        },
+      };
+    }
+
+    it("fires only on crossings in the alert's direction, default up", async () => {
+      const alert = makeStatic({ direction: "up", level: 100, lastKnownSide: "above" });
+      const p = poller(alert);
+
+      const down = await p.check(95, FRI);
+      expect(down.triggered).toHaveLength(0);
+      expect(down.revisits).toHaveLength(0);
+      expect(alert.lastKnownSide).toBe("below"); // measured from here for the next watched crossing
+
+      const up = await p.check(105, "2026-09-11T15:00:00.000Z");
+      expect(up.triggered).toHaveLength(1);
+      expect(up.revisits[0]).toMatchObject({ direction: "up", triggerPrice: 105 });
+    });
+
+    it("fires a down alert on a downward crossing only", async () => {
+      const alert = makeStatic({ direction: "down", level: 100, lastKnownSide: "below" });
+      const p = poller(alert);
+      expect((await p.check(105, FRI)).triggered).toHaveLength(0);
+      const fired = await p.check(95, "2026-09-11T15:00:00.000Z");
+      expect(fired.revisits[0]).toMatchObject({ direction: "down", condition: "price crosses below 100" });
+    });
+
+    it("folds every crossing inside the window onto the fire instead of queueing new entries", async () => {
+      const alert = makeStatic({ direction: "up", level: 100, lastKnownSide: "below" });
+      const p = poller(alert);
+      const fire = (await p.check(101, FRI)).revisits[0];
+
+      const back = await p.check(99, "2026-09-11T15:00:00.000Z");
+      expect(back.triggered).toHaveLength(0);
+      expect(back.revisits).toHaveLength(0);
+      expect(back.updatedRevisits).toEqual([fire]);
+      expect(back.followUps).toHaveLength(1);
+      expect(back.followUps[0]).toMatchObject({ reversal: true, followUp: { price: 99, direction: "down", session: "regular" } });
+      expect(alert.lastKnownSide).toBe("below");
+
+      const again = await p.check(101, "2026-09-11T16:00:00.000Z");
+      expect(again.triggered).toHaveLength(0); // an upward crossing, but inside the window
+      expect(again.followUps[0].reversal).toBe(false);
+
+      const monday = await p.check(99, "2026-09-14T14:00:00.000Z");
+      expect(monday.followUps[0].reversal).toBe(false); // only the first counter-crossing is the reversal
+
+      expect(p.store).toHaveLength(1);
+      expect(fire.followUps).toHaveLength(3);
+      expect(reversalOf(fire)?.price).toBe(99);
+      expect(endedOnFiredSide(fire)).toBe(false);
+      expect(alert.triggerCount).toBe(1);
+    });
+
+    it("closes the window after holdDays trading days, counting over the weekend", async () => {
+      const alert = makeStatic({ direction: "up", level: 100, lastKnownSide: "below" });
+      const p = poller(alert);
+      const fire = (await p.check(101, FRI)).revisits[0];
+
+      // Tuesday is trading day 2: still inside.
+      expect((await p.check(99, "2026-09-15T15:00:00.000Z")).followUps).toHaveLength(1);
+
+      // Wednesday is day 3: an upward crossing fires on its own.
+      const wed = await p.check(101, "2026-09-16T15:00:00.000Z");
+      expect(wed.triggered).toHaveLength(1);
+      expect(wed.followUps).toHaveLength(0);
+      expect(fire.followUps).toHaveLength(1);
+
+      // And later chop folds onto the new fire, not the old one.
+      const chop = await p.check(99, "2026-09-16T16:00:00.000Z");
+      expect(chop.followUps[0].entry).toBe(wed.revisits[0]);
+    });
+
+    it("records nothing for a counter-crossing outside the window", async () => {
+      const alert = makeStatic({ direction: "up", level: 100, lastKnownSide: "below" });
+      const p = poller(alert);
+      await p.check(101, FRI);
+
+      const wed = await p.check(99, "2026-09-16T15:00:00.000Z");
+      expect(wed.triggered).toHaveLength(0);
+      expect(wed.followUps).toHaveLength(0);
+      expect(wed.updatedRevisits).toHaveLength(0);
+      expect(p.store[0].followUps).toBeUndefined();
+      expect(alert.lastKnownSide).toBe("below");
+    });
+
+    it("records follow-ups without waiting on volume, and still gates the next real fire on it", async () => {
+      const alert = makeStatic({
+        direction: "up",
+        level: 100,
+        lastKnownSide: "below",
+        volumeCondition: { threshold: 1_000_000, mode: "today" },
+      });
+      const p = poller(alert);
+      expect((await p.check(101, FRI, 2_000_000)).triggered).toHaveLength(1);
+      expect(alert.mutedUntil).not.toBeNull();
+
+      // Inside the window, muted, and with no volume: both crossings still fold.
+      expect((await p.check(99, "2026-09-11T15:00:00.000Z", 0)).followUps).toHaveLength(1);
+      expect((await p.check(101, "2026-09-11T16:00:00.000Z", 0)).followUps).toHaveLength(1);
+      expect(alert.lastKnownSide).toBe("above");
+
+      // Outside the window (and the mute), a watched crossing waits on volume as before.
+      await p.check(99, "2026-09-16T14:00:00.000Z", 0);
+      const pending = await p.check(101, "2026-09-16T15:00:00.000Z", 200_000);
+      expect(pending.triggered).toHaveLength(0);
+      expect(alert.lastKnownSide).toBe("below"); // left stale: the crossing is pending
+      const confirmed = await p.check(101.5, "2026-09-16T16:00:00.000Z", 1_500_000);
+      expect(confirmed.triggered).toHaveLength(1);
+      expect(p.store).toHaveLength(2);
+    });
+
+    it("lets a mute stop a fire but not a counter-crossing from moving lastKnownSide", async () => {
+      const alert = makeStatic({ direction: "up", level: 100, lastKnownSide: "above", mutedUntil: "2026-09-30T00:00:00.000Z" });
+      const p = poller(alert);
+
+      await p.check(99, "2026-09-16T14:00:00.000Z");
+      expect(alert.lastKnownSide).toBe("below");
+
+      const muted = await p.check(101, "2026-09-16T15:00:00.000Z");
+      expect(muted.triggered).toHaveLength(0);
+      expect(alert.lastKnownSide).toBe("below"); // pending until the mute lapses
+
+      const lapsed = await p.check(101, "2026-10-01T15:00:00.000Z");
+      expect(lapsed.triggered).toHaveLength(1);
+    });
+
+    it("does not fold a crossing of a re-levelled alert onto a fire at its old level", async () => {
+      const alert = makeStatic({ direction: "up", level: 100, lastKnownSide: "below" });
+      const p = poller(alert);
+      await p.check(101, FRI);
+
+      alert.level = 110; // what `alert revisit apply` does
+      alert.lastKnownSide = "below";
+      const fired = await p.check(111, "2026-09-11T16:00:00.000Z");
+      expect(fired.triggered).toHaveLength(1);
+      expect(fired.followUps).toHaveLength(0);
+    });
   });
 
   describe("volume-only alerts", () => {
@@ -432,6 +598,15 @@ describe("addAlert", () => {
     const result = await addAlert(path, { kind: "static", symbol: "TEST", level: 110 }, fakeMarket({ prices: { TEST: 100 } }));
     expect(result.rejectedReason).toBeNull();
     expect((result.added as StaticAlert).side).toBe("above");
+  });
+
+  it("watches upward crossings unless told otherwise", async () => {
+    const market = fakeMarket({ prices: { TEST: 100 } });
+    const plain = await addAlert(path, { kind: "static", symbol: "TEST", level: 110 }, market);
+    expect((plain.added as StaticAlert).direction).toBe("up");
+    const down = await addAlert(path, { kind: "static", symbol: "TEST", level: 90, direction: "down" }, market);
+    expect((down.added as StaticAlert).direction).toBe("down");
+    expect(loadAlerts(path).map((a) => (a as StaticAlert).direction)).toEqual(["up", "down"]);
   });
 
   it("seeds lastKnownSide from price-vs-level, not the anchor-vs-price side field", async () => {

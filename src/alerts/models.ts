@@ -2,6 +2,19 @@ import type { MaTimeframe, MaType } from "../indicators/movingAverage.js";
 
 export type AlertSide = "above" | "below";
 
+/** Which way price moved through a level. */
+export type CrossDirection = "up" | "down";
+
+/**
+ * Which crossings of a static level fire. The opposite crossing is still
+ * watched, but only to record a reversion onto the fire it undoes
+ * (src/alerts/reversion.ts) - "it is below the level now" is not news.
+ */
+export type AlertDirection = CrossDirection | "either";
+
+/** Every price alert watches upward crosses unless told otherwise. */
+export const DEFAULT_ALERT_DIRECTION: AlertDirection = "up";
+
 export type VolumePeriodUnit = "s" | "m" | "h" | "d";
 
 export interface VolumeCondition {
@@ -77,7 +90,13 @@ interface BaseAlert {
 
 export interface StaticAlert extends BaseAlert {
   kind: "static";
+  /**
+   * Where price was relative to the level when the alert was created. Only
+   * used for the one-alert-per-symbol+side rule; it says nothing about which
+   * crossing fires. `direction` does.
+   */
   side: AlertSide;
+  direction: AlertDirection;
   level: number;
   lastKnownSide: AlertSide;
   /** Optional AND condition: both the price crossing and this must hold. */
@@ -183,5 +202,10 @@ export function normalizeAlert(raw: Record<string, unknown>): Alert {
     lastTriggeredAt: (raw.lastTriggeredAt as string | null | undefined) ?? legacyTriggeredAt,
     lastTriggerPrice: (raw.lastTriggerPrice as number | null | undefined) ?? legacyTriggerPrice,
     mutedUntil: (raw.mutedUntil as string | null | undefined) ?? null,
+    // Static alerts written before directions existed fired both ways. They
+    // become upward-only, the default.
+    ...(raw.kind === "static"
+      ? { direction: (raw.direction as AlertDirection | undefined) ?? DEFAULT_ALERT_DIRECTION }
+      : {}),
   } as Alert;
 }

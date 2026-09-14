@@ -125,6 +125,7 @@ describe("gatherKnownSymbols", () => {
       priceAtWatchStart: null,
       triggerSnapshot: null,
       kind: "static",
+      direction: "up",
       level: 90,
       lastKnownSide: "above",
     };

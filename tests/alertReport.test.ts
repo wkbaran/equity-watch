@@ -38,6 +38,7 @@ describe("writeAlertTriggerReport", () => {
       lastTriggerPrice: 150,
       triggerSnapshot: null,
       kind: "static",
+      direction: "up",
       level: 150,
       lastKnownSide: "above",
     };
@@ -86,8 +87,8 @@ describe("writeAlertTriggerReport", () => {
     const rows = readRows(outPath);
 
     expect(rows).toHaveLength(3);
-    expect(rows[0]).toMatchObject({ id: "s1", kind: "static", symbol: "AAPL", level: "150", trigger_price: "150" });
-    expect(rows[1]).toMatchObject({ id: "t1", kind: "trailing", symbol: "MSFT", near: "300", trail_type: "amount" });
+    expect(rows[0]).toMatchObject({ id: "s1", kind: "static", symbol: "AAPL", direction: "up", level: "150", trigger_price: "150" });
+    expect(rows[1]).toMatchObject({ id: "t1", kind: "trailing", symbol: "MSFT", direction: "", near: "300", trail_type: "amount" });
     expect(rows[2]).toMatchObject({
       id: "v1",
       kind: "volume",

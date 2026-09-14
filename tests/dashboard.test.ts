@@ -54,6 +54,7 @@ function staticAlert(overrides: Partial<StaticAlert> = {}): StaticAlert {
     triggerSnapshot: null,
     kind: "static",
     side: "above",
+    direction: "up",
     level: 110,
     lastKnownSide: "below",
     ...overrides,
@@ -143,7 +144,7 @@ describe("recentTriggers", () => {
 
     expect(byId.rec).toMatchObject({ condition: "volume >= 1000 today", conditionSource: "recorded", alertExists: true, volume: { observed: 1500 } });
     // Older entries fall back to the alert as it is now, and say so.
-    expect(byId.cur).toMatchObject({ condition: "price crosses 110", conditionSource: "current", volume: null });
+    expect(byId.cur).toMatchObject({ condition: "price crosses above 110", conditionSource: "current", volume: null });
     // Nothing recorded and nothing to fall back on: null, not a guess.
     expect(byId.gone).toMatchObject({ condition: null, conditionSource: null, alertExists: false, alertId: "removed" });
   });
@@ -361,7 +362,7 @@ describe("buildDashboard", () => {
       volumeTrendRatio: 1.5,
     });
     const d = base({ revisits: [revisit({ symbol: "TGT", priority, signals })] });
-    expect(d.revisitQueue[0].headline).toBe("TGT broke resistance with volume, now 6.0% above it");
+    expect(d.revisitQueue[0].headline).toBe("TGT crossed above 110 and closed above it on volume, now 6.0% above it");
   });
 
   it("names a position in the headline so it reads differently from a watchlist name", () => {
@@ -378,7 +379,78 @@ describe("buildDashboard", () => {
       holdings: holdingsWith("MKS", 50, 100),
     });
     expect(d.revisitQueue[0].headline).toContain("Holding MKS");
-    expect(d.revisitQueue[0].headline).toContain("broke support");
+    expect(d.revisitQueue[0].headline).toContain("crossed below 110");
+    expect(d.revisitQueue[0].headline).not.toMatch(/support|resistance/);
+  });
+});
+
+describe("follow-ups and reversals", () => {
+  // Fire on Thursday 2026-09-10; back below Friday, back above Friday afternoon.
+  const followUps = [
+    { at: "2026-09-11T15:00:00.000Z", price: 109, direction: "down" as const, session: "regular" as const },
+    { at: "2026-09-11T19:00:00.000Z", price: 111, direction: "up" as const, session: "regular" as const },
+  ];
+
+  it("skips legacy follow-up entries in the queue, recent triggers, counts, and stories", () => {
+    const d = base({
+      revisits: [
+        revisit({ id: "fire", followUps }),
+        revisit({ id: "echo", followUpOf: "fire", triggeredAt: "2026-09-11T15:00:00.000Z", triggerPrice: 109 }),
+        revisit({ id: "echo2", followUpOf: "fire", triggeredAt: "2026-09-11T19:00:00.000Z", triggerPrice: 111 }),
+      ],
+    });
+    expect(d.revisitQueue.map((r) => r.id)).toEqual(["fire"]);
+    expect(d.recentTriggers.map((t) => t.id)).toEqual(["fire"]);
+    expect(d.summary.openRevisits).toBe(1);
+    expect(d.summary.triggersInWindow).toBe(1);
+    expect(d.stories).toEqual([]);
+  });
+
+  it("exposes direction, follow-ups, and a precomputed reversal on queue and trigger rows", () => {
+    const d = base({ revisits: [revisit({ id: "fire", followUps })] });
+    const expected = {
+      direction: "up",
+      followUps,
+      reversal: { at: "2026-09-11T15:00:00.000Z", price: 109, tradingDaysAfter: 1 },
+    };
+    expect(d.revisitQueue[0]).toMatchObject(expected);
+    expect(d.recentTriggers[0]).toMatchObject(expected);
+    expect(d.revisitQueue[0].headline).toBe("AAPL crossed above 110, then fell back below it the next day and climbed back above it the next day");
+  });
+
+  it("reports no reversal for a fire nothing crossed back, and no direction for a volume trigger", () => {
+    const d = base({
+      revisits: [revisit({ id: "plain" }), revisit({ id: "vol", kind: "volume", levelAtTrigger: null, triggeredAt: "2026-09-11T12:00:00.000Z" })],
+    });
+    const byId = Object.fromEntries(d.recentTriggers.map((t) => [t.id, t]));
+    expect(byId.plain).toMatchObject({ direction: "up", followUps: [], reversal: null });
+    expect(byId.vol).toMatchObject({ direction: null, followUps: [], reversal: null });
+  });
+
+  it("exposes a static alert's direction on approaching and alert rows", () => {
+    const alerts = [staticAlert({ direction: "down", level: 101 })];
+    const d = base({ alerts, quotes: quotes({ AAPL: 100 }), includeApproaching: true });
+    expect(d.approaching[0].direction).toBe("down");
+    expect(buildAlertRows(alerts, new Map(), new Set())[0].direction).toBe("down");
+  });
+
+  it("keeps the fingerprint quote-independent with follow-ups, and moves it when one is recorded", () => {
+    const inputs = (f: typeof followUps) => ({
+      alerts: [staticAlert()],
+      revisits: [revisit({ followUps: f, watchingSince: "2026-01-01T00:00:00.000Z", priceAtWatchStart: 80 })],
+      holdings: holdingsWith("AAPL", 10, 100),
+    });
+    const withQuotes = base({ ...inputs(followUps), quotes: quotes({ AAPL: 150 }) });
+    const later = base({ ...inputs(followUps), now: new Date("2026-09-14T15:00:00.000Z") });
+    expect(dashboardFingerprint(withQuotes)).toBe(dashboardFingerprint(later));
+
+    const oneFollowUp = dashboardFingerprint(base(inputs(followUps.slice(0, 1))));
+    expect(dashboardFingerprint(base(inputs(followUps)))).not.toBe(oneFollowUp);
+  });
+
+  it("publishes no position size or value through the new fields", () => {
+    const d = base({ revisits: [revisit({ followUps })], holdings: holdingsWith("AAPL", 10, 100), quotes: quotes({ AAPL: 150 }) });
+    expect(JSON.stringify(siteDocument(d, { holdings: false }))).not.toMatch(/"shares"|"basis"|"marketValue"/);
   });
 });
 

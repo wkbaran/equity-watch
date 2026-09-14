@@ -74,7 +74,7 @@ describe("triggerHeadline for moving-average triggers", () => {
 });
 
 describe("triggerHeadline", () => {
-  it("says what the user asked for: broke resistance with volume", () => {
+  it("says what price did against the level, naming it: crossed above 110 on volume and held", () => {
     const e = withSignals({}, {
       verdict: "CONFIRMED_BREAKOUT",
       pctMovePastLevel: 4,
@@ -83,10 +83,15 @@ describe("triggerHeadline", () => {
       volumeRatio: 2.3,
       volumeTrendRatio: 1.5,
     });
-    expect(triggerHeadline(e, NONE)).toBe("TGT broke resistance with volume, now 4.0% above it");
+    expect(triggerHeadline(e, NONE)).toBe("TGT crossed above 110 and closed above it on volume, now 4.0% above it");
   });
 
-  it("says holding X broke support for a downside move on a position", () => {
+  it("drops the volume claim from a confirmed hold when volume wasn't the story", () => {
+    const e = withSignals({}, { verdict: "CONFIRMED_BREAKOUT", daysOpen: 0, heldPosition: false, volumeRatio: 1.1 });
+    expect(triggerHeadline(e, NONE)).toBe("TGT crossed above 110 and closed above it on volume");
+  });
+
+  it("says holding X crossed below the level for a downside move on a position", () => {
     const e = withSignals({ symbol: "MKS", levelAtTrigger: 110, triggerPrice: 104 }, {
       verdict: "WATCH",
       pctMovePastLevel: -5.5,
@@ -95,10 +100,19 @@ describe("triggerHeadline", () => {
       volumeRatio: 1.8,
       volumeTrendRatio: 1.2,
     });
-    expect(triggerHeadline(e, HELD)).toBe("Holding MKS broke support, now 5.5% below it");
+    expect(triggerHeadline(e, HELD)).toBe(
+      "Holding MKS crossed below 110 and closed below it on volume, but volume faded or it didn't hold, now 5.5% below it"
+    );
   });
 
-  it("does not claim a breakout when the close never confirmed", () => {
+  it("prefers the recorded direction over the trigger price", () => {
+    // A gap straight through: recorded as a downward cross even though the
+    // stored price happens to sit on the level.
+    const e = entry({ direction: "down", triggerPrice: 110, levelAtTrigger: 110 });
+    expect(triggerHeadline(e, NONE)).toBe("TGT crossed below 110");
+  });
+
+  it("does not claim a completed move when the close never confirmed", () => {
     const e = withSignals({}, {
       verdict: "NO_CLOSE_CONFIRM",
       pctMovePastLevel: 0.2,
@@ -106,8 +120,46 @@ describe("triggerHeadline", () => {
       heldPosition: false,
       volumeRatio: 1.1,
     });
-    expect(triggerHeadline(e, NONE)).toContain("tagged its level intraday but closed back below");
-    expect(triggerHeadline(e, NONE)).not.toContain("broke resistance");
+    expect(triggerHeadline(e, NONE)).toBe("TGT crossed above 110 intraday but closed back below");
+    expect(triggerHeadline(e, NONE)).not.toContain("held");
+  });
+
+  it("mirrors no-close-confirm for a downward crossing", () => {
+    const e = withSignals({ triggerPrice: 108 }, { verdict: "NO_CLOSE_CONFIRM", daysOpen: 1, heldPosition: false });
+    expect(triggerHeadline(e, NONE)).toBe("TGT crossed below 110 intraday but closed back above");
+  });
+
+  it("names the recent low, not the high, for a weak downward crossing on volume", () => {
+    const e = withSignals({ triggerPrice: 108 }, {
+      verdict: "WATCH_WEAK",
+      daysOpen: 0,
+      heldPosition: false,
+      volumeRatio: 2.5,
+      volumeTrendRatio: 1.6,
+    });
+    expect(triggerHeadline(e, NONE)).toBe("TGT crossed below 110 on volume, well short of its recent low");
+  });
+
+  it("says only what was recorded when no verdict has been run", () => {
+    expect(triggerHeadline(entry(), NONE)).toBe("TGT crossed above 110");
+    const rising = withSignals({}, { daysOpen: 0, heldPosition: false, volumeRatio: 2.5, volumeTrendRatio: 1.6 });
+    expect(triggerHeadline(rising, NONE)).toBe("TGT crossed above 110 on rising volume");
+    const nothing = withSignals({}, { verdict: "NO", daysOpen: 0, heldPosition: false });
+    expect(triggerHeadline(nothing, NONE)).toBe("TGT crossed above 110 with nothing confirming it");
+  });
+
+  it("never calls an alert level support or resistance, whatever the verdict or direction", () => {
+    const verdicts = [null, "CONFIRMED_BREAKOUT", "WATCH", "WATCH_WEAK", "NO_CLOSE_CONFIRM", "NO", "INSUFFICIENT_DATA"];
+    for (const verdict of verdicts) {
+      for (const triggerPrice of [104, 116]) {
+        for (const volumeRatio of [1, 2.5]) {
+          const e = withSignals({ triggerPrice }, { verdict, daysOpen: 0, heldPosition: true, volumeRatio, volumeTrendRatio: 1.6 });
+          const text = triggerHeadline(e, HELD) + triggerHeadline({ ...e, symbol: "MKS" }, HELD);
+          expect(text).not.toMatch(/support|resistance|broke/i);
+          expect(text).toContain("110");
+        }
+      }
+    }
   });
 
   it("distinguishes a volume-confirmed push from a thin one", () => {
@@ -119,8 +171,8 @@ describe("triggerHeadline", () => {
       volumeRatio: 2.5,
       volumeTrendRatio: 1.6,
     });
-    expect(triggerHeadline(thin, NONE)).toContain("thin volume");
-    expect(triggerHeadline(thick, NONE)).toContain("on volume");
+    expect(triggerHeadline(thin, NONE)).toBe("TGT crossed above 110 on thin volume");
+    expect(triggerHeadline(thick, NONE)).toBe("TGT crossed above 110 on volume, well short of its recent high");
   });
 
   it("flags an extended-hours trigger so it reads differently", () => {
@@ -153,6 +205,79 @@ describe("triggerHeadline", () => {
   it("omits a sub-1% move rather than reporting noise", () => {
     const e = withSignals({}, { verdict: "WATCH", pctMovePastLevel: 0.3, daysOpen: 0, heldPosition: false });
     expect(triggerHeadline(e, NONE)).not.toContain("0.3%");
+  });
+});
+
+describe("triggerHeadline for reversals", () => {
+  // The fire is Thursday 2026-09-10, 10:00 Eastern.
+  const up = (at: string, price = 111) => ({ at, price, direction: "up" as const, session: "regular" as const });
+  const down = (at: string, price = 109) => ({ at, price, direction: "down" as const, session: "regular" as const });
+  const SAME_DAY = "2026-09-10T18:00:00.000Z";
+  const NEXT_DAY = "2026-09-11T15:00:00.000Z";
+  const MONDAY = "2026-09-14T15:00:00.000Z";
+
+  it("says when price fell back through the level, in trading days", () => {
+    expect(triggerHeadline(entry({ followUps: [down(SAME_DAY)] }), NONE)).toBe("TGT crossed above 110, then fell back below it the same day");
+    expect(triggerHeadline(entry({ followUps: [down(NEXT_DAY)] }), NONE)).toBe("TGT crossed above 110, then fell back below it the next day");
+    // Friday and Monday are trading days 1 and 2; the weekend doesn't count.
+    expect(triggerHeadline(entry({ followUps: [down(MONDAY)] }), NONE)).toBe("TGT crossed above 110, then fell back below it 2 days later");
+  });
+
+  it("says so when price came back to the fired side afterwards", () => {
+    const e = entry({ followUps: [down(SAME_DAY), up(NEXT_DAY)] });
+    expect(triggerHeadline(e, NONE)).toBe("TGT crossed above 110, then fell back below it the same day and climbed back above it the next day");
+  });
+
+  it("mirrors the wording for a downward fire", () => {
+    const e = entry({ symbol: "MKS", triggerPrice: 108, direction: "down", followUps: [up(NEXT_DAY)] });
+    expect(triggerHeadline(e, HELD)).toBe("Holding MKS crossed below 110, then climbed back above it the next day");
+  });
+
+  it("counts many crossings rather than listing them", () => {
+    const e = entry({ followUps: [down(SAME_DAY), up("2026-09-10T19:00:00.000Z"), down(NEXT_DAY), up(MONDAY)] });
+    expect(triggerHeadline(e, NONE)).toBe(
+      "TGT crossed above 110, then fell back below it the same day, crossing it 4 times in all, ending above it"
+    );
+  });
+
+  it("doesn't repeat a same-day close back below that the verdict already states", () => {
+    const scored = (followUps: RevisitEntry["followUps"]) =>
+      withSignals({ followUps }, { verdict: "NO_CLOSE_CONFIRM", daysOpen: 0, heldPosition: false });
+    expect(triggerHeadline(scored([down(SAME_DAY)]), NONE)).toBe("TGT crossed above 110 intraday but closed back below");
+    expect(triggerHeadline(scored([down(SAME_DAY), up(NEXT_DAY)]), NONE)).toBe(
+      "TGT crossed above 110 intraday but closed back below, then climbed back above it the next day"
+    );
+    // A reversal on a later day is new information and is still stated.
+    expect(triggerHeadline(scored([down(NEXT_DAY)]), NONE)).toBe(
+      "TGT crossed above 110 intraday but closed back below, then fell back below it the next day"
+    );
+  });
+
+  it("leaves hold claims to the reversal rather than contradicting it", () => {
+    const confirmed = withSignals({ followUps: [down(MONDAY)] }, {
+      verdict: "CONFIRMED_BREAKOUT",
+      daysOpen: 0,
+      heldPosition: false,
+      volumeRatio: 2.3,
+      volumeTrendRatio: 1.5,
+    });
+    expect(triggerHeadline(confirmed, NONE)).toBe(
+      "TGT crossed above 110 and closed above it on volume, then fell back below it 2 days later"
+    );
+    const watch = withSignals({ followUps: [down(NEXT_DAY)] }, { verdict: "WATCH", daysOpen: 0, heldPosition: false, pctMovePastLevel: -2 });
+    expect(triggerHeadline(watch, NONE)).toBe(
+      "TGT crossed above 110 and closed above it on volume, then fell back below it the next day, now 2.0% below it"
+    );
+  });
+
+  it("keeps the session next to the fire, not after a reversal on another day", () => {
+    const e = entry({ session: "pre", followUps: [down(NEXT_DAY)] });
+    expect(triggerHeadline(e, NONE)).toBe("TGT crossed above 110, in pre-market, then fell back below it the next day");
+  });
+
+  it("says nothing about follow-ups that never went back", () => {
+    // Not a realistic sequence, but a same-direction follow-up alone is no reversal.
+    expect(triggerHeadline(entry({ followUps: [up(NEXT_DAY)] }), NONE)).toBe("TGT crossed above 110");
   });
 });
 
@@ -213,6 +338,29 @@ describe("tickerStory", () => {
     expect(story.summary).toContain("fired once");
     expect(story.summary).toContain("still waiting on you");
   });
+
+  it("skips legacy follow-up entries and tells reversals instead", () => {
+    const followUps = [{ at: "2026-09-10T18:00:00.000Z", price: 109, direction: "down" as const, session: "regular" as const }];
+    const story = tickerStory(
+      "TGT",
+      [
+        entry({ id: "fire", followUps }),
+        entry({ id: "echo", followUpOf: "fire", triggeredAt: "2026-09-10T18:00:00.000Z", triggerPrice: 109 }),
+        entry({ id: "again", triggeredAt: "2026-09-12T14:00:00.000Z" }),
+      ],
+      NONE
+    );
+    expect(story.summary).toBe("TGT has fired 2 times since Sep 10, 1 of them reversed, with 2 still open.");
+    expect(story.lines.map((l) => l.text)).toEqual([
+      "Sep 10: TGT crossed above 110, then fell back below it the same day.",
+      "Sep 12: TGT crossed above 110.",
+    ]);
+  });
+
+  it("says a lone trigger reversed", () => {
+    const followUps = [{ at: "2026-09-11T15:00:00.000Z", price: 109, direction: "down" as const, session: null }];
+    expect(tickerStory("TGT", [entry({ followUps, status: "dismissed" })], NONE).summary).toBe("TGT fired once, Sep 10, then reversed.");
+  });
 });
 
 describe("buildStories", () => {
@@ -242,6 +390,11 @@ describe("buildStories", () => {
 
   it("returns nothing when there is no history", () => {
     expect(buildStories([], NONE)).toEqual([]);
+  });
+
+  it("doesn't let a legacy follow-up entry make a one-off look like a thread", () => {
+    const echo = entry({ id: "7", symbol: "ONCE", followUpOf: "6", triggeredAt: "2026-09-04T15:00:00Z" });
+    expect(buildStories([...many, echo], NONE).map((s) => s.symbol)).not.toContain("ONCE");
   });
 });
 

@@ -19,6 +19,7 @@ const OUTPUT_FIELDS = [
   "kind",
   "symbol",
   "side",
+  "direction",
   "level",
   "moving_average",
   "near",
@@ -54,6 +55,8 @@ export function writeAlertTriggerReport(triggered: Alert[], outPath: string): vo
     kind: a.kind,
     symbol: a.symbol,
     side: a.kind === "volume" ? "" : a.kind === "ma" ? (a.lastEvent ?? "") : a.side,
+    // Which crossings a static alert watches. `side` is only where price sat when it was created.
+    direction: a.kind === "static" ? a.direction : "",
     level: a.kind === "static" ? a.level : a.kind === "ma" ? (a.lastLevel ?? "") : "",
     moving_average: a.kind === "ma" ? describeMaAlert(a) : "",
     near: a.kind === "trailing" ? a.near : "",

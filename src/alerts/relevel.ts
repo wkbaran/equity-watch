@@ -1,12 +1,12 @@
 /**
  * Proposing a fresh level for an alert whose level price has already run past.
  *
- * This is the "possibly at a new resistance level if the stock has pushed
- * past it" half of the revisit queue. It only ever *proposes* - applying a
+ * This is the "possibly at a new, higher level if the stock has pushed past
+ * it" half of the revisit queue. It only ever *proposes* - applying a
  * suggestion is an explicit act (`alert revisit apply`), so nothing moves on
  * its own.
  *
- * Deliberately reuses analysis.ts's notion of resistance (the highest high
+ * Deliberately reuses analysis.ts's notion of the recent high (the highest high
  * over `recentHighLookbackDays`) rather than inventing a second one, so the
  * level a revisit proposes is the same level analyzeAlert would later judge
  * it against.
@@ -59,8 +59,8 @@ export function suggestLevel(
   const window = bars.slice(Math.max(0, bars.length - params.recentHighLookbackDays));
   const recentHigh = Math.max(...window.map((b) => b.high));
 
-  // Price is under the lookback high: that high is the next real overhead
-  // resistance, so it becomes the new level.
+  // Price is under the lookback high: that high is the next level above
+  // price, so it becomes the new level.
   if (lastClose < recentHigh) {
     return {
       suggestedLevel: round2(recentHigh),
@@ -70,7 +70,7 @@ export function suggestLevel(
     };
   }
 
-  // New-high territory - there is no overhead resistance left to use, so set
+  // New-high territory - there is no higher recent high left to use, so set
   // the level a tolerance-width above the high instead. recentHighTolerance is
   // beta-scaled per symbol upstream (src/tuning.ts), so a volatile name gets a
   // proportionally wider gap rather than a level it would cross on noise.
@@ -78,7 +78,7 @@ export function suggestLevel(
     suggestedLevel: round2(recentHigh * (1 + params.recentHighTolerance)),
     basis:
       `${params.recentHighLookbackDays}d high +${(params.recentHighTolerance * 100).toFixed(1)}% ` +
-      `(new-high territory, no overhead resistance)`,
+      `(new-high territory, price is above the recent high)`,
     lastClose,
     pctMovePastLevel,
   };

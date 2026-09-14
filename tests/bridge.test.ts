@@ -63,4 +63,31 @@ describe("revisitsToBreakoutAlerts", () => {
   it("includes resolved entries when handed them - filtering by status is the caller's job", () => {
     expect(revisitsToBreakoutAlerts([entry({ status: "applied" })])).toHaveLength(1);
   });
+
+  it("carries a recorded direction so a downward fire is judged as one", () => {
+    const [down] = revisitsToBreakoutAlerts([entry({ direction: "down", triggerPrice: 89.5 })]);
+    expect(down.direction).toBe("down");
+  });
+
+  it("derives the direction for entries written before it was recorded", () => {
+    expect(revisitsToBreakoutAlerts([entry({ triggerPrice: 91.2, levelAtTrigger: 90 })])[0].direction).toBe("up");
+    expect(revisitsToBreakoutAlerts([entry({ triggerPrice: 88, levelAtTrigger: 90 })])[0].direction).toBe("down");
+  });
+
+  it("takes a moving-average cross's direction from the event", () => {
+    const ma = (event: "cross_up" | "cross_down") =>
+      entry({
+        kind: "ma",
+        levelAtTrigger: 200,
+        triggerPrice: 201,
+        ma: { maType: "sma", period: 200, timeframe: "1D", event, approachedFrom: null },
+      });
+    expect(revisitsToBreakoutAlerts([ma("cross_down")])[0].direction).toBe("down");
+    expect(revisitsToBreakoutAlerts([ma("cross_up")])[0].direction).toBe("up");
+  });
+
+  it("skips legacy follow-up entries, whose crossing is already on the fire they follow", () => {
+    const result = revisitsToBreakoutAlerts([entry({ id: "fire" }), entry({ id: "echo", followUpOf: "fire", direction: "down" })]);
+    expect(result.map((r) => r.alertId)).toEqual(["fire"]);
+  });
 });

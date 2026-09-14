@@ -203,8 +203,10 @@ directly (no TradingView CSV involved) — useful since TradingView has no
 API to read back your pending alerts, but this tool's own `alerts.json`
 (gitignored, one flat file) does. Three kinds:
 
-- **Static** — fire once when price crosses a fixed level:
+- **Static**: fire when price crosses a fixed level in the watched direction.
+  Upward crosses are the default:
   `node dist/cli.js alert add --symbol AAPL --level 150`
+  (`--direction down` for downward crosses only, `--direction either` for both)
 - **Trailing** — track a running low/high since the alert was created and fire on a
   bounce/pullback of a given percent or dollar amount from that extreme
   (like a trailing-stop-buy, as a notification instead of a trade):
@@ -259,7 +261,9 @@ volume as qualifying.
 
 For static/trailing, whether it's an "above" or "below" alert is
 *inferred* by comparing `--level`/`--near` to the live price at the moment
-you add it — not something you choose. Adding a new alert that's closer to
+you add it. You don't choose it, and for a static alert it isn't the
+direction: a level below the price with the default `--direction up` fires
+only when price drops under it and then comes back up through it. Adding a new alert that's closer to
 the live price than an existing live one on the same symbol+side replaces
 it (regardless of kind); adding one that's farther is rejected. Above and
 below coexist independently, so you can watch both sides of a symbol at
@@ -377,8 +381,19 @@ while an entry sits in the queue.
 
 Re-firing is still self-limiting, so a live alert doesn't spam you:
 
-- **static** — after firing, `lastKnownSide` advances, so it goes quiet until
-  price genuinely re-crosses the level.
+- **static**: after firing, every crossing of the same level over the next
+  `holdDays` trading days (default 2, counting the fire's own day as day 0)
+  is folded onto that fire as a follow-up instead of queuing a new entry. The
+  first crossing back is the **reversal** ("crossed above 50, fell back below it
+  the same day"), and the dashboard shows it on the original trigger. After the
+  window, a crossing in the watched direction fires again, and a crossing the
+  other way records nothing. Weekends are skipped, but holidays aren't known, so
+  a holiday stretches the window by a day.
+
+  Stores written before directions existed are upgraded once with
+  `node dist/cli.js alert migrate-directions`. It backs up both files, sets every
+  static alert to `up`, and folds old back-and-forth queue entries onto the fire
+  they followed.
 - **trailing** — `extremePrice` resets to the trigger price, so it starts
   trailing afresh from there.
 - **volume** — a volume threshold, once crossed, stays crossed, so these set
@@ -674,9 +689,15 @@ Revisit rows carry **copy-command buttons** (`alert revisit apply <id>`,
 `dismiss <id>`). The site is static and can't write to your stores; this is the
 zero-infrastructure bridge until it can.
 
-**Views.** The header switches between **Overview** and **Alerts** (`#/alerts`).
-Both are routes in the same page, so polling and notifications keep running on
-either one.
+**Views.** The header switches between **Overview**, **Revisit queue**
+(`#/queue`), **Stories** (`#/stories`), and **Alerts** (`#/alerts`). All are
+routes in the same page, so polling and notifications keep running on any of
+them.
+
+- **Overview** shows the summary tiles, recent triggers, holdings (when
+  published), and quiet watches.
+- **Revisit queue** lists open triggers by priority, with copy-command buttons.
+- **Stories** tells each multi-trigger thread as a narrative.
 
 - **Alerts** lists every live, checked alert from its own `alerts.json`, fetched
   only while that view is open, so the every-minute poll of `dashboard.json`
@@ -706,7 +727,7 @@ revisit-queue row has details to open.
 public, so `dashboard.json` is readable by anyone with the URL. With holdings off,
 the holdings rows (share counts, basis, market value, stops) are removed from the
 published JSON, not just hidden in the page. Headlines can still say a name is
-held ("Holding MKS broke support"), which reveals nothing about size or value.
+held ("Holding MKS crossed below 110"), which reveals nothing about size or value.
 To turn both back on:
 
 1. Redeploy the stack with `EnableBasicAuth=true BasicAuthUser=… BasicAuthPassword=…`.
@@ -747,16 +768,22 @@ under WSL:
 
 Every queue row carries a `headline` — a plain-English sentence rather than a
 row of numbers, because the target display is a small always-on dashboard
-(a hacked Kindle), where "TGT broke resistance with volume" is readable at a
-glance and `verdict=CONFIRMED_BREAKOUT vol=2.4x` is not:
+(a hacked Kindle), where "TGT crossed above 110 and closed above it on volume"
+is readable at a glance and `verdict=CONFIRMED_BREAKOUT vol=2.4x` is not:
 
 ```
- 75.3  CTVA broke resistance with volume, now 6.2% above it
+ 75.3  CTVA crossed above 86 and closed above it on volume, now 6.2% above it
          fired 86 @ 88.4. Suggest moving 86 to 93.
- 61.7  TGT broke resistance with volume, now 3.0% above it, in pre-market
- 54.4  Holding MKS broke support, now 5.3% below it
-  5.1  LUMN tagged its level intraday but closed back below
+ 61.7  TGT crossed above 110 and closed above it on volume, in pre-market, now 3.0% above it
+ 54.4  Holding MKS crossed above 42, then fell back below it the same day
+  5.1  LUMN crossed above 3.5 intraday but closed back below
 ```
+
+Headlines never say "support" or "resistance". Those words mean a level the
+market has tested repeatedly, and an alert level is only a number you picked.
+A reversal (a crossing back within the window) is stated on the fire it undoes,
+with its timing. With 3 or more crossings, it's summarized as a count instead
+("crossing it 4 times in all, ending above it").
 
 `stories` threads one ticker's repeated triggers together with the re-levels
 between them, which is the shape a flat list of events hides — the chase that
@@ -765,11 +792,11 @@ made you re-arm the same name five times is the whole reason the queue exists:
 ```
 CTVA has fired 3 times since Aug 20, walking its level from 82.1 up to 86,
 with 1 still open.
-  Aug 20: CTVA broke resistance with volume, now 1.1% above it.
+  Aug 20: CTVA crossed above 82.1 and closed above it on volume, now 1.1% above it.
   Aug 21: you raised the level 82.1 to 84.2.
-  Aug 26: CTVA broke resistance with volume, now 1.5% above it.
+  Aug 26: CTVA crossed above 84.2 and closed above it on volume, now 1.5% above it.
   Aug 27: you raised the level 84.2 to 86.
-  Sep 1:  CTVA broke resistance with volume, now 6.2% above it.
+  Sep 1:  CTVA crossed above 86 and closed above it on volume, now 6.2% above it.
 ```
 
 ### Watch history
@@ -779,7 +806,7 @@ which lets the narrative answer a question the trigger itself can't — *was
 this worth watching at all*:
 
 ```
- 75.3  CTVA broke resistance with volume, now 6.2% above it
+ 75.3  CTVA crossed above 86 and closed above it on volume, now 6.2% above it
          fired 86 @ 88.4. Suggest moving 86 to 93.
          Up 22% since you started watching it, June 2026 or earlier.
 
@@ -803,9 +830,10 @@ These are **template-based, not model-generated** (`src/narrative.ts`), and
 deliberately so: the lines describe money decisions, render unattended on a
 device with no way to check them, and every claim is read straight off a
 recorded verdict. That makes them reproducible, free, instant, and incapable
-of inventing a fact. The phrasing is also load-bearing — "broke resistance"
-is only used where the verdict supports it, and a `NO_CLOSE_CONFIRM` says
-"tagged its level intraday but closed back below" instead.
+of inventing a fact. The phrasing is also load-bearing. "Closed above it on
+volume" is only used where the verdict supports it. Nothing claims a level
+"held", because no verdict records that. A `NO_CLOSE_CONFIRM` says "crossed
+above 3.5 intraday but closed back below" instead.
 
 Written for e-ink: short lines, no colour, no emoji, no box-drawing, nothing
 that needs a monospace grid. A renderer can ignore the terminal view entirely

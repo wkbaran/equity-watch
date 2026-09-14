@@ -5,6 +5,7 @@ import {
   isImplausibleLevel,
   parseLastTriggered,
   resolveLevel,
+  seedDirection,
   volumeConditionFor,
   type SeedCandidate,
 } from "../src/alerts/seed.js";
@@ -177,6 +178,14 @@ describe("buildSeedPlan", () => {
   it("carries a stated direction through instead of inferring it", () => {
     expect(plan.candidates.find((c) => c.symbol === "ACI")!.side).toBe("above");
     expect(plan.candidates.find((c) => c.symbol === "CHEF")!.side).toBe("below");
+  });
+
+  it("seeds a stated direction as the alert's direction and everything else as up", () => {
+    expect(seedDirection(plan.candidates.find((c) => c.symbol === "ACI")!.side)).toBe("up");
+    expect(seedDirection(plan.candidates.find((c) => c.symbol === "CHEF")!.side)).toBe("down");
+    // CRM's "Crossing 271.71" states no direction.
+    expect(plan.candidates.find((c) => c.symbol === "CRM")!.side).toBeNull();
+    expect(seedDirection(null)).toBe("up");
   });
 
   it("marks the tickers whose every alert had already fired", () => {

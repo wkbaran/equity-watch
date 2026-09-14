@@ -2,13 +2,17 @@ import { randomUUID } from "node:crypto";
 import type { PriceBar } from "../models.js";
 import type { Quote } from "../providers/schwab.js";
 import {
+  DEFAULT_ALERT_DIRECTION,
   effectiveTrigger,
   type Alert,
+  type AlertDirection,
   type AlertSide,
+  type CrossDirection,
   type MaAlert,
   type MaApproach,
   type MaTrigger,
   type PriceAlert,
+  type StaticAlert,
   type VolumeCondition,
   type VolumePeriodUnit,
 } from "./models.js";
@@ -16,7 +20,15 @@ import type { MaTimeframe, MaType } from "../indicators/movingAverage.js";
 import type { Session } from "../marketHours.js";
 import { checkMaAlerts, type DailyHistoryResolver } from "./maEngine.js";
 import type { Notifier } from "./notify.js";
-import { newRevisitEntry, type RevisitEntry, type RevisitVolume } from "./revisit.js";
+import { newRevisitEntry, type RevisitEntry, type RevisitFollowUp, type RevisitVolume } from "./revisit.js";
+import {
+  DEFAULT_REVERSION_WINDOW_DAYS,
+  entryDirection,
+  latestFireOf,
+  reversalOf,
+  watchesDirection,
+  withinReversionWindow,
+} from "./reversion.js";
 import { requiredVolume } from "./volumeBaseline.js";
 import { nextMarketMidnight } from "../timezone.js";
 import { loadAlerts, saveAlerts } from "./store.js";
@@ -115,6 +127,41 @@ function muteUntilFor(condition: VolumeCondition, now: Date): string {
   return new Date(now.getTime() + periodMs(condition)).toISOString();
 }
 
+/** A crossing folded onto an earlier fire instead of becoming a queue entry. */
+export interface FollowUpEvent {
+  alert: StaticAlert;
+  /** The fire it was folded onto, already carrying `followUp`. */
+  entry: RevisitEntry;
+  followUp: RevisitFollowUp;
+  /** True for the first follow-up against the fire's direction. */
+  reversal: boolean;
+}
+
+export interface CheckOptions {
+  /**
+   * The revisit queue as stored. Static crossings look here for the fire they
+   * follow, and follow-ups are appended onto these objects in place. Without
+   * it every watched crossing fires and nothing is folded.
+   */
+  existingRevisits?: RevisitEntry[];
+  /** Trading days a fire folds later crossings for. See reversionWindowFor. */
+  reversionWindowDays?: (symbol: string) => number;
+  /** The check's clock. Tests pin it; everything else uses the real time. */
+  now?: Date;
+}
+
+export interface CheckResult {
+  checked: number;
+  triggered: Alert[];
+  /** New entries, one per fire. Append these to the store. */
+  revisits: RevisitEntry[];
+  /** Crossings folded onto earlier fires, in the order they were seen. */
+  followUps: FollowUpEvent[];
+  /** Entries from `existingRevisits` that gained a follow-up. The store needs re-saving when non-empty. */
+  updatedRevisits: RevisitEntry[];
+  warnings: string[];
+}
+
 export async function checkAlerts(
   alerts: Alert[],
   market: MarketData,
@@ -126,15 +173,20 @@ export async function checkAlerts(
   resolveBaseline: BaselineResolver = async () => null,
   /** Supplies daily history for 1D/1W moving averages. The CLI's version caches per market date. */
   resolveDailyHistory: DailyHistoryResolver = (symbol, days) =>
-    market.getDailyBars(symbol, new Date(Date.now() - days * 86_400_000), new Date())
-): Promise<{ checked: number; triggered: Alert[]; revisits: RevisitEntry[]; warnings: string[] }> {
+    market.getDailyBars(symbol, new Date(Date.now() - days * 86_400_000), new Date()),
+  options: CheckOptions = {}
+): Promise<CheckResult> {
   const live = alerts.filter((a) => a.status === "live" && !ignored.has(a.symbol.toUpperCase()));
   const symbols = [...new Set(live.map((a) => a.symbol))];
   const quotes = await market.getQuotes(symbols);
 
+  const existing = options.existingRevisits ?? [];
+  const windowFor = options.reversionWindowDays ?? (() => DEFAULT_REVERSION_WINDOW_DAYS);
   const triggered: Alert[] = [];
   const revisits: RevisitEntry[] = [];
-  const nowDate = new Date();
+  const followUps: FollowUpEvent[] = [];
+  const updated = new Set<RevisitEntry>();
+  const nowDate = options.now ?? new Date();
   const now = nowDate.toISOString();
 
   for (const alert of live) {
@@ -142,23 +194,62 @@ export async function checkAlerts(
     if (alert.kind === "ma") {
       continue;
     }
-    if (alert.mutedUntil !== null && alert.mutedUntil > now) {
-      continue;
-    }
     const quote = quotes.get(alert.symbol);
     if (quote === undefined) {
       continue;
     }
     const currentPrice = quote.lastPrice;
+    // The mute exists so a satisfied volume condition doesn't fire on every
+    // poll. It only gates firing: a static crossing during a mute is still a
+    // real crossing, so it is still folded onto its fire or allowed to move
+    // lastKnownSide below. Skipping those would leave lastKnownSide pointing
+    // at a side price left long ago.
+    const muted = alert.mutedUntil !== null && alert.mutedUntil > now;
+    let cross: CrossDirection | undefined;
 
     let priceConditionMet: boolean;
     if (alert.kind === "volume") {
+      if (muted) continue;
       priceConditionMet = true;
     } else if (alert.kind === "static") {
       const currentSide: AlertSide = currentPrice > alert.level ? "above" : "below";
-      priceConditionMet = currentSide !== alert.lastKnownSide;
-      // lastKnownSide is deliberately NOT advanced here when there's no
-      // crossing - see the volume-gating comment below for why.
+      if (currentSide === alert.lastKnownSide) {
+        // No crossing. lastKnownSide is deliberately left alone - see the
+        // volume-gating comment below for why.
+        continue;
+      }
+      cross = currentSide === "above" ? "up" : "down";
+
+      // Inside a fire's window, every crossing (either direction, muted or
+      // not) belongs to that fire. It never fires on its own and never waits
+      // on volume: volume was the fire's condition, and it was met.
+      const fire = latestFireOf([...existing, ...revisits], alert.id, alert.level);
+      if (fire !== null && withinReversionWindow(fire.triggeredAt, nowDate, windowFor(alert.symbol))) {
+        const reversal = cross !== entryDirection(fire) && reversalOf(fire) === null;
+        const followUp: RevisitFollowUp = { at: now, price: currentPrice, direction: cross, session };
+        fire.followUps = [...(fire.followUps ?? []), followUp];
+        if (existing.includes(fire)) {
+          updated.add(fire);
+        }
+        alert.lastKnownSide = currentSide;
+        followUps.push({ alert, entry: fire, followUp, reversal });
+        continue;
+      }
+
+      if (!watchesDirection(alert.direction, cross)) {
+        // A crossing this alert doesn't watch, with no fire to revert: nothing
+        // to record, but the next watched crossing must be measured from here.
+        alert.lastKnownSide = currentSide;
+        continue;
+      }
+      if (muted) {
+        // Same as a volume-pending crossing: lastKnownSide stays stale, so it
+        // fires once the mute lapses if price is still across.
+        continue;
+      }
+      priceConditionMet = true;
+    } else if (muted) {
+      continue;
     } else if (alert.side === "below") {
       if (currentPrice < alert.extremePrice) {
         alert.extremePrice = currentPrice;
@@ -200,7 +291,10 @@ export async function checkAlerts(
     // looks like after being set up to watch again.
     const snapshot = { ...alert, triggerSnapshot: null } as Alert;
     revisits.push(
-      newRevisitEntry(snapshot, currentPrice, now, session, { volume: volumeCheck?.observation ?? undefined })
+      newRevisitEntry(snapshot, currentPrice, now, session, {
+        volume: volumeCheck?.observation ?? undefined,
+        direction: cross,
+      })
     );
 
     alert.triggerSnapshot = snapshot;
@@ -255,7 +349,7 @@ export async function checkAlerts(
     }
   }
 
-  return { checked: live.length, triggered, revisits, warnings };
+  return { checked: live.length, triggered, revisits, followUps, updatedRevisits: [...updated], warnings };
 }
 
 /** Backdates an imported alert to when it was really first watched. */
@@ -266,7 +360,15 @@ export interface WatchOrigin {
 }
 
 export type AddAlertInput =
-  | { kind: "static"; symbol: string; level: number; volume?: VolumeCondition; watching?: WatchOrigin }
+  | {
+      kind: "static";
+      symbol: string;
+      level: number;
+      /** Which crossings fire. Defaults to DEFAULT_ALERT_DIRECTION. */
+      direction?: AlertDirection;
+      volume?: VolumeCondition;
+      watching?: WatchOrigin;
+    }
   | {
       kind: "trailing";
       symbol: string;
@@ -373,6 +475,7 @@ export async function addAlert(path: string, input: AddAlertInput, market: Marke
       ? {
           ...base,
           kind: "static",
+          direction: input.direction ?? DEFAULT_ALERT_DIRECTION,
           level: input.level,
           lastKnownSide: livePrice > input.level ? "above" : "below",
           ...(input.volume ? { volumeCondition: input.volume } : {}),

@@ -19,7 +19,7 @@
 import { randomUUID } from "node:crypto";
 import type { Session } from "../marketHours.js";
 import type { MaTimeframe, MaType } from "../indicators/movingAverage.js";
-import type { Alert, AlertSide, MaEvent } from "./models.js";
+import type { Alert, AlertSide, CrossDirection, MaEvent } from "./models.js";
 import { describeAlertCondition } from "./describe.js";
 
 /** What a volume condition measured at the moment it was satisfied. */
@@ -47,8 +47,17 @@ export interface RevisitSignals {
   /** Breakout verdict from analysis.ts, once an analyze pass has run over this entry. */
   verdict: string | null;
   verdictScore: number;
-  /** How far price has travelled past the level since it fired, in percent. */
+  /**
+   * Where price now sits against the level, in percent: (close - level) / level.
+   * Raw, not direction-relative - negative is below the level whichever way
+   * the alert fired. `moveDirection` says which sign is "past".
+   */
   pctMovePastLevel: number | null;
+  /**
+   * Which way the entry fired, so the move can be read relative to it. Absent
+   * on signals scored before 2026-09-14, which were all read as upward.
+   */
+  moveDirection?: CrossDirection;
   moveScore: number;
   /** Days this entry has sat open. */
   daysOpen: number;
@@ -116,6 +125,33 @@ export interface RevisitEntry {
    * had no volume condition, and on entries written before it was recorded.
    */
   volume?: RevisitVolume;
+  /**
+   * Which way price crossed the level when this fired. Absent on entries
+   * written before 2026-09-14 and on kinds with no crossing;
+   * `entryDirection` (src/alerts/reversion.ts) derives it for old entries.
+   */
+  direction?: CrossDirection;
+  /**
+   * Every later crossing of the same alert's level inside the reversion
+   * window, oldest first. Folded onto the fire they follow instead of
+   * becoming queue entries of their own, so a level price chops back and
+   * forth across reads as one event. The first one against `direction` is
+   * the reversal.
+   */
+  followUps?: RevisitFollowUp[];
+  /**
+   * Set on an entry written before follow-ups were folded, that the
+   * migration identified as a follow-up of entry `followUpOf`. Readers skip
+   * these; the crossing is already on that entry's `followUps`.
+   */
+  followUpOf?: string;
+}
+
+export interface RevisitFollowUp {
+  at: string;
+  price: number;
+  direction: CrossDirection;
+  session: Session | null;
 }
 
 export interface RevisitWeights {
@@ -170,9 +206,16 @@ export function verdictScore(verdict: string | null): number {
   return VERDICT_SCORES[verdict] ?? 0;
 }
 
-export function moveScore(pctMovePastLevel: number | null): number {
+/**
+ * A move past the level scores by how far it went *in the fire's direction*.
+ * A downward fire that kept falling is as stale as an upward one that kept
+ * rising; reading the raw percent would score it 0. A move back across the
+ * level scores nothing either way.
+ */
+export function moveScore(pctMovePastLevel: number | null, direction: CrossDirection | null = "up"): number {
   if (pctMovePastLevel === null) return 0;
-  return clamp01(pctMovePastLevel / MOVE_FULL_PCT);
+  const past = direction === "down" ? -pctMovePastLevel : pctMovePastLevel;
+  return clamp01(past / MOVE_FULL_PCT);
 }
 
 export function stalenessScore(daysOpen: number): number {
@@ -201,6 +244,8 @@ export interface ScoreInputs {
   heldPosition: boolean;
   volumeRatio?: number | null;
   volumeTrendRatio?: number | null;
+  /** Which way the entry fired (`entryDirection`). Null or absent reads the move as upward. */
+  direction?: CrossDirection | null;
 }
 
 export function scoreRevisit(
@@ -211,12 +256,14 @@ export function scoreRevisit(
   const pctMovePastLevel = inputs.pctMovePastLevel ?? null;
   const volumeRatio = inputs.volumeRatio ?? null;
   const volumeTrendRatio = inputs.volumeTrendRatio ?? null;
+  const direction = inputs.direction ?? null;
 
   const signals: RevisitSignals = {
     verdict,
     verdictScore: verdictScore(verdict),
     pctMovePastLevel,
-    moveScore: moveScore(pctMovePastLevel),
+    ...(direction !== null ? { moveDirection: direction } : {}),
+    moveScore: moveScore(pctMovePastLevel, direction),
     daysOpen: inputs.daysOpen,
     stalenessScore: stalenessScore(inputs.daysOpen),
     heldPosition: inputs.heldPosition,
@@ -247,7 +294,16 @@ export function explainPriority(signals: RevisitSignals, weights: RevisitWeights
   }
   if (signals.pctMovePastLevel !== null) {
     const move = signals.pctMovePastLevel;
-    const label = move >= 0 ? `+${move.toFixed(1)}% past level` : `${move.toFixed(1)}% back below level`;
+    // The sign stays raw (above the level is +) so the number reads the same
+    // on every entry; only which side counts as "past" follows the fire.
+    const label =
+      signals.moveDirection === "down"
+        ? move <= 0
+          ? `${move.toFixed(1)}% past level`
+          : `+${move.toFixed(1)}% back above level`
+        : move >= 0
+          ? `+${move.toFixed(1)}% past level`
+          : `${move.toFixed(1)}% back below level`;
     parts.push(`${label} (${(weights.move * signals.moveScore * 100).toFixed(0)}pt)`);
   }
   if (signals.heldPosition) {
@@ -257,13 +313,34 @@ export function explainPriority(signals: RevisitSignals, weights: RevisitWeights
   return parts.join("; ");
 }
 
+/**
+ * Which way price moved when `alert` fired, read off its pre-trigger state.
+ * A static alert crosses away from `lastKnownSide`; a trailing alert on the
+ * low (side "below") fires on a bounce up, one on the high on a pullback
+ * down; a moving-average cross carries its own event. Volume alerts and
+ * moving-average touches have no direction.
+ */
+export function fireDirection(alert: Alert): CrossDirection | undefined {
+  switch (alert.kind) {
+    case "static":
+      return alert.lastKnownSide === "below" ? "up" : "down";
+    case "trailing":
+      return alert.side === "below" ? "up" : "down";
+    case "ma":
+      return alert.lastEvent === "cross_up" ? "up" : alert.lastEvent === "cross_down" ? "down" : undefined;
+    case "volume":
+      return undefined;
+  }
+}
+
 export function newRevisitEntry(
   alert: Alert,
   triggerPrice: number,
   at: string,
   session: Session | null = null,
-  details: { volume?: RevisitVolume } = {}
+  details: { volume?: RevisitVolume; direction?: CrossDirection } = {}
 ): RevisitEntry {
+  const direction = details.direction ?? fireDirection(alert);
   return {
     id: randomUUID().slice(0, 8),
     alertId: alert.id,
@@ -273,6 +350,7 @@ export function newRevisitEntry(
     triggerPrice,
     condition: describeAlertCondition(alert),
     ...(details.volume ? { volume: details.volume } : {}),
+    ...(direction !== undefined ? { direction } : {}),
     levelAtTrigger:
       alert.kind === "static"
         ? alert.level
