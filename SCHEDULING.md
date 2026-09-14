@@ -175,7 +175,8 @@ That's success.
 
 ### 4. Register the task
 
-In **PowerShell**, as your own user (no elevation needed):
+In an **elevated PowerShell** ("Run as administrator"). The task still runs as
+your own user; registering an S4U task is what needs admin:
 
 ```powershell
 $repo = "$env:USERPROFILE\projects\equity-watch"
@@ -191,15 +192,25 @@ $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At 1:55AM `
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -MultipleInstances IgnoreNew `
   -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
+# S4U = "Run whether user is logged on or not" without storing a password.
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType S4U
+
 Register-ScheduledTask -TaskName "equity-watch check" -Action $action -Trigger $trigger -Settings $settings `
-  -Description "Poll equity-watch alerts and publish watch.billbaran.us"
+  -Principal $principal -Description "Poll equity-watch alerts and publish watch.billbaran.us"
 ```
 
 - **Regular hours only:** use `-At 7:25AM` and `-RepetitionDuration (New-TimeSpan -Hours 6 -Minutes 50)`.
-- **Run while logged off:** the default runs only while you're logged on.
-  Re-register with `-Principal (New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType S4U)`,
-  then test a run while logged off. S4U has internet access, but no credentials
-  for network shares.
+- **Why S4U:** it runs in a background session with no desktop, so no console
+  window opens every 15 minutes, and it keeps running while you're logged off.
+  `-WindowStyle Hidden` is not a substitute: the window still flashes, because
+  Windows opens it before PowerShell reads the flag. S4U has internet access and
+  your user profile (tokens, `.env`), but no credentials for network shares.
+  Verified 2026-09-14.
+- **Without admin rights:** keep the default logon type and run the script
+  through `conhost.exe --headless powershell.exe ...` instead. No window appears,
+  but the task only runs while you're logged on.
+- **An existing task** can be switched in place, also elevated:
+  `Set-ScheduledTask -TaskName "equity-watch check" -Principal $principal`.
 
 Verify:
 
