@@ -267,6 +267,16 @@ Resources:
             return reply(202, { id: op.id, queued: true });
           };
 
+  # Named the way Lambda names its own log group, so the function writes here.
+  # Declared so it has a retention period and is removed with the stack; left
+  # to Lambda it would keep logs forever and outlive a stack deletion.
+  OpsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: HasOps
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${BucketName}-ops'
+      RetentionInDays: 14
+
   OpsFunctionUrl:
     Type: AWS::Lambda::Url
     Condition: HasOps
