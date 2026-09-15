@@ -2098,12 +2098,12 @@ function buildProgram(): Command {
       .option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json")
       .option("--revisits-file <path>", "Path to the revisit-queue JSON store", "revisits.json");
 
-  withAlertCommon(alertCmd.command("add"))
+  withAlertCommon(alertCmd.command("add [symbol] [level]"))
     .description(
       "Add a static (--level), trailing (--near), or standalone volume (--volume-at-least alone) alert; " +
-        "side is inferred vs. the live price"
+        "side is inferred vs. the live price. 'alert add GMED 80.5' is shorthand for --symbol GMED --level 80.5"
     )
-    .requiredOption("--symbol <symbol>", "Ticker symbol")
+    .option("--symbol <symbol>", "Ticker symbol (or give it as the first argument)")
     .option("--level <price>", "Static alert: fire when price crosses this level in --direction (default up)")
     .option("--near <price>", "Trailing alert: reference price used to seed the watermark and infer side")
     .option("--trail-percent <n>", "Trailing alert: trail distance as a percent")
@@ -2133,7 +2133,26 @@ function buildProgram(): Command {
       `With --level: which crossings fire, up|down|either (default ${DEFAULT_ALERT_DIRECTION}). With --ma (cross): up|down`
     )
     .option("--from <above|below>", "With --ma --touch: only fire when price approaches from this side")
-    .action((opts: AlertAddOpts) => cmdAlertAdd(opts));
+    .action((symbol: string | undefined, level: string | undefined, opts: AlertAddOpts) => {
+      if (symbol !== undefined && opts.symbol !== undefined) {
+        console.error(`Give the symbol once: either "${symbol}" or --symbol ${opts.symbol}.`);
+        process.exit(1);
+      }
+      if (level !== undefined && opts.level !== undefined) {
+        console.error(`Give the level once: either "${level}" or --level ${opts.level}.`);
+        process.exit(1);
+      }
+      const resolved = symbol ?? opts.symbol;
+      if (resolved === undefined) {
+        console.error("Specify the symbol: 'alert add GMED 80.5', or --symbol GMED with other options.");
+        process.exit(1);
+      }
+      if (level !== undefined) {
+        parsePositiveFlag("level", level);
+      }
+      // Schwab keys quotes by upper-case symbol, so "gmed" would find no quote.
+      return cmdAlertAdd({ ...opts, symbol: resolved.toUpperCase(), ...(level !== undefined ? { level } : {}) });
+    });
 
   withAlertCommon(program.command("dashboard"))
     .description("One periodic JSON document: the revisit queue, what's close to firing, and holdings")
