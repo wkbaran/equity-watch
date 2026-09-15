@@ -13,7 +13,9 @@ import { buildSeedPlan, closeOnOrAfter, resolveLevel, seedDirection } from "./al
 import {
   addAlert,
   checkAlerts,
+  editAlert,
   type AddAlertInput,
+  type AlertEdit,
   type BaselineResolver,
   type FollowUpEvent,
   type MarketData,
@@ -31,7 +33,8 @@ import {
 } from "./alerts/models.js";
 import { endedOnFiredSide, entryDirection, reversalOf, reversionWindowFor } from "./alerts/reversion.js";
 import { DEFAULT_TOUCH_MARGIN_PCT, describeMaAlert, type DailyHistoryResolver } from "./alerts/maEngine.js";
-import { describeVolumeCondition } from "./alerts/describe.js";
+import { describeAlertCondition, describeVolumeCondition } from "./alerts/describe.js";
+import { liveAlertsFor, normalizeSymbolQuery, renderSymbolAlerts } from "./alerts/symbolView.js";
 import { parseMaSpec, type MaSpec } from "./indicators/movingAverage.js";
 import { ConsoleNotifier } from "./alerts/notify.js";
 import { writeAlertTriggerReport } from "./alerts/report.js";
@@ -1028,8 +1031,171 @@ function cmdAlertList(opts: AlertListOpts): void {
 }
 
 function cmdAlertRemove(id: string, opts: AlertCommonOpts): void {
-  const removed = removeAlert(opts.alertsFile, id);
-  console.log(removed ? `Removed alert ${id}.` : `No alert with id ${id}.`);
+  const found = removeAlert(opts.alertsFile, id);
+  if (found.alert === null) {
+    console.error(found.error);
+    process.exit(1);
+  }
+  const a = found.alert;
+  console.log(`Removed ${a.kind} alert ${a.id} (${a.symbol}: ${describeAlertCondition(a)}).`);
+}
+
+interface AlertEditOpts extends AlertCommonOpts {
+  level?: string;
+  direction?: string;
+  trailPercent?: string;
+  trailAmount?: string;
+  volumeAtLeast?: string;
+  volumeRatio?: string;
+  volumePeriod?: string;
+  clearVolume?: boolean;
+  ma?: string;
+  touch?: string;
+  from?: string;
+}
+
+/** Exits unless `raw` is a positive number. */
+function parsePositiveFlag(flag: string, raw: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.error(`Invalid ${flag} "${raw}" — expected a positive number.`);
+    process.exit(1);
+  }
+  return n;
+}
+
+/** Stands in when an edit needs no quote, so it works without a Schwab login. */
+const OFFLINE_MARKET: MarketData = {
+  getQuotes: () => Promise.reject(new Error("This edit should not need a quote.")),
+  getIntradayBars: () => Promise.reject(new Error("This edit should not need bars.")),
+  getDailyBars: () => Promise.reject(new Error("This edit should not need bars.")),
+};
+
+async function cmdAlertEdit(id: string, opts: AlertEditOpts): Promise<void> {
+  const edit: AlertEdit = {};
+  if (opts.level !== undefined) {
+    edit.level = parsePositiveFlag("--level", opts.level);
+  }
+  if (opts.direction !== undefined) {
+    if (opts.direction !== "up" && opts.direction !== "down" && opts.direction !== "either") {
+      console.error(`Invalid --direction "${opts.direction}" — expected up, down, or either.`);
+      process.exit(1);
+    }
+    edit.direction = opts.direction;
+  }
+  if (opts.trailPercent !== undefined && opts.trailAmount !== undefined) {
+    console.error("Specify --trail-percent or --trail-amount, not both.");
+    process.exit(1);
+  }
+  if (opts.trailPercent !== undefined) {
+    edit.trail = { type: "percent", value: parsePositiveFlag("--trail-percent", opts.trailPercent) };
+  }
+  if (opts.trailAmount !== undefined) {
+    edit.trail = { type: "amount", value: parsePositiveFlag("--trail-amount", opts.trailAmount) };
+  }
+  const volume = parseVolumeFlags(opts);
+  if (opts.clearVolume) {
+    if (volume !== undefined) {
+      console.error("--clear-volume can't be combined with --volume-at-least/--volume-ratio.");
+      process.exit(1);
+    }
+    edit.volume = null;
+  } else if (volume !== undefined) {
+    edit.volume = volume;
+  }
+  if (opts.ma !== undefined) {
+    try {
+      edit.ma = parseMaSpec(opts.ma);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  }
+  if (opts.touch !== undefined) {
+    const margin = Number(opts.touch);
+    if (!Number.isFinite(margin) || margin <= 0 || margin > 10) {
+      console.error(`Invalid --touch margin "${opts.touch}" — expected a percent between 0 and 10, e.g. 0.25.`);
+      process.exit(1);
+    }
+    edit.marginPct = margin;
+  }
+  if (opts.from !== undefined) {
+    if (opts.from !== "above" && opts.from !== "below" && opts.from !== "either") {
+      console.error(`Invalid --from "${opts.from}" — expected above, below, or either.`);
+      process.exit(1);
+    }
+    edit.from = opts.from;
+  }
+  if (Object.keys(edit).length === 0) {
+    console.error("Nothing to change. See 'alert edit --help' for what can be edited.");
+    process.exit(1);
+  }
+
+  // Only a moved level needs a live quote.
+  const market = edit.level !== undefined ? buildMarketData(opts) : OFFLINE_MARKET;
+  const result = await editAlert(opts.alertsFile, id, edit, market);
+  if (result.rejectedReason) {
+    console.error(`Not edited: ${result.rejectedReason}`);
+    process.exit(1);
+  }
+  const a = result.edited!;
+  console.log(`Edited ${a.kind} alert ${a.id} (${a.symbol}).`);
+  console.log(`  was: ${describeAlertCondition(result.before!)}`);
+  console.log(`  now: ${describeAlertCondition(a)}`);
+  if (result.replaced) {
+    console.log(
+      `Cancelled ${result.replaced.kind} alert ${result.replaced.id} (${describeAlertCondition(result.replaced)}): ` +
+        `the new level is closer to price on the same side.`
+    );
+  }
+  if (edit.ma !== undefined) {
+    console.log("The next check records where price sits against the new average; it can fire from the check after that.");
+  }
+}
+
+/** Levenshtein distance, for suggesting a command when a "symbol" looks like a typo of one. */
+function editDistance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = row[0];
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const above = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diagonal = above;
+    }
+  }
+  return row[b.length];
+}
+
+const SYMBOL_VIEW_ALERTS_FILE = "alerts.json";
+const SYMBOL_VIEW_REVISITS_FILE = "revisits.json";
+
+/**
+ * `equity-watch TSLA`. Any first word that isn't a command lands here, so a
+ * mistyped command would otherwise answer "none" as if it were a ticker, and a
+ * missing store would look like a ticker with no alerts. Both get said.
+ */
+function cmdShowSymbol(program: Command, symbol: string | undefined): void {
+  if (symbol === undefined) {
+    program.help();
+  }
+  if (!existsSync(SYMBOL_VIEW_ALERTS_FILE)) {
+    console.error(`No ${SYMBOL_VIEW_ALERTS_FILE} in ${process.cwd()}. Run this from the equity-watch directory.`);
+    process.exit(1);
+  }
+  const alerts = loadAlerts(SYMBOL_VIEW_ALERTS_FILE);
+  console.log(renderSymbolAlerts(symbol, alerts, loadRevisits(SYMBOL_VIEW_REVISITS_FILE)));
+
+  const word = symbol.toLowerCase();
+  if (liveAlertsFor(symbol, alerts).length === 0 && word.length >= 4 && normalizeSymbolQuery(symbol) === symbol.toUpperCase()) {
+    const similar = program.commands
+      .map((c) => c.name())
+      .find((name) => editDistance(word, name) <= Math.max(1, Math.floor(name.length / 4)));
+    if (similar !== undefined) {
+      console.log(`(Did you mean the '${similar}' command?)`);
+    }
+  }
 }
 
 interface AlertCheckOpts extends AlertCommonOpts {
@@ -1881,6 +2047,15 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
 
 function buildProgram(): Command {
   const program = new Command("equity-watch");
+  // Commander ignores surplus arguments by default, so `alert edit MELI 1960`
+  // (before [level] existed) did nothing and said "Nothing to change". Must be
+  // set before any .command() call: subcommands copy it when created.
+  program.allowExcessArguments(false);
+  // No root-level options: without positional options, commander would take
+  // them away from subcommands that define the same flag (--alerts-file).
+  program
+    .argument("[symbol]", "Show the alerts on one ticker, e.g. 'equity-watch TSLA' (reads alerts.json here)")
+    .action((symbol: string | undefined) => cmdShowSymbol(program, symbol));
 
   const withCommon = (cmd: Command): Command =>
     cmd
@@ -2001,9 +2176,35 @@ function buildProgram(): Command {
     .option("--config <path>", "Per-ticker tuning config (holdDays sets each symbol's window)", "analysis.config.json")
     .action((opts: MigrateDirectionsOpts) => cmdAlertMigrateDirections(opts));
 
-  withAlertCommon(alertCmd.command("remove <id>"))
-    .description("Remove an alert by id")
+  withAlertCommon(alertCmd.command("remove <idOrSymbol>"))
+    .description("Remove an alert by id, or by ticker when that ticker has a single live alert")
     .action((id: string, opts: AlertCommonOpts) => cmdAlertRemove(id, opts));
+
+  withAlertCommon(alertCmd.command("edit <idOrSymbol> [level]"))
+    .description(
+      "Change an alert in place, keeping its id, watch start, and trigger history. " +
+        "Name it by id, or by ticker when that ticker has a single live alert. " +
+        "A bare [level] is shorthand for --level: 'alert edit MELI 1960'. " +
+        "Only a moved --level needs a live quote; to change an alert's kind, remove it and add a new one"
+    )
+    .option("--level <price>", "Static: move the level (side and crossing baseline are re-seeded against the live price)")
+    .option("--direction <dir>", "Static: up|down|either. Moving-average cross: up|down")
+    .option("--trail-percent <n>", "Trailing: trail distance as a percent")
+    .option("--trail-amount <n>", "Trailing: trail distance as a dollar amount")
+    .option("--volume-at-least <n>", "Replace the volume condition with an absolute threshold")
+    .option("--volume-ratio <multiple>", "Replace the volume condition with a multiple of typical volume")
+    .option("--volume-period <Nunit>", "With --volume-at-least/--volume-ratio: a trailing window (e.g. 30m, 2h, 1d)")
+    .option("--clear-volume", "Static/trailing: remove the volume condition")
+    .option("--ma <spec>", "Moving average: a different average, e.g. ema20@1D (restarts its evaluation)")
+    .option("--touch <marginPct>", "Moving-average touch: the band, as a percent of the average")
+    .option("--from <side>", "Moving-average touch: above|below|either")
+    .action((id: string, level: string | undefined, opts: AlertEditOpts) => {
+      if (level !== undefined && opts.level !== undefined) {
+        console.error(`Give the level once: either "${level}" or --level ${opts.level}.`);
+        process.exit(1);
+      }
+      return cmdAlertEdit(id, level === undefined ? opts : { ...opts, level });
+    });
 
   const revisitCmd = alertCmd
     .command("revisit")

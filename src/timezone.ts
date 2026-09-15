@@ -129,3 +129,9 @@ export function localDateString(date: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
+
+/** "YYYY-MM-DD HH:MM" on the machine's own clock, for times a person reads in the terminal. */
+export function localDateTimeString(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${localDateString(date)} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}

@@ -16,7 +16,7 @@ import {
   type VolumeCondition,
   type VolumePeriodUnit,
 } from "./models.js";
-import type { MaTimeframe, MaType } from "../indicators/movingAverage.js";
+import type { MaSpec, MaTimeframe, MaType } from "../indicators/movingAverage.js";
 import type { Session } from "../marketHours.js";
 import { checkMaAlerts, type DailyHistoryResolver } from "./maEngine.js";
 import type { Notifier } from "./notify.js";
@@ -31,7 +31,7 @@ import {
 } from "./reversion.js";
 import { requiredVolume } from "./volumeBaseline.js";
 import { nextMarketMidnight } from "../timezone.js";
-import { loadAlerts, saveAlerts } from "./store.js";
+import { findAlert, loadAlerts, saveAlerts } from "./store.js";
 
 export interface MarketData {
   getQuotes(symbols: string[]): Promise<Map<string, Quote>>;
@@ -516,4 +516,176 @@ export async function addAlert(path: string, input: AddAlertInput, market: Marke
   alerts.push(candidate);
   saveAlerts(path, alerts);
   return { added: candidate, replaced: existing ?? null, rejectedReason: null };
+}
+
+/** What `editAlert` may change. Omitted fields are left as they are. */
+export interface AlertEdit {
+  /** Static only. */
+  level?: number;
+  /** Static: up, down, or either. Moving-average cross: up or down. */
+  direction?: AlertDirection;
+  /** Trailing only. */
+  trail?: { type: "percent" | "amount"; value: number };
+  /** A replacement volume condition, or null to remove it. Not on moving averages. */
+  volume?: VolumeCondition | null;
+  /** Moving average only. Restarts its evaluation, as if newly added. */
+  ma?: MaSpec;
+  /** Moving-average touch only. */
+  marginPct?: number;
+  /** Moving-average touch only. */
+  from?: MaApproach;
+}
+
+export interface EditAlertResult {
+  /** The alert as it was. Null when rejected. */
+  before: Alert | null;
+  edited: Alert | null;
+  /** A live alert on the same symbol and side, cancelled because the moved level is closer to price. */
+  replaced: Alert | null;
+  rejectedReason: string | null;
+}
+
+const EDITABLE_KINDS: Record<keyof AlertEdit, { label: string; kinds: Alert["kind"][] }> = {
+  level: { label: "level", kinds: ["static"] },
+  direction: { label: "direction", kinds: ["static", "ma"] },
+  trail: { label: "trail", kinds: ["trailing"] },
+  volume: { label: "volume condition", kinds: ["static", "trailing", "volume"] },
+  ma: { label: "moving average", kinds: ["ma"] },
+  marginPct: { label: "touch margin", kinds: ["ma"] },
+  from: { label: "approach side", kinds: ["ma"] },
+};
+
+/**
+ * Changes an alert in place, keeping its id, watch start, and trigger history.
+ * `triggerSnapshot` and the revisit entries already record what it looked like
+ * when it fired, so an edit doesn't rewrite that.
+ *
+ * Only a moved static level needs a quote: the side, the crossing baseline,
+ * and the one-alert-per-symbol+side rule all depend on where price is. Other
+ * edits work without reaching Schwab.
+ */
+export async function editAlert(path: string, ref: string, edit: AlertEdit, market: MarketData): Promise<EditAlertResult> {
+  const reject = (reason: string): EditAlertResult => ({ before: null, edited: null, replaced: null, rejectedReason: reason });
+
+  const alerts = loadAlerts(path);
+  const found = findAlert(alerts, ref);
+  if (found.alert === null) {
+    return reject(found.error);
+  }
+  const alert = found.alert;
+  if (alert.status !== "live") {
+    return reject(`Alert ${alert.id} is ${alert.status}. Add a new alert instead.`);
+  }
+  const fields = (Object.keys(edit) as (keyof AlertEdit)[]).filter((k) => edit[k] !== undefined);
+  if (fields.length === 0) {
+    return reject("Nothing to change.");
+  }
+  const unsupported = fields.filter((k) => !EDITABLE_KINDS[k].kinds.includes(alert.kind));
+  if (unsupported.length > 0) {
+    return reject(
+      `A ${alert.kind} alert has no ${unsupported.map((k) => EDITABLE_KINDS[k].label).join(" or ")} to edit. ` +
+        `To change its kind, remove it and add a new one.`
+    );
+  }
+  const before = structuredClone(alert);
+  let replaced: Alert | null = null;
+
+  if (alert.kind === "ma") {
+    const trigger = alert.trigger;
+    if (edit.direction !== undefined) {
+      if (trigger === "touch") {
+        return reject("A touch alert has no direction. Set the side it approaches from instead.");
+      }
+      if (edit.direction === "either") {
+        return reject("A moving-average cross watches up or down, not either.");
+      }
+      alert.from = edit.direction === "up" ? "below" : "above";
+    }
+    if (trigger === "cross" && (edit.from !== undefined || edit.marginPct !== undefined)) {
+      return reject("A cross alert has no touch margin or approach side. Set its direction instead.");
+    }
+    if (edit.from !== undefined) {
+      alert.from = edit.from;
+    }
+    if (edit.marginPct !== undefined) {
+      alert.marginPct = edit.marginPct;
+    }
+    if (edit.ma !== undefined) {
+      alert.maType = edit.ma.maType;
+      alert.period = edit.ma.period;
+      alert.timeframe = edit.ma.timeframe;
+      // A different average: its old side and band say nothing about this one.
+      alert.lastSide = null;
+      alert.inBand = false;
+      alert.lastLevel = null;
+      alert.lastEvaluatedAt = null;
+      alert.lastFiredBucket = null;
+    }
+  }
+
+  if (edit.volume !== undefined) {
+    if (alert.kind === "volume") {
+      if (edit.volume === null) {
+        return reject("A volume alert can't lose its volume condition. Remove the alert instead.");
+      }
+      alert.volume = edit.volume;
+    } else if (alert.kind === "static" || alert.kind === "trailing") {
+      if (edit.volume === null) {
+        delete alert.volumeCondition;
+        // Only a volume condition ever sets a mute.
+        alert.mutedUntil = null;
+      } else {
+        alert.volumeCondition = edit.volume;
+      }
+    }
+  }
+
+  if (alert.kind === "trailing" && edit.trail !== undefined) {
+    alert.trailType = edit.trail.type;
+    alert.trailValue = edit.trail.value;
+  }
+
+  if (alert.kind === "static") {
+    if (edit.direction !== undefined) {
+      alert.direction = edit.direction;
+    }
+    if (edit.level !== undefined) {
+      const quote = (await market.getQuotes([alert.symbol])).get(alert.symbol);
+      if (quote === undefined) {
+        return reject(`No quote available for ${alert.symbol}.`);
+      }
+      const livePrice = quote.lastPrice;
+      if (edit.level === livePrice) {
+        return reject(`Level ${edit.level} equals the live price (${livePrice}); pick a distinct one.`);
+      }
+      alert.level = edit.level;
+      alert.side = edit.level < livePrice ? "below" : "above";
+      // Re-seed against the new level, as `revisit apply` does, so the move
+      // itself neither fires the alert nor hides a crossing.
+      alert.lastKnownSide = livePrice > edit.level ? "above" : "below";
+      alert.mutedUntil = null;
+
+      const rival = alerts.find(
+        (a): a is PriceAlert =>
+          (a.kind === "static" || a.kind === "trailing") &&
+          a.id !== alert.id &&
+          a.status === "live" &&
+          a.symbol === alert.symbol &&
+          a.side === alert.side
+      );
+      if (rival) {
+        if (Math.abs(livePrice - effectiveTrigger(alert)) > Math.abs(livePrice - effectiveTrigger(rival))) {
+          return reject(
+            `Existing ${rival.kind} alert ${rival.id} (trigger ${effectiveTrigger(rival)}) is already closer to ` +
+              `the live price on that side than level ${edit.level} would be.`
+          );
+        }
+        rival.status = "cancelled";
+        replaced = rival;
+      }
+    }
+  }
+
+  saveAlerts(path, alerts);
+  return { before, edited: alert, replaced, rejectedReason: null };
 }

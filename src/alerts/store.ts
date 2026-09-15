@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { normalizeAlert, type Alert } from "./models.js";
+import { liveAlertsFor, normalizeSymbolQuery } from "./symbolView.js";
 
 export function loadAlerts(path: string): Alert[] {
   if (!existsSync(path)) {
@@ -24,14 +25,42 @@ export function saveAlerts(path: string, alerts: Alert[]): void {
   writeFileSync(path, JSON.stringify(alerts, null, 2));
 }
 
-export function removeAlert(path: string, id: string): boolean {
-  const alerts = loadAlerts(path);
-  const next = alerts.filter((a) => a.id !== id);
-  if (next.length === alerts.length) {
-    return false;
+export type FoundAlert = { alert: Alert; error: null } | { alert: null; error: string };
+
+/**
+ * An alert named by id, or by ticker when that ticker has exactly one live
+ * alert. An id match always wins, so a ticker can never shadow an id.
+ */
+export function findAlert(alerts: Alert[], ref: string): FoundAlert {
+  const byId = alerts.find((a) => a.id === ref);
+  if (byId !== undefined) {
+    return { alert: byId, error: null };
   }
-  saveAlerts(path, next);
-  return true;
+  const symbol = normalizeSymbolQuery(ref);
+  const live = liveAlertsFor(symbol, alerts);
+  if (live.length === 1) {
+    return { alert: live[0], error: null };
+  }
+  if (live.length === 0) {
+    return { alert: null, error: `No alert with id ${ref}, and no live alert on ${symbol}.` };
+  }
+  return {
+    alert: null,
+    error: `${symbol} has ${live.length} live alerts (${live.map((a) => a.id).join(", ")}); give the id.`,
+  };
+}
+
+/** Removes the alert `ref` names (see findAlert). */
+export function removeAlert(path: string, ref: string): FoundAlert {
+  const alerts = loadAlerts(path);
+  const found = findAlert(alerts, ref);
+  if (found.alert !== null) {
+    saveAlerts(
+      path,
+      alerts.filter((a) => a !== found.alert)
+    );
+  }
+  return found;
 }
 
 /** Live alerts by default; `all` also includes cancelled ones. */

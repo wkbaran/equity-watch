@@ -3,11 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MarketData } from "../src/alerts/engine.js";
-import { addAlert, checkAlerts } from "../src/alerts/engine.js";
-import type { Alert, StaticAlert, TrailingAlert, VolumeAlert } from "../src/alerts/models.js";
+import { addAlert, checkAlerts, editAlert } from "../src/alerts/engine.js";
+import type { Alert, MaAlert, StaticAlert, TrailingAlert, VolumeAlert } from "../src/alerts/models.js";
 import { endedOnFiredSide, reversalOf } from "../src/alerts/reversion.js";
 import type { RevisitEntry } from "../src/alerts/revisit.js";
-import { loadAlerts } from "../src/alerts/store.js";
+import { loadAlerts, removeAlert, saveAlerts } from "../src/alerts/store.js";
 import type { PriceBar } from "../src/models.js";
 import type { Quote } from "../src/providers/schwab.js";
 
@@ -704,5 +704,203 @@ describe("addAlert", () => {
 
     const stored = loadAlerts(path);
     expect(stored.filter((a) => a.status === "live")).toHaveLength(2);
+  });
+});
+
+describe("editAlert", () => {
+  let dir: string;
+  let path: string;
+  /** Edits that don't move a level must not need a quote. */
+  const offline: MarketData = {
+    ...fakeMarket({}),
+    getQuotes: async () => {
+      throw new Error("no quotes offline");
+    },
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "equity-watch-edit-"));
+    path = join(dir, "alerts.json");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function addMa(trigger: "cross" | "touch"): Promise<string> {
+    const result = await addAlert(
+      path,
+      { kind: "ma", symbol: "TEST", maType: "sma", period: 50, timeframe: "1D", trigger, from: "either", marginPct: 0.25 },
+      fakeMarket({ prices: { TEST: 100 } })
+    );
+    return result.added!.id;
+  }
+
+  it("moves a static level in place, keeping its id, watch start, and trigger history", async () => {
+    saveAlerts(path, [
+      makeStatic({
+        level: 100,
+        side: "below",
+        lastKnownSide: "above",
+        direction: "up",
+        triggerCount: 2,
+        lastTriggeredAt: "2026-09-01T14:00:00.000Z",
+        mutedUntil: "2099-01-01T00:00:00.000Z",
+        volumeCondition: { threshold: 1_000_000, mode: "today" },
+        watchingSince: "2026-07-01T00:00:00.000Z",
+      }),
+    ]);
+    const result = await editAlert(path, "s1", { level: 120 }, fakeMarket({ prices: { TEST: 110 } }));
+    expect(result.rejectedReason).toBeNull();
+    expect((result.before as StaticAlert).level).toBe(100);
+
+    const [stored] = loadAlerts(path) as StaticAlert[];
+    expect(stored).toMatchObject({
+      id: "s1",
+      level: 120,
+      side: "above",
+      lastKnownSide: "below",
+      direction: "up",
+      triggerCount: 2,
+      lastTriggeredAt: "2026-09-01T14:00:00.000Z",
+      mutedUntil: null,
+      watchingSince: "2026-07-01T00:00:00.000Z",
+    });
+  });
+
+  it("changes direction and the volume condition without a quote", async () => {
+    saveAlerts(path, [makeStatic()]);
+    const result = await editAlert(path, "s1", { direction: "down", volume: { ratio: 2, mode: "today" } }, offline);
+    expect(result.rejectedReason).toBeNull();
+    expect(loadAlerts(path)[0]).toMatchObject({ level: 100, direction: "down", volumeCondition: { ratio: 2, mode: "today" } });
+  });
+
+  it("clears a volume condition along with its mute", async () => {
+    saveAlerts(path, [
+      makeStatic({ volumeCondition: { threshold: 1_000_000, mode: "today" }, mutedUntil: "2099-01-01T00:00:00.000Z" }),
+    ]);
+    await editAlert(path, "s1", { volume: null }, offline);
+    const [stored] = loadAlerts(path) as StaticAlert[];
+    expect(stored.volumeCondition).toBeUndefined();
+    expect(stored.mutedUntil).toBeNull();
+  });
+
+  it("changes a trailing alert's trail but keeps its watermark", async () => {
+    saveAlerts(path, [makeTrailing()]);
+    const before = loadAlerts(path)[0] as TrailingAlert;
+    await editAlert(path, before.id, { trail: { type: "amount", value: 2 } }, offline);
+    const [stored] = loadAlerts(path) as TrailingAlert[];
+    expect(stored).toMatchObject({ trailType: "amount", trailValue: 2, extremePrice: before.extremePrice });
+  });
+
+  it("rejects a level equal to the live price and saves nothing", async () => {
+    saveAlerts(path, [makeStatic()]);
+    const result = await editAlert(path, "s1", { level: 110, direction: "down" }, fakeMarket({ prices: { TEST: 110 } }));
+    expect(result.rejectedReason).toMatch(/equals the live price/);
+    expect(loadAlerts(path)[0]).toMatchObject({ level: 100, direction: "either" });
+  });
+
+  it("rejects fields the alert's kind doesn't have", async () => {
+    saveAlerts(path, [makeStatic(), makeVolume()]);
+    const trail = await editAlert(path, "s1", { trail: { type: "percent", value: 3 } }, offline);
+    expect(trail.rejectedReason).toMatch(/static alert has no trail/);
+    const volumeId = loadAlerts(path)[1].id;
+    const cleared = await editAlert(path, volumeId, { volume: null }, offline);
+    expect(cleared.rejectedReason).toMatch(/can't lose its volume condition/);
+  });
+
+  it("rejects unknown and cancelled alerts, and empty edits", async () => {
+    saveAlerts(path, [makeStatic({ status: "cancelled" }), makeStatic({ id: "s2" })]);
+    expect((await editAlert(path, "nope", { direction: "up" }, offline)).rejectedReason).toMatch(/No alert with id nope/);
+    expect((await editAlert(path, "s1", { direction: "up" }, offline)).rejectedReason).toMatch(/is cancelled/);
+    expect((await editAlert(path, "s2", {}, offline)).rejectedReason).toMatch(/Nothing to change/);
+  });
+
+  it("accepts a ticker in place of the id when it has a single live alert", async () => {
+    // The cancelled alert on TEST doesn't make the ticker ambiguous.
+    saveAlerts(path, [makeStatic({ id: "old", status: "cancelled" }), makeStatic({ id: "s1" }), makeStatic({ id: "o1", symbol: "OTHER" })]);
+    const result = await editAlert(path, "test", { direction: "down" }, offline);
+    expect(result.rejectedReason).toBeNull();
+    expect(result.edited?.id).toBe("s1");
+  });
+
+  it("refuses a ticker with several live alerts, listing their ids", async () => {
+    saveAlerts(path, [makeStatic({ id: "s1" }), makeVolume({ id: "v1", symbol: "TEST" })]);
+    const result = await editAlert(path, "TEST", { direction: "down" }, offline);
+    expect(result.rejectedReason).toBe("TEST has 2 live alerts (s1, v1); give the id.");
+  });
+
+  it("prefers an id match over a ticker", async () => {
+    saveAlerts(path, [makeStatic({ id: "AAPL", symbol: "TEST" }), makeStatic({ id: "s2", symbol: "AAPL" })]);
+    expect((await editAlert(path, "AAPL", { direction: "down" }, offline)).edited?.symbol).toBe("TEST");
+  });
+
+  it("removes by ticker only when the ticker names a single live alert", async () => {
+    saveAlerts(path, [makeStatic({ id: "s1" }), makeStatic({ id: "o1", symbol: "OTHER" }), makeStatic({ id: "o2", symbol: "OTHER" })]);
+    expect(removeAlert(path, "OTHER").error).toMatch(/2 live alerts/);
+    expect(removeAlert(path, "TEST").alert?.id).toBe("s1");
+    expect(loadAlerts(path).map((a) => a.id)).toEqual(["o1", "o2"]);
+  });
+
+  it("rejects a moved level farther from price than another alert on that side", async () => {
+    saveAlerts(path, [
+      makeStatic({ id: "near", level: 105, side: "above", lastKnownSide: "below" }),
+      makeStatic({ id: "far", level: 90, side: "below", lastKnownSide: "above" }),
+    ]);
+    const result = await editAlert(path, "far", { level: 120 }, fakeMarket({ prices: { TEST: 100 } }));
+    expect(result.rejectedReason).toMatch(/near .* already closer/);
+    expect(loadAlerts(path).map((a) => [a.id, a.status, (a as StaticAlert).level])).toEqual([
+      ["near", "live", 105],
+      ["far", "live", 90],
+    ]);
+  });
+
+  it("cancels the other alert on that side when the moved level is closer", async () => {
+    saveAlerts(path, [
+      makeStatic({ id: "near", level: 105, side: "above", lastKnownSide: "below" }),
+      makeStatic({ id: "far", level: 90, side: "below", lastKnownSide: "above" }),
+    ]);
+    const result = await editAlert(path, "far", { level: 102 }, fakeMarket({ prices: { TEST: 100 } }));
+    expect(result.replaced?.id).toBe("near");
+    expect(loadAlerts(path).map((a) => [a.id, a.status])).toEqual([
+      ["near", "cancelled"],
+      ["far", "live"],
+    ]);
+  });
+
+  it("restarts a moving average's evaluation when the average changes", async () => {
+    const id = await addMa("cross");
+    const alerts = loadAlerts(path) as MaAlert[];
+    Object.assign(alerts[0], {
+      lastSide: "above",
+      inBand: true,
+      lastLevel: 98,
+      lastEvaluatedAt: "2026-09-14T15:00:00.000Z",
+      lastFiredBucket: "2026-09-12",
+    });
+    saveAlerts(path, alerts);
+
+    const result = await editAlert(path, id, { ma: { maType: "ema", period: 20, timeframe: "1D" }, direction: "up" }, offline);
+    expect(result.rejectedReason).toBeNull();
+    expect(loadAlerts(path)[0]).toMatchObject({
+      maType: "ema",
+      period: 20,
+      from: "below",
+      lastSide: null,
+      inBand: false,
+      lastLevel: null,
+      lastEvaluatedAt: null,
+      lastFiredBucket: null,
+    });
+  });
+
+  it("keeps cross and touch settings apart on moving averages", async () => {
+    const touch = await addMa("touch");
+    expect((await editAlert(path, touch, { direction: "up" }, offline)).rejectedReason).toMatch(/touch alert has no direction/);
+    expect((await editAlert(path, touch, { marginPct: 0.5, from: "above" }, offline)).rejectedReason).toBeNull();
+
+    const cross = await addMa("cross");
+    expect((await editAlert(path, cross, { from: "above" }, offline)).rejectedReason).toMatch(/cross alert has no touch margin/);
+    expect((await editAlert(path, cross, { direction: "either" }, offline)).rejectedReason).toMatch(/not either/);
   });
 });
