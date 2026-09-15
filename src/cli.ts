@@ -66,6 +66,7 @@ import { buildAlertRows } from "./web/alertsPage.js";
 import { applyOp, DEFAULT_OP_LOG, loadOpLog, parseOp, recentOpResults } from "./ops/apply.js";
 import { pullOps, sqsOpsQueue } from "./ops/pull.js";
 import { parseAddInput, parseAlertEdit } from "./ops/validate.js";
+import { sealVault, vaultContents } from "./web/vault.js";
 import { shouldPublish, siteDocument, siteFingerprint, writeSite, type PublishState } from "./web/site.js";
 import {
   EXTENDED_SESSIONS,
@@ -1752,7 +1753,15 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   const siteDir = opts.site ?? (opts.publish ? "site" : undefined);
   // ops: whether the page offers editing. The queue URL being configured here
   // is the best available sign that the stack was deployed with EnableOps.
-  const siteOptions = { holdings: config?.web?.holdings === true, ops: Boolean(process.env.OPS_QUEUE_URL) };
+  // Holdings reach an unlocked page only encrypted under the ops token
+  // (src/web/vault.ts), so the vault needs both.
+  const opsToken = process.env.OPS_TOKEN ?? "";
+  const vaultToken = process.env.OPS_QUEUE_URL && opsToken.length >= 32 ? opsToken : null;
+  const siteOptions = {
+    holdings: config?.web?.holdings === true,
+    ops: Boolean(process.env.OPS_QUEUE_URL),
+    vault: vaultToken !== null,
+  };
   // Results of ops applied from the page, so it can resolve what it has pending.
   const opResults = recentOpResults(loadOpLog(DEFAULT_OP_LOG));
   // Chart links need each symbol's exchange; a bare symbol can open a foreign listing.
@@ -1781,7 +1790,13 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   // quote-less build: a run with nothing new exits here without spending a
   // single quote request, which is what makes a tight cron interval affordable.
   if (opts.publish && opts.skipUnchanged) {
-    const decision = shouldPublish(loadPublishState(), siteFingerprint(siteDocument(build(new Map()), siteOptions, opResults), buildAlertRows(alerts, new Map(), ignored, exchanges)), new Date(), opts.maxStaleMinutes);
+    const quoteless = build(new Map());
+    const fingerprint = siteFingerprint(
+      siteDocument(quoteless, siteOptions, opResults),
+      buildAlertRows(alerts, new Map(), ignored, exchanges),
+      vaultToken === null ? null : vaultContents(quoteless.holdings, holdings)
+    );
+    const decision = shouldPublish(loadPublishState(), fingerprint, new Date(), opts.maxStaleMinutes);
     if (!decision.publish) {
       console.log(`Skipped publish: ${decision.reason}.`);
       return;
@@ -1822,8 +1837,9 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   // a publish while the holdings section is off.
   const siteDashboard = siteDocument(dashboard, siteOptions, opResults);
   const alertRows = buildAlertRows(alerts, quotes, ignored, exchanges);
+  const vault = vaultToken === null ? null : vaultContents(dashboard.holdings, holdings);
   if (siteDir !== undefined) {
-    writeSite(siteDir, dashboard, siteOptions, alertRows, opResults);
+    writeSite(siteDir, dashboard, siteOptions, alertRows, opResults, vault === null ? null : sealVault(vault, vaultToken!));
     console.log(`Wrote site to ${siteDir}/${siteOptions.holdings ? "" : " (holdings excluded; set web.holdings in the config to include)"}`);
   }
 
@@ -1831,13 +1847,14 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     const plan = await publishSite({ localDir: siteDir });
     console.log(`Published: ${plan.upload.length} uploaded, ${plan.remove.length} deleted, ${plan.unchanged} unchanged.`);
     mkdirSync(dirname(PUBLISH_STATE_PATH), { recursive: true });
-    const state: PublishState = { fingerprint: siteFingerprint(siteDashboard, alertRows), publishedAt: siteDashboard.generatedAt };
+    const state: PublishState = { fingerprint: siteFingerprint(siteDashboard, alertRows, vault), publishedAt: siteDashboard.generatedAt };
     writeFileSync(PUBLISH_STATE_PATH, JSON.stringify(state, null, 2));
   }
 }
 
 interface OpsCommonOpts extends AlertCommonOpts {
   opLog: string;
+  holdingsFile: string;
 }
 
 interface OpsApplyOpts extends OpsCommonOpts {
@@ -1873,7 +1890,7 @@ async function cmdOpsApply(opts: OpsApplyOpts): Promise<void> {
     console.error(`Invalid op: ${parsed.error}`);
     process.exit(1);
   }
-  const { result, duplicate } = await applyOp(parsed.op, { alertsFile: opts.alertsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) });
+  const { result, duplicate } = await applyOp(parsed.op, { alertsFile: opts.alertsFile, holdingsFile: opts.holdingsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) });
   if (duplicate) {
     console.log(`Already applied at ${result.appliedAt}, so nothing changed. It was: ${result.message}`);
     return;
@@ -1893,7 +1910,7 @@ async function cmdOpsPull(opts: OpsPullOpts): Promise<void> {
   const queue = sqsOpsQueue(queueUrl, process.env.AWS_REGION ?? "us-east-1");
   const summary = await pullOps(
     queue,
-    { alertsFile: opts.alertsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) },
+    { alertsFile: opts.alertsFile, holdingsFile: opts.holdingsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) },
     { max: opts.max, waitSeconds: opts.wait, log: (line) => console.log(line) }
   );
   const total = summary.applied + summary.rejected + summary.duplicates + summary.malformed;
@@ -2125,9 +2142,11 @@ function buildProgram(): Command {
     .option("--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars")
     .action((opts: AlertCheckOpts) => cmdAlertCheck(opts));
 
-  const opsCmd = program.command("ops").description("Alert changes queued from the browser dashboard");
+  const opsCmd = program.command("ops").description("Alert and holdings changes queued from the browser dashboard");
   const withOpsCommon = (cmd: Command): Command =>
-    withAlertCommon(cmd).option("--op-log <path>", "Log of applied op results (makes re-applying an op a no-op)", DEFAULT_OP_LOG);
+    withAlertCommon(cmd)
+      .option("--holdings-file <path>", "Path to the holdings JSON store", "holdings.json")
+      .option("--op-log <path>", "Log of applied op results (makes re-applying an op a no-op)", DEFAULT_OP_LOG);
 
   withOpsCommon(opsCmd.command("pull"))
     .description("Apply changes queued from the dashboard (OPS_QUEUE_URL in .env); does nothing when that's unset")
@@ -2136,7 +2155,7 @@ function buildProgram(): Command {
     .action((opts: OpsPullOpts) => cmdOpsPull(opts));
 
   withOpsCommon(opsCmd.command("apply"))
-    .description("Apply one op from a JSON file, with no AWS involved: {id, type: alert.add|alert.edit, params, ...}")
+    .description("Apply one op from a JSON file, with no AWS involved: {id, type, params, target?, expect?} (types: src/ops/apply.ts)")
     .requiredOption("--file <path>", "The op, as JSON")
     .action((opts: OpsApplyOpts) => cmdOpsApply(opts));
 

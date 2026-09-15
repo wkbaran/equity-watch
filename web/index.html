@@ -64,7 +64,7 @@
     transition: background 0.15s;
   }
   button:hover { background: var(--border); }
-  input[type="search"], input[type="text"], input[type="number"], select {
+  input[type="search"], input[type="text"], input[type="number"], input[type="date"], select {
     font: inherit; font-size: 0.85rem; color: var(--text); background: var(--surface);
     border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem;
   }
@@ -200,6 +200,20 @@
   .pending-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0.5rem 1rem; border-top: 1px solid var(--border); font-size: 0.85rem; }
   .pending-row:first-child { border-top: 0; }
   .pending-row .tag { margin-left: 0; }
+
+  #holdings-status { margin: -0.5rem 0 1rem; }
+  #holdings-pending { margin-bottom: 1rem; }
+  tr.detail-row > td { background: var(--bg); padding: 0; text-align: left; white-space: normal; }
+  .position-detail { padding: 0.75rem 1rem 1rem; display: grid; gap: 0.75rem; }
+  table.lots th { cursor: default; background: transparent; }
+  table.lots th, table.lots td { padding: 5px 10px; }
+  tr.lot-edit > td { text-align: left; white-space: normal; }
+  .position-detail .ops-form { margin: 0; padding: 0.25rem 0; }
+  .row-actions { display: inline-flex; gap: 6px; }
+  .stop-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .stop-tag { display: inline-flex; align-items: center; gap: 6px; margin-left: 0; padding: 2px 6px; }
+  .stop-tag button { font-size: 0.72rem; padding: 0 6px; }
+  button.danger { border-color: var(--red); color: var(--red); }
   @media (max-width: 560px) {
     .trigger-row, .drawer .trigger-row { grid-template-columns: 1fr; gap: 2px; }
     .queue-row { grid-template-columns: 36px 1fr; }
@@ -216,6 +230,8 @@
     <a href="#/queue" data-nav="queue">Revisit queue <span id="nav-queue-count" class="nav-count"></span></a>
     <a href="#/stories" data-nav="stories">Stories <span id="nav-stories-count" class="nav-count"></span></a>
     <a href="#/alerts" data-nav="alerts">Alerts <span id="nav-alerts-count" class="nav-count"></span></a>
+    <!-- Shown when holdings are available: decrypted from vault.json after unlocking, or published in the clear (web.holdings). -->
+    <a href="#/holdings" data-nav="holdings" id="nav-holdings" hidden>Holdings <span id="nav-holdings-count" class="nav-count"></span></a>
   </nav>
   <span id="updated" class="meta">loading…</span>
   <span class="spacer"></span>
@@ -237,12 +253,6 @@
     <div class="section-header"><h2 class="section-title">Recent triggers</h2><span id="triggers-count" class="section-count"></span></div>
     <div id="triggers" class="card"></div>
 
-    <!-- Shown only when the published document has site.holdings = true (analysis.config.json: web.holdings). -->
-    <div id="holdings-section" hidden>
-      <div class="section-header"><h2 class="section-title">Holdings</h2><span id="holdings-count" class="section-count"></span></div>
-      <div class="card table-wrap"><table id="holdings"></table></div>
-    </div>
-
     <div id="quiet-section" hidden>
       <div class="section-header"><h2 class="section-title">Quiet watches</h2></div>
       <details class="card"><summary id="quiet-summary"></summary><ul id="quiet"></ul></details>
@@ -257,6 +267,14 @@
   <section id="view-stories" hidden>
     <div class="section-header"><h2 class="section-title">Stories</h2><span id="stories-count" class="section-count"></span></div>
     <div id="stories" class="card"></div>
+  </section>
+
+  <section id="view-holdings" hidden>
+    <div class="section-header"><h2 class="section-title">Holdings</h2><span id="holdings-count" class="section-count"></span></div>
+    <p id="holdings-status" class="note"></p>
+    <div id="lot-add" hidden></div>
+    <div id="holdings-pending" class="card" hidden></div>
+    <div class="card table-wrap"><table id="holdings"></table></div>
   </section>
 
   <section id="view-alerts" hidden>

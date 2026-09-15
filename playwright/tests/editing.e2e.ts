@@ -27,9 +27,9 @@ test.beforeEach(async ({ page }) => {
   await page.request.get("/__reset");
   errors = [];
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-  // The wrong-token test provokes a 401 on purpose; the browser logs it as a failed load.
+  // The wrong-token test provokes a 401 (and a 404 for the vault) on purpose; the browser logs them as failed loads.
   page.on("console", (m) => {
-    if (m.type() === "error" && !/status of 401/.test(m.text())) errors.push(`console: ${m.text()}`);
+    if (m.type() === "error" && !/status of 40[14]/.test(m.text())) errors.push(`console: ${m.text()}`);
   });
 });
 
@@ -60,7 +60,10 @@ test.describe("locked", () => {
     await expect(page.locator("#alert-add")).toBeHidden();
   });
 
-  test("a rejected token locks again and keeps what was typed", async ({ page }) => {
+  test("a token the endpoint rejects locks again and keeps what was typed", async ({ page }) => {
+    // Without a vault to open, a wrong token is only discovered when the POST gets a 401.
+    // (holdings.e2e.ts covers the vault catching it first.)
+    await page.route("**/vault.json", (route) => route.fulfill({ status: 404, body: "" }));
     await openAlerts(page);
     await unlock(page, "wrong-token");
     await page.locator("#alert-add input[type=text]").fill("gmed");

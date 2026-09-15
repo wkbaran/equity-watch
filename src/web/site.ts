@@ -10,12 +10,13 @@
  */
 
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Dashboard } from "../dashboard.js";
 import type { OpResult } from "../ops/apply.js";
 import type { AlertRow } from "./alertsPage.js";
+import { VAULT_FILE, type VaultContents, type VaultDocument } from "./vault.js";
 
 /** Static assets copied verbatim into the site directory. */
 export const SITE_ASSETS = ["index.html", "app.js", "sw.js"];
@@ -36,6 +37,8 @@ export interface SiteOptions {
   holdings: boolean;
   /** Whether the page offers editing (the ops queue is configured). Absent means no. */
   ops?: boolean;
+  /** Whether vault.json (holdings encrypted under the ops token) is published. Absent means no. */
+  vault?: boolean;
 }
 
 /**
@@ -60,13 +63,26 @@ export function siteDocument(dashboard: Dashboard, options: SiteOptions, opResul
  * dashboard.json is what the page polls; alerts.json is the full alert book,
  * fetched only by the Alerts view (see src/web/alertsPage.ts).
  */
-export function writeSite(dir: string, dashboard: Dashboard, options: SiteOptions, alerts: AlertRow[], opResults: OpResult[] = []): void {
+export function writeSite(
+  dir: string,
+  dashboard: Dashboard,
+  options: SiteOptions,
+  alerts: AlertRow[],
+  opResults: OpResult[] = [],
+  vault: VaultDocument | null = null
+): void {
   mkdirSync(dir, { recursive: true });
   for (const name of SITE_ASSETS) {
     copyFileSync(join(assetDir(), name), join(dir, name));
   }
   writeFileSync(join(dir, "dashboard.json"), JSON.stringify(siteDocument(dashboard, options, opResults)));
   writeFileSync(join(dir, "alerts.json"), JSON.stringify({ generatedAt: dashboard.generatedAt, alerts }));
+  if (vault !== null) {
+    writeFileSync(join(dir, VAULT_FILE), JSON.stringify(vault));
+  } else {
+    // Deleting the local copy is what makes the publisher delete the remote one.
+    rmSync(join(dir, VAULT_FILE), { force: true });
+  }
 }
 
 /**
@@ -109,9 +125,13 @@ export function dashboardFingerprint(d: Dashboard): string {
   return stableHash(d);
 }
 
-/** Everything the site publishes: the dashboard document and the alert book. Same rules. */
-export function siteFingerprint(doc: SiteDocument, alerts: AlertRow[]): string {
-  return stableHash({ doc, alerts });
+/**
+ * Everything the site publishes: the dashboard document, the alert book, and
+ * the vault's plaintext. Same rules. The vault's ciphertext changes with every
+ * seal (a fresh IV), so hashing it would publish on every run.
+ */
+export function siteFingerprint(doc: SiteDocument, alerts: AlertRow[], vault: VaultContents | null = null): string {
+  return stableHash(vault === null ? { doc, alerts } : { doc, alerts, vault });
 }
 
 export interface PublishState {

@@ -1,47 +1,50 @@
 /**
- * Applies a change queued from the browser dashboard: add or edit an alert.
+ * Applies a change queued from the browser dashboard: add or edit an alert, or
+ * add, edit, or remove a holdings lot, position, or stop.
  *
- * The page can't write alerts.json, which lives on the machine running
- * `alert check`. It queues an op instead (see cloudformation.yaml, OpsQueue),
- * and `ops pull` applies it here through the same `addAlert`/`editAlert` and
- * the same validation (src/ops/validate.ts) the CLI uses.
+ * The page can't write alerts.json or holdings.json, which live on the machine
+ * running `alert check`. It queues an op instead (see cloudformation.yaml,
+ * OpsQueue), and `ops pull` applies it here through the same engine functions
+ * and validation (src/ops/validate.ts) the CLI uses.
  *
  * Idempotency comes from the op log, not from SQS. FIFO deduplication only
  * lasts five minutes, and an add is not idempotent: redelivering one after a
- * crash would add a second alert. So every result is appended to the log, and
- * an op id already there returns its logged result without applying again.
+ * crash would add a second alert or lot. So every result is appended to the
+ * log, and an op id already there returns its logged result without applying
+ * again.
  */
 
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { describeAlertCondition } from "../alerts/describe.js";
 import { addAlert, editAlert, type MarketData } from "../alerts/engine.js";
 import { loadAlerts } from "../alerts/store.js";
-import { addFieldsFromJson, editFieldsFromJson, parseAddInput, parseAlertEdit, type RawAddFields, type RawEditFields } from "./validate.js";
+import { applyHoldingsOp } from "./holdings.js";
+import { addFieldsFromJson, editFieldsFromJson, parseAddInput, parseAlertEdit, stringField } from "./validate.js";
 
 export const DEFAULT_OP_LOG = "ops.log.jsonl";
+export const DEFAULT_HOLDINGS_FILE = "holdings.json";
 
-export interface AddOp {
+export const OP_TYPES = ["alert.add", "alert.edit", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.remove"] as const;
+export type OpType = (typeof OP_TYPES)[number];
+
+/**
+ * An op as queued. Parsing checks only the envelope (id and type). Params,
+ * target, and expect are checked when the op is applied, so a bad one becomes
+ * a logged rejection the page can show, rather than a message dropped as
+ * malformed that leaves the page waiting forever.
+ *
+ * `expect` is the conflict guard: what the page showed when the change was
+ * made. If the thing no longer looks like that, the op is rejected rather than
+ * applied to something that isn't what was on screen.
+ */
+export interface Op {
   id: string;
-  type: "alert.add";
+  type: OpType;
   createdAt: string;
-  params: RawAddFields;
+  params: unknown;
+  target: unknown;
+  expect: unknown;
 }
-
-export interface EditOp {
-  id: string;
-  type: "alert.edit";
-  createdAt: string;
-  target: { alertId: string };
-  params: RawEditFields;
-  /**
-   * The condition text the page showed (alerts.json `condition`). If the alert
-   * no longer reads the same, the edit is rejected rather than applied to an
-   * alert that isn't the one that was on screen.
-   */
-  expect: { condition: string };
-}
-
-export type Op = AddOp | EditOp;
 
 export interface OpResult {
   id: string;
@@ -49,13 +52,16 @@ export interface OpResult {
   symbol: string | null;
   alertId: string | null;
   ok: boolean;
+  /** Published in dashboard.json. Holdings messages carry no share counts, basis, or prices. */
   message: string;
   appliedAt: string;
 }
 
+/** The part of a result an op handler decides. */
+export type Outcome = Omit<OpResult, "id" | "type" | "appliedAt">;
+
 const OP_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
 
-/** Shape-checks an op from the queue (or a file). */
 export function parseOp(body: unknown): { ok: true; op: Op } | { ok: false; error: string } {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, error: "An op must be a JSON object." };
@@ -64,29 +70,20 @@ export function parseOp(body: unknown): { ok: true; op: Op } | { ok: false; erro
   if (typeof o.id !== "string" || !OP_ID_RE.test(o.id)) {
     return { ok: false, error: "An op needs an id of 8-64 letters, digits, or dashes." };
   }
-  const createdAt = typeof o.createdAt === "string" ? o.createdAt : new Date().toISOString();
-  if (o.type === "alert.add") {
-    const fields = addFieldsFromJson(o.params);
-    return fields.ok ? { ok: true, op: { id: o.id, type: "alert.add", createdAt, params: fields.value } } : { ok: false, error: fields.error };
+  if (typeof o.type !== "string" || !(OP_TYPES as readonly string[]).includes(o.type)) {
+    return { ok: false, error: `Unknown op type "${String(o.type)}".` };
   }
-  if (o.type === "alert.edit") {
-    const target = o.target as Record<string, unknown> | undefined;
-    const expect = o.expect as Record<string, unknown> | undefined;
-    if (typeof target?.alertId !== "string" || target.alertId === "") {
-      return { ok: false, error: "An edit needs target.alertId." };
-    }
-    if (typeof expect?.condition !== "string") {
-      return { ok: false, error: "An edit needs expect.condition." };
-    }
-    const fields = editFieldsFromJson(o.params);
-    return fields.ok
-      ? {
-          ok: true,
-          op: { id: o.id, type: "alert.edit", createdAt, target: { alertId: target.alertId }, params: fields.value, expect: { condition: expect.condition } },
-        }
-      : { ok: false, error: fields.error };
-  }
-  return { ok: false, error: `Unknown op type "${String(o.type)}".` };
+  return {
+    ok: true,
+    op: {
+      id: o.id,
+      type: o.type as OpType,
+      createdAt: typeof o.createdAt === "string" ? o.createdAt : new Date().toISOString(),
+      params: o.params ?? {},
+      target: o.target,
+      expect: o.expect,
+    },
+  };
 }
 
 /** Every logged result, oldest first. A torn last line (a crash mid-write) is skipped. */
@@ -117,6 +114,8 @@ export function recentOpResults(log: OpResult[], limit = 50): OpResult[] {
 
 export interface ApplyContext {
   alertsFile: string;
+  /** Default holdings.json. */
+  holdingsFile?: string;
   opLogFile: string;
   market: MarketData;
   now?: () => Date;
@@ -139,48 +138,68 @@ export async function applyOp(op: Op, ctx: ApplyContext): Promise<ApplyOutcome> 
   if (prior !== undefined) {
     return { result: prior, duplicate: true };
   }
-  const outcome = op.type === "alert.add" ? await applyAdd(op, ctx) : await applyEdit(op, ctx);
+  const outcome =
+    op.type === "alert.add"
+      ? await applyAdd(op, ctx)
+      : op.type === "alert.edit"
+        ? await applyEdit(op, ctx)
+        : applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
   const result: OpResult = { id: op.id, type: op.type, ...outcome, appliedAt: (ctx.now?.() ?? new Date()).toISOString() };
   appendOpResult(ctx.opLogFile, result);
   return { result, duplicate: false };
 }
 
-type Outcome = Omit<OpResult, "id" | "type" | "appliedAt">;
+const reject = (symbol: string | null, alertId: string | null, message: string): Outcome => ({ symbol, alertId, ok: false, message });
 
-async function applyAdd(op: AddOp, ctx: ApplyContext): Promise<Outcome> {
-  const symbol = typeof op.params.symbol === "string" ? op.params.symbol.trim().toUpperCase() || null : null;
-  const parsed = parseAddInput(op.params);
+async function applyAdd(op: Op, ctx: ApplyContext): Promise<Outcome> {
+  const symbol = stringField(op.params, "symbol")?.trim().toUpperCase() || null;
+  const fields = addFieldsFromJson(op.params);
+  if (!fields.ok) {
+    return reject(symbol, null, fields.error);
+  }
+  const parsed = parseAddInput(fields.value);
   if (!parsed.ok) {
-    return { symbol, alertId: null, ok: false, message: parsed.error };
+    return reject(symbol, null, parsed.error);
   }
   const result = await addAlert(ctx.alertsFile, parsed.value, ctx.market);
   if (result.rejectedReason !== null || result.added === null) {
-    return { symbol: parsed.value.symbol, alertId: null, ok: false, message: `Not added: ${result.rejectedReason ?? "unknown reason"}` };
+    return reject(parsed.value.symbol, null, `Not added: ${result.rejectedReason ?? "unknown reason"}`);
   }
   const a = result.added;
   const replaced = result.replaced ? ` Replaced alert ${result.replaced.id} (${describeAlertCondition(result.replaced)}).` : "";
   return { symbol: a.symbol, alertId: a.id, ok: true, message: `Added ${a.kind} alert ${a.id}: ${describeAlertCondition(a)}.${replaced}` };
 }
 
-async function applyEdit(op: EditOp, ctx: ApplyContext): Promise<Outcome> {
-  const alertId = op.target.alertId;
+async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
+  const alertId = stringField(op.target, "alertId");
+  if (alertId === null || alertId === "") {
+    return reject(null, null, "An edit needs target.alertId.");
+  }
+  const expected = stringField(op.expect, "condition");
+  if (expected === null) {
+    return reject(null, alertId, "An edit needs expect.condition.");
+  }
   // By id only. findAlert would also accept a ticker, and an edit aimed at one
   // alert must never land on another alert that happens to share its symbol.
   const alert = loadAlerts(ctx.alertsFile).find((a) => a.id === alertId);
   if (alert === undefined) {
-    return { symbol: null, alertId, ok: false, message: `No alert with id ${alertId}. It may have been removed.` };
+    return reject(null, alertId, `No alert with id ${alertId}. It may have been removed.`);
   }
   const now = describeAlertCondition(alert);
-  if (now !== op.expect.condition) {
-    return { symbol: alert.symbol, alertId, ok: false, message: `Not edited: the alert changed since the page loaded. It is now "${now}".` };
+  if (now !== expected) {
+    return reject(alert.symbol, alertId, `Not edited: the alert changed since the page loaded. It is now "${now}".`);
   }
-  const parsed = parseAlertEdit(op.params);
+  const fields = editFieldsFromJson(op.params);
+  if (!fields.ok) {
+    return reject(alert.symbol, alertId, fields.error);
+  }
+  const parsed = parseAlertEdit(fields.value);
   if (!parsed.ok) {
-    return { symbol: alert.symbol, alertId, ok: false, message: parsed.error };
+    return reject(alert.symbol, alertId, parsed.error);
   }
   const result = await editAlert(ctx.alertsFile, alertId, parsed.value, ctx.market);
   if (result.rejectedReason !== null || result.edited === null || result.before === null) {
-    return { symbol: alert.symbol, alertId, ok: false, message: `Not edited: ${result.rejectedReason ?? "unknown reason"}` };
+    return reject(alert.symbol, alertId, `Not edited: ${result.rejectedReason ?? "unknown reason"}`);
   }
   const replaced = result.replaced
     ? ` Cancelled alert ${result.replaced.id} (${describeAlertCondition(result.replaced)}): the new level is closer to price on the same side.`

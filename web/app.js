@@ -6,6 +6,7 @@
 //   #/queue         the revisit queue (dashboard.json)
 //   #/stories       multi-trigger stories (dashboard.json)
 //   #/alerts        every live alert (alerts.json, fetched while viewed)
+//   #/holdings      positions, lots, and stops (vault.json, decrypted once editing is unlocked)
 //   #/trigger/<id>  one trigger's details, in a drawer over the current view
 //   #/alert/<id>    one alert's details and its recent triggers
 //
@@ -229,14 +230,22 @@
 
   function rerenderOps() {
     renderOpsControls();
+    if (current) renderTiles(current.summary, holdingRows() !== null);
     if (baseView === "alerts") renderAlerts();
+    renderHoldingsView();
     renderDrawer(parseRoute().drawer);
   }
 
   function setToken(token) {
     opsToken = token;
     storageSet(OPS_TOKEN_KEY, token);
+    if (token === null) {
+      vaultData = null;
+      vaultError = null;
+    }
     rerenderOps();
+    // Opening the vault is also the first check that the token is right.
+    if (token !== null) refreshVault();
   }
 
   function renderOpsControls() {
@@ -300,9 +309,13 @@
     savePending();
     for (const p of done) {
       const r = byId.get(p.id);
-      notice(r.ok ? r.message : `${p.summary} rejected: ${r.message}`, r.ok, r.ok ? r.alertId : p.alertId);
+      // Holdings results are published, so they carry no sizes or prices; the
+      // page's own summary of what it sent says what was applied.
+      const okText = isHoldingsOp(p) ? `Applied: ${p.summary}.` : r.message;
+      notice(r.ok ? okText : `${p.summary} rejected: ${r.message}`, r.ok, r.ok ? r.alertId : p.alertId);
     }
     ensureAlerts(true);
+    refreshVault();
     rerenderOps();
   }
 
@@ -310,10 +323,14 @@
   const pendingTag = (alertId) => (pendingFor(alertId).length ? h("span", { class: "tag pending", text: "edit pending" }) : null);
 
   function renderPending() {
-    const box = $("ops-pending");
-    box.hidden = pendingOps.length === 0;
+    renderPendingList($("ops-pending"), pendingOps.filter((p) => !isHoldingsOp(p)));
+    renderPendingList($("holdings-pending"), pendingOps.filter(isHoldingsOp));
+  }
+
+  function renderPendingList(box, items) {
+    box.hidden = items.length === 0;
     box.replaceChildren(
-      ...pendingOps.map((p) =>
+      ...items.map((p) =>
         h(
           "div",
           { class: "pending-row" },
@@ -473,6 +490,366 @@
     );
   }
 
+  // ---- holdings (unlocked) ----------------------------------------------------
+  //
+  // Holdings are never readable on the public site. With editing unlocked they
+  // come from vault.json, encrypted under the ops token (src/web/vault.ts). The
+  // key derivation here must match vaultKey there. A token that can't open the
+  // vault is the wrong token, which the page learns before sending anything.
+
+  const VAULT_KEY_CONTEXT = "equity-watch/holdings-vault/v1 ";
+  let vaultData = null; // { holdings, lots, stops }
+  let vaultError = null;
+  let vaultLoading = null;
+  const expandedPositions = new Set();
+  // Built once per symbol and reused while its lots and stops are unchanged, so a poll doesn't wipe what's typed.
+  const detailCache = new Map(); // symbol -> { sig, el }
+  let lotAddFormEl = null;
+
+  const isHoldingsOp = (p) => !p.type.startsWith("alert.");
+  const canEditHoldings = () => canEdit() && vaultData !== null;
+  const localToday = () => new Date().toLocaleDateString("en-CA");
+  const fromBase64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+  function holdingRows() {
+    if (vaultData) return vaultData.holdings;
+    return current?.site?.holdings === true ? current.holdings : null;
+  }
+
+  async function openVault(token) {
+    const resp = await fetch("vault.json", { cache: "no-store" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const doc = await resp.json();
+    const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(VAULT_KEY_CONTEXT + token));
+    const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64(doc.iv) }, key, fromBase64(doc.data));
+    return JSON.parse(new TextDecoder().decode(plain));
+  }
+
+  function refreshVault() {
+    if (!canEdit() || current?.site?.vault !== true) {
+      vaultData = null;
+      return Promise.resolve();
+    }
+    if (vaultLoading) return vaultLoading;
+    const token = opsToken;
+    vaultLoading = openVault(token)
+      .then((data) => {
+        if (opsToken !== token) return;
+        vaultData = data;
+        vaultError = null;
+      })
+      .catch((err) => {
+        if (opsToken !== token) return;
+        if (err.name === "OperationError") {
+          // AES-GCM authentication failed: the vault wasn't sealed with this token.
+          notice("That token didn't open the holdings, so it isn't the current ops token. Unlock again with the right one.", false);
+          vaultLoading = null;
+          setToken(null);
+        } else {
+          vaultError = `Couldn't load holdings (${err.message}).`;
+        }
+      })
+      .finally(() => {
+        vaultLoading = null;
+        rerenderOps();
+      });
+    return vaultLoading;
+  }
+
+  function renderHoldingsView() {
+    const rows = holdingRows();
+    $("nav-holdings").hidden = rows === null;
+    $("nav-holdings-count").textContent = rows === null ? "" : `(${rows.length})`;
+    const status = $("holdings-status");
+    if (rows === null) {
+      status.textContent =
+        vaultError ??
+        (vaultLoading ? "Loading holdings…" : opsEnabled() && current?.site?.vault ? "Holdings are private. Unlock editing to see and change them." : "Holdings aren't published.");
+    } else {
+      status.textContent = current ? `Prices as of ${ago(current.generatedAt)}.${canEditHoldings() ? " Select a position for its lots and stops." : ""}` : "";
+    }
+    renderLotAddForm();
+    renderPending();
+    if (rows === null) {
+      $("holdings").replaceChildren();
+      $("holdings-count").textContent = "";
+      return;
+    }
+    renderHoldings(rows);
+  }
+
+  // A destructive action takes a second click within a few seconds, rather than a modal.
+  function confirmButton(label, action) {
+    let armed = false;
+    let timer = null;
+    const reset = () => {
+      armed = false;
+      btn.textContent = label;
+      btn.classList.remove("danger");
+    };
+    const btn = h("button", {
+      type: "button",
+      text: label,
+      onclick: (e) => {
+        e.stopPropagation();
+        if (!armed) {
+          armed = true;
+          btn.textContent = "Click again to confirm";
+          btn.classList.add("danger");
+          timer = setTimeout(reset, 4000);
+          return;
+        }
+        clearTimeout(timer);
+        reset();
+        action();
+      },
+    });
+    return btn;
+  }
+
+  function refreshAccountList() {
+    const list = $("account-options");
+    if (!list || !vaultData) return;
+    const accounts = [...new Set(vaultData.lots.map((l) => l.account).filter(Boolean))].sort();
+    list.replaceChildren(...accounts.map((a) => h("option", { value: a })));
+  }
+
+  function renderLotAddForm() {
+    const slot = $("lot-add");
+    slot.hidden = !canEditHoldings();
+    if (slot.hidden) return;
+    if (lotAddFormEl) {
+      if (!slot.contains(lotAddFormEl)) slot.replaceChildren(lotAddFormEl);
+      refreshAccountList();
+      return;
+    }
+    const symbol = h("input", { type: "text", placeholder: "AAPL", autocapitalize: "characters", autocomplete: "off", spellcheck: "false", maxlength: "16" });
+    const shares = numberInput(null, { placeholder: "10" });
+    const basis = numberInput(null, { placeholder: "per share" });
+    const date = h("input", { type: "date", value: localToday() });
+    const account = h("input", { type: "text", list: "account-options", placeholder: "optional", maxlength: "40" });
+    const error = h("span", { class: "form-error" });
+    const button = h("button", { type: "submit", text: "Add lot" });
+    lotAddFormEl = h(
+      "form",
+      {
+        class: "ops-form card",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          error.textContent = "";
+          const sym = symbol.value.trim().toUpperCase();
+          const n = positive(shares.value);
+          const b = positive(basis.value);
+          if (!sym) return (error.textContent = "Enter a symbol.");
+          if (n === null) return (error.textContent = "Enter shares above 0.");
+          if (b === null) return (error.textContent = "Enter a basis per share above 0.");
+          if (!date.value) return (error.textContent = "Enter the purchase date.");
+          const acct = account.value.trim();
+          const params = { symbol: sym, count: n, basisPerShare: b, purchaseDate: date.value, ...(acct ? { account: acct } : {}) };
+          button.disabled = true;
+          const queued = await submitOp({ type: "lot.add", params }, { symbol: sym, summary: `add ${n} ${sym} @ ${b}` });
+          button.disabled = false;
+          if (queued) {
+            symbol.value = "";
+            shares.value = "";
+            basis.value = "";
+          }
+        },
+      },
+      h("strong", { class: "form-title", text: "Add a lot" }),
+      field("Symbol", symbol),
+      field("Shares", shares),
+      field("Basis / share", basis),
+      field("Purchased", date),
+      field("Account", account),
+      button,
+      error,
+      h("datalist", { id: "account-options" }),
+      h("div", { class: "note", text: "Applied at the next scheduled check. Basis stays blended across a symbol's lots." })
+    );
+    slot.replaceChildren(lotAddFormEl);
+    refreshAccountList();
+  }
+
+  const lotExpect = (lot) => ({ count: lot.count, basisPerShare: lot.basisPerShare, purchaseDate: lot.purchaseDate, account: lot.account ?? null });
+
+  function lotRows(lot) {
+    const count = numberInput(lot.count);
+    const basis = numberInput(lot.basisPerShare);
+    const date = h("input", { type: "date", value: lot.purchaseDate });
+    const account = h("input", { type: "text", list: "account-options", value: lot.account ?? "", maxlength: "40" });
+    const error = h("span", { class: "form-error" });
+    const form = h(
+      "form",
+      {
+        class: "ops-form",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          error.textContent = "";
+          const n = positive(count.value);
+          const b = positive(basis.value);
+          if (n === null) return (error.textContent = "Enter shares above 0.");
+          if (b === null) return (error.textContent = "Enter a basis per share above 0.");
+          if (!date.value) return (error.textContent = "Enter the purchase date.");
+          const params = {};
+          const changes = [];
+          if (n !== lot.count) {
+            params.count = n;
+            changes.push(`shares ${lot.count} → ${n}`);
+          }
+          if (b !== lot.basisPerShare) {
+            params.basisPerShare = b;
+            changes.push(`basis ${lot.basisPerShare} → ${b}`);
+          }
+          if (date.value !== lot.purchaseDate) {
+            params.purchaseDate = date.value;
+            changes.push(`purchased ${date.value}`);
+          }
+          const acct = account.value.trim();
+          if (acct !== (lot.account ?? "")) {
+            // An empty account clears the label.
+            params.account = acct;
+            changes.push(acct ? `account ${acct}` : "no account");
+          }
+          if (changes.length === 0) return (error.textContent = "Nothing changed.");
+          await submitOp(
+            { type: "lot.edit", target: { lotId: lot.id }, expect: lotExpect(lot), params },
+            { symbol: lot.symbol, summary: `edit ${lot.symbol} lot: ${changes.join(", ")}` }
+          );
+        },
+      },
+      field("Shares", count),
+      field("Basis / share", basis),
+      field("Purchased", date),
+      field("Account", account),
+      h("button", { type: "submit", text: "Queue edit" }),
+      error
+    );
+    const formRow = h("tr", { class: "lot-edit", hidden: true }, h("td", { colspan: "5" }, form));
+    const row = h(
+      "tr",
+      {},
+      h("td", { text: lot.count }),
+      h("td", { text: money(lot.basisPerShare) }),
+      h("td", { text: lot.purchaseDate }),
+      h("td", { text: lot.account ?? "–" }),
+      h(
+        "td",
+        {},
+        h(
+          "span",
+          { class: "row-actions" },
+          h("button", {
+            type: "button",
+            text: "Edit",
+            onclick: (e) => {
+              e.stopPropagation();
+              formRow.hidden = !formRow.hidden;
+            },
+          }),
+          confirmButton("Remove", () =>
+            submitOp(
+              { type: "lot.remove", target: { lotId: lot.id }, expect: lotExpect(lot), params: {} },
+              { symbol: lot.symbol, summary: `remove a ${lot.symbol} lot (${lot.count} @ ${lot.basisPerShare})` }
+            )
+          )
+        )
+      )
+    );
+    return [row, formRow];
+  }
+
+  function stopsBlock(symbol, stops) {
+    const price = numberInput(null, { placeholder: "price" });
+    const covered = numberInput(null, { placeholder: "all" });
+    const error = h("span", { class: "form-error" });
+    return h(
+      "div",
+      { class: "stops" },
+      h(
+        "div",
+        { class: "stop-list" },
+        h("span", { class: "muted", text: stops.length ? "Stops:" : "No stops." }),
+        ...stops.map((s) =>
+          h(
+            "span",
+            { class: "tag stop-tag" },
+            `${money(s.stopPrice)} · ${s.count ?? "all"} shares`,
+            confirmButton("Remove", () =>
+              submitOp(
+                { type: "stop.remove", target: { stopId: s.id }, expect: { stopPrice: s.stopPrice }, params: {} },
+                { symbol, summary: `remove ${symbol} stop at ${s.stopPrice}` }
+              )
+            )
+          )
+        )
+      ),
+      h(
+        "form",
+        {
+          class: "ops-form",
+          onsubmit: async (e) => {
+            e.preventDefault();
+            error.textContent = "";
+            const p = positive(price.value);
+            const c = covered.value.trim() === "" ? undefined : positive(covered.value);
+            if (p === null) return (error.textContent = "Enter a stop price above 0.");
+            if (c === null) return (error.textContent = "Shares covered must be above 0, or empty for all.");
+            const queued = await submitOp(
+              { type: "stop.add", params: { symbol, stopPrice: p, ...(c !== undefined ? { count: c } : {}) } },
+              { symbol, summary: `add ${symbol} stop at ${p}${c !== undefined ? ` for ${c} shares` : ""}` }
+            );
+            if (queued) {
+              price.value = "";
+              covered.value = "";
+            }
+          },
+        },
+        field("Stop price", price),
+        field("Shares covered", covered),
+        h("button", { type: "submit", text: "Add stop" }),
+        error,
+        h("div", { class: "note", text: "Stops are records only; nothing watches them yet." })
+      )
+    );
+  }
+
+  function positionDetail(symbol) {
+    const lots = vaultData.lots.filter((l) => l.symbol === symbol);
+    const stops = vaultData.stops.filter((s) => s.symbol === symbol);
+    const sig = JSON.stringify([lots, stops]);
+    const cached = detailCache.get(symbol);
+    if (cached?.sig === sig) return cached.el;
+    const el = h(
+      "div",
+      { class: "position-detail" },
+      h(
+        "div",
+        { class: "table-wrap" },
+        h(
+          "table",
+          { class: "lots" },
+          h("thead", {}, h("tr", {}, ...["Shares", "Basis / share", "Purchased", "Account", ""].map((t) => h("th", { text: t })))),
+          h("tbody", {}, ...lots.flatMap(lotRows))
+        )
+      ),
+      stopsBlock(symbol, stops),
+      h(
+        "div",
+        { class: "actions" },
+        confirmButton(`Remove the ${symbol} position`, () =>
+          submitOp(
+            { type: "position.remove", target: { symbol }, expect: { lotIds: lots.map((l) => l.id) }, params: {} },
+            { symbol, summary: `remove the ${symbol} position` }
+          )
+        )
+      )
+    );
+    detailCache.set(symbol, { sig, el });
+    return el;
+  }
+
   // ---- state ----------------------------------------------------------------
 
   let current = null; // dashboard.json
@@ -604,6 +981,8 @@
     });
     // Scale bars to the largest move shown, capped so one outlier can't flatten the rest.
     const span = Math.min(50, Math.max(5, ...rows.map((r) => Math.abs(r.pctFromBasis ?? 0))));
+    const editable = canEditHoldings();
+    const pendingSymbols = new Set(pendingOps.filter(isHoldingsOp).map((p) => p.symbol));
 
     const head = h(
       "tr",
@@ -623,13 +1002,36 @@
       )
     );
 
-    const body = sorted.map((r) => {
+    const body = sorted.flatMap((r) => {
       const p = r.pctFromBasis;
       const width = p === null ? 0 : (Math.min(Math.abs(p), span) / span) * 50;
-      return h(
+      const open = editable && expandedPositions.has(r.symbol);
+      const toggle = () => {
+        if (expandedPositions.has(r.symbol)) expandedPositions.delete(r.symbol);
+        else expandedPositions.add(r.symbol);
+        renderHoldings(rows);
+      };
+      const row = h(
         "tr",
-        { class: r.ignored ? "ignored" : null, title: r.ignored ? "Not alerted (ignoreSymbols)" : null },
-        h("td", {}, symbolLink(r.symbol), r.stops.length ? h("span", { class: "tag", text: `stop ${r.stops.join(", ")}` }) : null),
+        {
+          class: [r.ignored ? "ignored" : "", editable ? "clickable" : ""].join(" ").trim() || null,
+          title: r.ignored ? "Not alerted (ignoreSymbols)" : null,
+          tabindex: editable ? "0" : null,
+          "aria-expanded": editable ? String(open) : null,
+          onclick: editable ? toggle : null,
+          onkeydown: editable
+            ? (e) => {
+                if (e.key === "Enter") toggle();
+              }
+            : null,
+        },
+        h(
+          "td",
+          {},
+          symbolLink(r.symbol),
+          r.stops.length ? h("span", { class: "tag", text: `stop ${r.stops.join(", ")}` }) : null,
+          pendingSymbols.has(r.symbol) ? h("span", { class: "tag pending", text: "change pending" }) : null
+        ),
         h("td", { text: r.shares }),
         h("td", { text: money(r.basis) }),
         h("td", { text: money(r.price) }),
@@ -637,7 +1039,11 @@
         h("td", { class: "bar-cell" }, h("div", { class: "bar" }, p ? h("span", { class: p > 0 ? "up" : "down", style: `width:${width}%` }) : null)),
         h("td", { text: money(r.marketValue) })
       );
+      return open ? [row, h("tr", { class: "detail-row" }, h("td", { colspan: String(HOLDING_COLS.length) }, positionDetail(r.symbol)))] : [row];
     });
+    if (body.length === 0) {
+      body.push(h("tr", {}, h("td", { class: "empty", colspan: String(HOLDING_COLS.length), text: "No positions." })));
+    }
     $("holdings").replaceChildren(h("thead", {}, head), h("tbody", {}, ...body));
   }
 
@@ -661,17 +1067,16 @@
     $("nav-alerts-count").textContent = `(${d.summary.liveAlerts})`;
     $("nav-queue-count").textContent = `(${d.revisitQueue.length})`;
     $("nav-stories-count").textContent = `(${d.stories.length})`;
-    // The publisher decides this, not the page: with holdings off they are
-    // absent from dashboard.json entirely, not merely hidden here.
-    const showHoldings = d.site?.holdings === true;
-    renderTiles(d.summary, showHoldings);
+    // Holdings come from the decrypted vault when unlocked, or from the document
+    // when the publisher includes them in the clear (web.holdings). Otherwise
+    // they're absent from dashboard.json entirely, not merely hidden here.
+    renderTiles(d.summary, holdingRows() !== null);
     renderQueue(d.revisitQueue);
     renderTriggers(d.recentTriggers ?? [], d.summary.windowDays);
     renderStories(d.stories);
-    $("holdings-section").hidden = !showHoldings;
-    if (showHoldings) renderHoldings(d.holdings);
     renderQuiet(d.quietWatches, d.quietTotal);
     renderOpsControls();
+    renderHoldingsView();
     renderDrawer(parseRoute().drawer);
   }
 
@@ -962,7 +1367,7 @@
   // ---- routing --------------------------------------------------------------
 
   // Views with their own hash; anything unrecognized is the overview.
-  const BASE_VIEWS = ["queue", "stories", "alerts"];
+  const BASE_VIEWS = ["queue", "stories", "alerts", "holdings"];
 
   function parseRoute() {
     const [view, id] = location.hash.replace(/^#\/?/, "").split("/");
@@ -981,6 +1386,7 @@
     }
     if (baseView === "alerts" || route.drawer?.type === "alert") ensureAlerts();
     if (baseView === "alerts") renderAlerts();
+    if (baseView === "holdings") renderHoldingsView();
     renderDrawer(route.drawer);
   }
 
@@ -1095,6 +1501,8 @@
     saveSeen(seen);
     render(d);
     resolvePending(d.opResults);
+    // Re-read on every poll: the vault is republished alongside the results, and prices move.
+    refreshVault();
     if (baseView === "alerts" || parseRoute().drawer?.type === "alert") ensureAlerts(true);
   }
 

@@ -1,0 +1,211 @@
+import { expect, test, type Page } from "@playwright/test";
+import { OPS_TOKEN } from "../fixtures.js";
+
+const poll = (page: Page) => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+const storeToken = (page: Page) => page.addInitScript((token) => localStorage.setItem("equity-watch.opsToken", token), OPS_TOKEN);
+
+async function queuedOps(page: Page): Promise<Array<Record<string, any>>> {
+  return (await page.request.get("/__ops")).json();
+}
+
+async function openHoldings(page: Page) {
+  await page.goto("/#/holdings");
+  await expect(page.locator("#holdings tbody tr").first()).toBeVisible();
+}
+
+const positionRow = (page: Page, symbol: string) => page.locator("#holdings > tbody > tr", { has: page.locator(`a.sym:text-is("${symbol}")`) });
+const detail = (page: Page) => page.locator("#holdings tr.detail-row");
+
+async function expand(page: Page, symbol: string) {
+  // Click a numeric cell: the symbol itself is a chart link.
+  await positionRow(page, symbol).locator("td").nth(1).click();
+  await expect(detail(page)).toBeVisible();
+}
+
+let errors: string[] = [];
+
+test.beforeEach(async ({ page }) => {
+  await page.request.get("/__reset");
+  errors = [];
+  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+  page.on("console", (m) => {
+    if (m.type() === "error") errors.push(`console: ${m.text()}`);
+  });
+});
+
+test.afterEach(() => {
+  expect(errors).toEqual([]);
+});
+
+test("holdings stay private while locked", async ({ page }) => {
+  await page.goto("/#/");
+  await expect(page.locator("#tiles .tile").first()).toBeVisible();
+  await expect(page.locator("#nav-holdings")).toBeHidden();
+  await page.goto("/#/holdings");
+  await expect(page.locator("#holdings-status")).toHaveText("Holdings are private. Unlock editing to see and change them.");
+  await expect(page.locator("#holdings tr")).toHaveCount(0);
+
+  const doc = await (await page.request.get("/dashboard.json")).json();
+  expect(doc.holdings).toEqual([]);
+  expect(JSON.stringify(doc)).not.toMatch(/"shares"|"basisPerShare"|"stopPrice"|"marketValue"/);
+  expect(await (await page.request.get("/vault.json")).text()).not.toMatch(/"symbol"|roth|lot0000/);
+});
+
+test("a token that can't open the vault is refused before anything is sent", async ({ page }) => {
+  await page.goto("/#/holdings");
+  page.once("dialog", (d) => d.accept("y".repeat(64)));
+  await page.locator("#ops-btn").click();
+  await expect(page.locator("#toasts .toast.bad")).toContainText("didn't open the holdings");
+  await expect(page.locator("#ops-btn")).toHaveText("Unlock editing");
+  await expect(page.locator("#nav-holdings")).toBeHidden();
+  expect(await page.evaluate(() => localStorage.getItem("equity-watch.opsToken"))).toBeNull();
+  expect(await queuedOps(page)).toEqual([]);
+});
+
+test("unlocking shows positions, and a position expands to its lots and stops", async ({ page }) => {
+  await page.goto("/#/");
+  await expect(page.locator("#nav-holdings")).toBeHidden();
+  page.once("dialog", (d) => d.accept(OPS_TOKEN));
+  await page.locator("#ops-btn").click();
+  await expect(page.locator("#nav-holdings")).toBeVisible();
+  await expect(page.locator("#nav-holdings-count")).toHaveText("(2)");
+  await expect(page.locator("#tiles")).toContainText("positions held");
+
+  await page.locator("#nav-holdings").click();
+  await expect(positionRow(page, "AA").locator("td").nth(1)).toHaveText("15");
+  await expect(positionRow(page, "AA")).toContainText("stop 38");
+  await expand(page, "AA");
+  const lots = detail(page).locator("table.lots > tbody > tr:not(.lot-edit)");
+  await expect(lots).toHaveCount(2);
+  await expect(lots.nth(0)).toContainText("roth");
+  await expect(lots.nth(1)).toContainText("margin");
+  await expect(detail(page).locator(".stop-list")).toContainText("38.00 · all shares");
+
+  await positionRow(page, "AA").locator("td").nth(1).click();
+  await expect(detail(page)).toHaveCount(0);
+});
+
+test("adds a lot", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  const form = page.locator("#lot-add form");
+  await form.locator("button[type=submit]").click();
+  await expect(form.locator(".form-error")).toHaveText("Enter a symbol.");
+
+  await form.locator("input[type=text]").first().fill("msft");
+  await form.locator("input[type=number]").nth(0).fill("3");
+  await form.locator("input[type=number]").nth(1).fill("410.5");
+  await form.locator("input[type=date]").fill("2026-09-10");
+  await form.locator("input[type=text]").nth(1).fill("roth");
+  await form.locator("button[type=submit]").click();
+
+  await expect(page.locator("#holdings-pending .pending-row")).toContainText("add 3 MSFT @ 410.5");
+  await expect(form.locator("input[type=text]").first()).toHaveValue("");
+  const [op] = await queuedOps(page);
+  expect(op).toMatchObject({ type: "lot.add", params: { symbol: "MSFT", count: 3, basisPerShare: 410.5, purchaseDate: "2026-09-10", account: "roth" } });
+});
+
+test("edits a lot, sending only what changed and the lot as shown", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  await expand(page, "AA");
+  await detail(page).getByRole("button", { name: "Edit" }).first().click();
+  const form = detail(page).locator("tr.lot-edit form").first();
+  await expect(form).toBeVisible();
+  await expect(form.locator("input[type=number]").nth(0)).toHaveValue("10");
+
+  await form.locator("button[type=submit]").click();
+  await expect(form.locator(".form-error")).toHaveText("Nothing changed.");
+
+  await form.locator("input[type=number]").nth(0).fill("12");
+  await form.locator("input[type=text]").fill("");
+  await form.locator("button[type=submit]").click();
+  await expect(page.locator("#holdings-pending")).toContainText("edit AA lot: shares 10 → 12, no account");
+  await expect(positionRow(page, "AA").locator(".tag.pending")).toHaveText("change pending");
+  const [op] = await queuedOps(page);
+  expect(op).toMatchObject({
+    type: "lot.edit",
+    target: { lotId: "lot00001" },
+    expect: { count: 10, basisPerShare: 40, purchaseDate: "2026-09-01", account: "roth" },
+    params: { count: 12, account: "" },
+  });
+});
+
+test("removals take a second click", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  await expand(page, "AA");
+
+  const lotRemove = detail(page).locator("table.lots > tbody > tr:not(.lot-edit)").nth(1).getByRole("button", { name: "Remove" });
+  await lotRemove.click();
+  await expect(detail(page).getByRole("button", { name: "Click again to confirm" })).toHaveCount(1);
+  expect(await queuedOps(page)).toEqual([]);
+  await detail(page).getByRole("button", { name: "Click again to confirm" }).click();
+  await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+
+  await detail(page).locator(".stop-tag").getByRole("button", { name: "Remove" }).click();
+  await detail(page).locator(".stop-tag").getByRole("button", { name: "Click again to confirm" }).click();
+  await expect.poll(async () => (await queuedOps(page)).length).toBe(2);
+
+  await detail(page).getByRole("button", { name: "Remove the AA position" }).click();
+  await detail(page).getByRole("button", { name: "Click again to confirm" }).click();
+  await expect.poll(async () => (await queuedOps(page)).length).toBe(3);
+
+  const [lot, stop, position] = await queuedOps(page);
+  expect(lot).toMatchObject({ type: "lot.remove", target: { lotId: "lot00002" }, expect: { count: 5, basisPerShare: 44, purchaseDate: "2026-09-08", account: "margin" } });
+  expect(stop).toMatchObject({ type: "stop.remove", target: { stopId: "stop0001" }, expect: { stopPrice: 38 } });
+  expect(position).toMatchObject({ type: "position.remove", target: { symbol: "AA" }, expect: { lotIds: ["lot00001", "lot00002"] } });
+});
+
+test("adds a stop", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  await expand(page, "TSLA");
+  await expect(detail(page).locator(".stop-list")).toContainText("No stops.");
+  const form = detail(page).locator(".stops form");
+  await form.locator("input[type=number]").nth(0).fill("230");
+  await form.locator("input[type=number]").nth(1).fill("1");
+  await form.locator("button[type=submit]").click();
+  await expect(page.locator("#holdings-pending")).toContainText("add TSLA stop at 230 for 1 shares");
+  const [op] = await queuedOps(page);
+  expect(op).toMatchObject({ type: "stop.add", params: { symbol: "TSLA", stopPrice: 230, count: 1 } });
+});
+
+test("a result resolves with the page's own description of the change", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  const form = page.locator("#lot-add form");
+  await form.locator("input[type=text]").first().fill("MSFT");
+  await form.locator("input[type=number]").nth(0).fill("3");
+  await form.locator("input[type=number]").nth(1).fill("410.5");
+  await form.locator("button[type=submit]").click();
+  await expect(page.locator("#holdings-pending .pending-row")).toHaveCount(1);
+
+  await page.request.get("/__release");
+  await poll(page);
+  await expect(page.locator("#holdings-pending")).toBeHidden();
+  // The "Queued" toast from submitting may still be up, so pick the result's.
+  await expect(page.locator("#toasts .toast.ok", { hasText: "Applied:" })).toContainText("Applied: add 3 MSFT @ 410.5.");
+});
+
+test("locking hides holdings again", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  await page.locator("#ops-btn").click();
+  await expect(page.locator("#nav-holdings")).toBeHidden();
+  await expect(page.locator("#holdings tr")).toHaveCount(0);
+  await expect(page.locator("#lot-add")).toBeHidden();
+  await expect(page.locator("#holdings-status")).toContainText("Unlock editing");
+});
+
+test.describe("phone width", () => {
+  test.use({ viewport: { width: 400, height: 860 }, isMobile: true, hasTouch: true });
+
+  test("the holdings forms fit without horizontal page scroll", async ({ page }) => {
+    await storeToken(page);
+    await openHoldings(page);
+    await expand(page, "AA");
+    await detail(page).getByRole("button", { name: "Edit" }).first().click();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+  });
+});

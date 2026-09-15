@@ -148,8 +148,6 @@ describe("parseOp", () => {
     [{ type: "alert.add", params: {} }, "needs an id"],
     [{ id: "short", type: "alert.add", params: {} }, "needs an id"],
     [{ id: "0b8c9f1e-1111", type: "alert.remove", params: {} }, 'Unknown op type "alert.remove"'],
-    [{ id: "0b8c9f1e-1111", type: "alert.edit", expect: { condition: "c" }, params: {} }, "target.alertId"],
-    [{ id: "0b8c9f1e-1111", type: "alert.edit", target: { alertId: "a" }, params: {} }, "expect.condition"],
   ])("rejects %j", (body, message) => {
     const r = parseOp(body);
     expect(r.ok).toBe(false);
@@ -238,6 +236,25 @@ describe("applyOp", () => {
     saveAlerts(alertsFile, [makeStatic()]);
     const { result } = await applyOp(edit("TEST", "price crosses above 100", { level: 110 }), { alertsFile, opLogFile, market: fakeMarket({ TEST: 105 }) });
     expect(result).toMatchObject({ ok: false, message: "No alert with id TEST. It may have been removed." });
+  });
+
+  // Parsing checks only the envelope, so these become results the page can
+  // show, not messages dropped as malformed that leave it waiting.
+  it("logs a missing target, expect, or unknown field as a rejection", async () => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    const market = fakeMarket({ TEST: 105 });
+    const apply = async (body: Record<string, unknown>) => {
+      const parsed = parseOp({ type: "alert.edit", ...body });
+      if (!parsed.ok) throw new Error(parsed.error);
+      return (await applyOp(parsed.op, { alertsFile, opLogFile, market })).result;
+    };
+    expect(await apply({ id: "op-bad-0001", expect: { condition: "c" }, params: { level: 1 } })).toMatchObject({ ok: false, message: "An edit needs target.alertId." });
+    expect(await apply({ id: "op-bad-0002", target: { alertId: "s1abcdef" }, params: { level: 1 } })).toMatchObject({ ok: false, message: "An edit needs expect.condition." });
+    expect(await apply({ id: "op-bad-0003", target: { alertId: "s1abcdef" }, expect: { condition: "price crosses above 100" }, params: { evil: 1 } })).toMatchObject({
+      ok: false,
+      message: 'Unknown field "evil".',
+    });
+    expect(loadOpLog(opLogFile)).toHaveLength(3);
   });
 
   it("rejects an edit the alert's kind doesn't support", async () => {

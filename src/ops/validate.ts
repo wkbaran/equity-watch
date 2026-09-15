@@ -315,3 +315,133 @@ export function addFieldsFromJson(params: unknown): Parsed<RawAddFields> {
 export function editFieldsFromJson(params: unknown): Parsed<RawEditFields> {
   return attempt(() => scalarFields(params, EDIT_KEYS) as RawEditFields);
 }
+
+/** A string property of an untrusted value, or null. */
+export function stringField(value: unknown, key: string): string | null {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  const v = (value as Record<string, unknown>)[key];
+  return typeof v === "string" ? v : null;
+}
+
+// ---- holdings --------------------------------------------------------------
+//
+// Holdings op results are published in dashboard.json, which is public, and a
+// rejection's message becomes that result. So these messages name the field
+// but never echo a value: no share counts, basis, or prices, even wrong ones.
+
+export interface LotInput {
+  symbol: string;
+  count: number;
+  basisPerShare: number;
+  purchaseDate?: string;
+  account?: string;
+}
+
+export interface StopInput {
+  symbol: string;
+  stopPrice: number;
+  /** null: whatever is currently held. */
+  count: number | null;
+}
+
+const LOT_KEYS = ["symbol", "count", "basisPerShare", "purchaseDate", "account"];
+const LOT_EDIT_KEYS = ["count", "basisPerShare", "purchaseDate", "account"];
+const STOP_KEYS = ["symbol", "stopPrice", "count"];
+
+/** Like scalarFields, but keeps empty and null values: in an edit they mean "clear". */
+function objectFields(params: unknown, keys: string[]): Record<string, unknown> {
+  if (params === null || typeof params !== "object" || Array.isArray(params)) {
+    fail("params must be an object.");
+  }
+  for (const key of Object.keys(params)) {
+    if (!keys.includes(key)) {
+      fail(`Unknown field "${key}".`);
+    }
+  }
+  return params as Record<string, unknown>;
+}
+
+const present = (v: unknown) => v !== undefined && v !== null && v !== "";
+
+function positiveValue(label: string, raw: unknown): number {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN;
+  if (!Number.isFinite(n) || n <= 0) {
+    fail(`${label} must be a positive number.`);
+  }
+  return n;
+}
+
+function symbolValue(raw: unknown): string {
+  const symbol = typeof raw === "string" ? raw.trim().toUpperCase() : "";
+  if (symbol === "") {
+    fail("Specify the symbol.");
+  }
+  if (!SYMBOL_RE.test(symbol)) {
+    fail("Invalid symbol.");
+  }
+  return symbol;
+}
+
+/** A calendar date as typed, not a market date, so a UTC round-trip is the right check here. */
+function dateValue(raw: unknown): string {
+  if (typeof raw !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    fail("Purchase date must be YYYY-MM-DD.");
+  }
+  const d = new Date(`${raw}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== raw) {
+    fail("Purchase date must be a real date.");
+  }
+  return raw;
+}
+
+function accountValue(raw: unknown): string | null {
+  if (!present(raw)) {
+    return null;
+  }
+  if (typeof raw !== "string" || raw.trim().length > 40) {
+    fail("Account must be text of at most 40 characters.");
+  }
+  return raw.trim() || null;
+}
+
+export function parseLotInput(params: unknown): Parsed<LotInput> {
+  return attempt(() => {
+    const f = objectFields(params, LOT_KEYS);
+    const account = accountValue(f.account);
+    return {
+      symbol: symbolValue(f.symbol),
+      count: positiveValue("Shares", f.count),
+      basisPerShare: positiveValue("Basis per share", f.basisPerShare),
+      ...(present(f.purchaseDate) ? { purchaseDate: dateValue(f.purchaseDate) } : {}),
+      ...(account !== null ? { account } : {}),
+    };
+  });
+}
+
+export function parseLotEdit(params: unknown): Parsed<{ count?: number; basisPerShare?: number; purchaseDate?: string; account?: string | null }> {
+  return attempt(() => {
+    const f = objectFields(params, LOT_EDIT_KEYS);
+    const edit: { count?: number; basisPerShare?: number; purchaseDate?: string; account?: string | null } = {};
+    if ("count" in f) edit.count = positiveValue("Shares", f.count);
+    if ("basisPerShare" in f) edit.basisPerShare = positiveValue("Basis per share", f.basisPerShare);
+    if ("purchaseDate" in f) edit.purchaseDate = dateValue(f.purchaseDate);
+    if ("account" in f) edit.account = accountValue(f.account);
+    if (Object.keys(edit).length === 0) {
+      fail("Nothing to change.");
+    }
+    return edit;
+  });
+}
+
+export function parseStopInput(params: unknown): Parsed<StopInput> {
+  return attempt(() => {
+    const f = objectFields(params, STOP_KEYS);
+    return {
+      symbol: symbolValue(f.symbol),
+      stopPrice: positiveValue("Stop price", f.stopPrice),
+      count: present(f.count) ? positiveValue("Shares covered", f.count) : null,
+    };
+  });
+}

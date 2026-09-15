@@ -178,6 +178,20 @@ site has no login by default (`EnableBasicAuth=false`), so `dashboard.json` is
 public. With `web.holdings` off, `siteDocument` (`src/web/site.ts`) empties the
 holdings rows before writing *and* before fingerprinting.
 
+**The unlocked page gets holdings from `vault.json`, encrypted.** With
+`OPS_QUEUE_URL` and a 32+ character `OPS_TOKEN` in `.env`, `dashboard` publishes
+positions, lots, and stops AES-256-GCM sealed under a key derived from the ops
+token (`src/web/vault.ts`). The page decrypts them in the browser after unlocking
+(`openVault` in `web/app.js`). Two things break silently if you touch them:
+
+- **The key prefix must match byte for byte** in `vault.ts` (`KEY_CONTEXT`) and
+  `app.js` (`VAULT_KEY_CONTEXT`). A NUL character once slipped into one of them.
+  Node's own round-trip still passed; only the WebCrypto test in
+  `tests/holdingsOps.test.ts`, which reads the prefix out of `app.js`, caught it.
+- **Fingerprint the plaintext, never the sealed document.** Every seal uses a fresh
+  IV, so the ciphertext changes every run. `siteFingerprint` takes
+  `vaultContents`; hashing `vault.json` would publish on every check.
+
 The line the user drew (2026-09-12): **size and value are private, being held
 is not.** "Holding MKS broke support", held-first story ordering, and "held
 position" in priority breakdowns are fine to publish. Share counts, basis,
@@ -222,6 +236,15 @@ Things that look simplifiable and aren't:
   token only. It can't import from `src/`. All semantic checks happen in the worker.
 - **`opResults` is not in `VOLATILE_KEYS`** on purpose: a new result must publish,
   or the page never learns its edit landed.
+- **Holdings op results are public, so they carry no numbers.** `opResults` goes
+  into `dashboard.json`. The holdings handlers (`src/ops/holdings.ts`) and their
+  validators (`parseLotInput` etc.) name the symbol and the field, but never echo a
+  share count, basis, or price, not even a rejected one. The page shows details
+  from its own record of what it sent. A test asserts that no holdings message
+  contains a digit.
+- **Parsing an op checks only its envelope** (id and type). A bad target, expect,
+  or params becomes a logged rejection. If it were dropped as malformed, the
+  page would wait forever for a result.
 - **The page's editing controls have browser tests:** `npm run test:ui`
   (`playwright/`). `playwright/server.ts` builds the documents from fixture
   alerts with the real builders and fakes the Lambda. Specs are `*.e2e.ts`

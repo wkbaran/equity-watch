@@ -246,11 +246,17 @@ Resources:
               return reply(400, { error: "Body must be JSON" });
             }
             if (!isObject(op) || typeof op.id !== "string" || !ID.test(op.id)) return reply(400, { error: "Bad op id" });
-            if (op.type !== "alert.add" && op.type !== "alert.edit") return reply(400, { error: "Unknown op type" });
+            // Op type -> the target key it must name. Keep in step with OP_TYPES in src/ops/apply.ts.
+            const TARGET_KEY = {
+              "alert.add": null, "alert.edit": "alertId",
+              "lot.add": null, "lot.edit": "lotId", "lot.remove": "lotId", "position.remove": "symbol",
+              "stop.add": null, "stop.remove": "stopId",
+            };
+            if (typeof op.type !== "string" || !Object.prototype.hasOwnProperty.call(TARGET_KEY, op.type)) return reply(400, { error: "Unknown op type" });
             if (!isObject(op.params)) return reply(400, { error: "params must be an object" });
-            if (op.type === "alert.edit" && (!isObject(op.target) || typeof op.target.alertId !== "string" || !isObject(op.expect) || typeof op.expect.condition !== "string")) {
-              return reply(400, { error: "An edit needs target.alertId and expect.condition" });
-            }
+            const key = TARGET_KEY[op.type];
+            if (key && (!isObject(op.target) || typeof op.target[key] !== "string")) return reply(400, { error: "This op needs target." + key });
+            if (op.expect !== undefined && !isObject(op.expect)) return reply(400, { error: "expect must be an object" });
             const message = { id: op.id, type: op.type, createdAt: new Date().toISOString(), params: op.params, target: op.target, expect: op.expect };
             await sqs.send(new SendMessageCommand({
               QueueUrl: process.env.QUEUE_URL,

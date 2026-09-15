@@ -5,6 +5,7 @@
  */
 
 import type { MaAlert, StaticAlert, TrailingAlert } from "../src/alerts/models.js";
+import type { HoldingsStore } from "../src/holdings/models.js";
 
 /** The fake ops endpoint accepts exactly this bearer token. */
 export const OPS_TOKEN = "x".repeat(32);
@@ -78,3 +79,14 @@ export const MOVING_AVERAGE: MaAlert = {
 };
 
 export const FIXTURE_ALERTS = [STATIC, STATIC_WITH_VOLUME, TRAILING, MOVING_AVERAGE];
+
+/** Published only inside vault.json, sealed with OPS_TOKEN. */
+export const HOLDINGS: HoldingsStore = {
+  lots: [
+    { id: "lot00001", symbol: "AA", count: 10, basisPerShare: 40, purchaseDate: "2026-09-01", createdAt: "2026-09-01T15:00:00.000Z", account: "roth" },
+    { id: "lot00002", symbol: "AA", count: 5, basisPerShare: 44, purchaseDate: "2026-09-08", createdAt: "2026-09-08T15:00:00.000Z", account: "margin" },
+    { id: "lot00003", symbol: "TSLA", count: 2, basisPerShare: 260, purchaseDate: "2026-08-20", createdAt: "2026-08-20T15:00:00.000Z" },
+  ],
+  stops: [{ id: "stop0001", symbol: "AA", count: null, stopPrice: 38, createdAt: "2026-09-02T15:00:00.000Z" }],
+  alertState: [],
+};

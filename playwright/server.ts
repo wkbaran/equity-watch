@@ -19,34 +19,41 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildDashboard } from "../src/dashboard.js";
-import { emptyHoldingsStore } from "../src/holdings/models.js";
 import type { OpResult } from "../src/ops/apply.js";
 import type { Quote } from "../src/providers/schwab.js";
 import { buildAlertRows } from "../src/web/alertsPage.js";
 import { SITE_ASSETS, siteDocument } from "../src/web/site.js";
-import { FIXTURE_ALERTS, OPS_TOKEN, PRICES } from "./fixtures.js";
+import { sealVault, vaultContents } from "../src/web/vault.js";
+import { FIXTURE_ALERTS, HOLDINGS, OPS_TOKEN, PRICES } from "./fixtures.js";
 
 const PORT = Number(process.env.PW_PORT ?? 4178);
 const WEB_DIR = fileURLToPath(new URL("../web/", import.meta.url));
 const TYPES: Record<string, string> = { html: "text/html", js: "text/javascript" };
 
-type QueuedOp = { id: string; type: string; params: Record<string, unknown>; target?: { alertId: string } };
+type QueuedOp = { id: string; type: string; params: Record<string, unknown>; target?: Record<string, string> };
 let ops: QueuedOp[] = [];
 let released = false;
 
 function resultFor(op: QueuedOp): OpResult {
   const appliedAt = new Date().toISOString();
-  return op.type === "alert.add"
-    ? { id: op.id, type: op.type, symbol: String(op.params.symbol), alertId: "added001", ok: true, message: `Added static alert added001: price crosses ${op.params.level}.`, appliedAt }
-    : { id: op.id, type: op.type, symbol: null, alertId: op.target?.alertId ?? null, ok: false, message: "Not edited: the alert changed since the page loaded.", appliedAt };
+  if (op.type === "alert.add") {
+    return { id: op.id, type: op.type, symbol: String(op.params.symbol), alertId: "added001", ok: true, message: `Added static alert added001: price crosses ${op.params.level}.`, appliedAt };
+  }
+  if (op.type === "alert.edit") {
+    return { id: op.id, type: op.type, symbol: null, alertId: op.target?.alertId ?? null, ok: false, message: "Not edited: the alert changed since the page loaded.", appliedAt };
+  }
+  // Holdings results carry no sizes or prices, like the real ones.
+  const symbol = String(op.params.symbol ?? op.target?.symbol ?? "AA");
+  return { id: op.id, type: op.type, symbol, alertId: null, ok: true, message: `Applied to ${symbol}.`, appliedAt };
 }
 
 function documents() {
   const quotes = new Map<string, Quote>(Object.entries(PRICES).map(([symbol, lastPrice]) => [symbol, { lastPrice, totalVolume: 0 }]));
-  const dashboard = buildDashboard({ alerts: FIXTURE_ALERTS, revisits: [], holdings: emptyHoldingsStore(), quotes, now: new Date() });
+  const dashboard = buildDashboard({ alerts: FIXTURE_ALERTS, revisits: [], holdings: HOLDINGS, quotes, now: new Date() });
   return {
-    "dashboard.json": siteDocument(dashboard, { holdings: false, ops: true }, released ? ops.map(resultFor) : []),
+    "dashboard.json": siteDocument(dashboard, { holdings: false, ops: true, vault: true }, released ? ops.map(resultFor) : []),
     "alerts.json": { generatedAt: dashboard.generatedAt, alerts: buildAlertRows(FIXTURE_ALERTS, quotes, new Set()) },
+    "vault.json": sealVault(vaultContents(dashboard.holdings, HOLDINGS), OPS_TOKEN),
   };
 }
 
@@ -76,7 +83,7 @@ createServer(async (req, res) => {
     released = false;
     return send(200, { reset: true });
   }
-  if (path === "dashboard.json" || path === "alerts.json") return send(200, documents()[path]);
+  if (path === "dashboard.json" || path === "alerts.json" || path === "vault.json") return send(200, documents()[path]);
   if (SITE_ASSETS.includes(path)) {
     return send(200, await readFile(join(WEB_DIR, path)), TYPES[path.split(".").pop() ?? ""] ?? "application/octet-stream");
   }
