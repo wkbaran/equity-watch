@@ -64,7 +64,7 @@
     transition: background 0.15s;
   }
   button:hover { background: var(--border); }
-  input[type="search"], select {
+  input[type="search"], input[type="text"], input[type="number"], select {
     font: inherit; font-size: 0.85rem; color: var(--text); background: var(--surface);
     border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem;
   }
@@ -184,7 +184,22 @@
   .toast .t-body { cursor: pointer; }
   .toast .t-sym { font-weight: 700; color: var(--accent); }
   .toast button { background: transparent; border: 0; padding: 0 2px; font-size: 1rem; line-height: 1; }
+  .toast.ok { border-left-color: var(--green); }
+  .toast.bad { border-left-color: var(--red); }
   @keyframes slide { from { transform: translateY(8px); opacity: 0; } }
+
+  .ops-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.5rem 0.75rem; padding: 0.75rem 1rem; margin-bottom: 1rem; overflow: visible; }
+  .ops-form .form-title { flex-basis: 100%; font-size: 0.9rem; }
+  .ops-form .note { flex-basis: 100%; }
+  .field { display: flex; flex-direction: column; gap: 2px; font-size: 0.75rem; color: var(--subtext); }
+  .field input[type="number"] { width: 8rem; }
+  .field input[type="text"] { width: 7rem; text-transform: uppercase; }
+  .form-error { color: var(--red); font-size: 0.8rem; align-self: center; }
+  .tag.pending { border-color: var(--yellow); color: var(--yellow); }
+  #ops-pending { margin-bottom: 1rem; }
+  .pending-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0.5rem 1rem; border-top: 1px solid var(--border); font-size: 0.85rem; }
+  .pending-row:first-child { border-top: 0; }
+  .pending-row .tag { margin-left: 0; }
   @media (max-width: 560px) {
     .trigger-row, .drawer .trigger-row { grid-template-columns: 1fr; gap: 2px; }
     .queue-row { grid-template-columns: 36px 1fr; }
@@ -207,6 +222,8 @@
   <div class="header-right">
     <span id="notify-state" class="meta"></span>
     <button id="notify-btn" hidden>Enable notifications</button>
+    <!-- Shown only when the published document has site.ops = true (OPS_QUEUE_URL configured). -->
+    <button id="ops-btn" hidden>Unlock editing</button>
     <button id="theme-btn">☀️ Light</button>
   </div>
 </header>
@@ -255,6 +272,8 @@
         <option value="newest">Sort: newest</option>
       </select>
     </div>
+    <div id="alert-add" hidden></div>
+    <div id="ops-pending" class="card" hidden></div>
     <div class="card table-wrap"><table id="alerts-table"></table></div>
   </section>
 </main>

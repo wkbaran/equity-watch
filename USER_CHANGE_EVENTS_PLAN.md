@@ -3,7 +3,28 @@
 Letting the browser dashboard change the watchlist: apply or dismiss a revisit,
 snooze, remove, add alerts. Today it can only copy CLI commands.
 
-Status: **proposed**. Nothing here is built yet.
+Status: **add and edit built** (2026-09-15). The rest is proposed.
+
+What shipped, and where it differs from the plan below:
+
+- **Ops:** `alert.add` and `alert.edit` only. Revisit apply/dismiss, snooze,
+  remove, and quiet cleanup are not built. On the page, add creates static
+  alerts. Edit covers static level/direction and trailing distance. The worker
+  accepts every field `alert add`/`alert edit` do.
+- **Auth:** the ops token, as proposed. Reads stay public, and no federated login.
+- **Latency:** no separate worker. `ops pull` runs as the first step of the
+  existing 15-minute scheduled task, so a change can wait up to 15 minutes.
+  Nothing applies outside the task's weekday window.
+- **Idempotency is the op log** (`ops.log.jsonl`), not SQS dedup, which lasts
+  only five minutes. An op id already logged returns its result without
+  applying again.
+- **Conflict guard:** `expect.condition` is the alert's condition text as the page
+  showed it, not per-field values.
+- **Results** are published as `opResults` on the site document (`siteDocument`),
+  not on the shared `Dashboard`, so the terminal and Kindle renderers are untouched.
+- **Validation** was pulled out of `cli.ts` into `src/ops/validate.ts` rather than
+  moving whole commands to `src/ops/apply.ts`, since `addAlert`/`editAlert` were
+  already store-level functions.
 
 ---
 

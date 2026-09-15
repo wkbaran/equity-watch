@@ -109,6 +109,14 @@ if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir "dist\cli.js"))) {
 
 $cli = Join-Path $ProjectDir "dist\cli.js"
 
+# Apply alert changes queued from the dashboard first, so the check evaluates
+# them. A failure is logged but doesn't stop the check; failed ops stay queued.
+# Without OPS_QUEUE_URL in .env this prints "Ops disabled" and exits 0.
+$code = Invoke-Logged "ops pull" "node" @($cli, "ops", "pull")
+if ($code -ne 0) {
+    Write-Log "Continuing with the check anyway."
+}
+
 $code = Invoke-Logged "alert check" "node" @($cli, "alert", "check")
 if ($code -ne 0) {
     Stop-Run $code

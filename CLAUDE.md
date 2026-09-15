@@ -195,6 +195,38 @@ Two more things that look wrong and aren't:
   which is correct from both `src/web/site.ts` (tsx) and `dist/web/site.js`.
   `tsc` does not copy non-TS files, which is why the assets aren't under `src/`.
 
+## Dashboard edits are queued, and the op log is what makes them safe to retry
+
+The page adds and edits alerts by POSTing to `/api/ops` (a Lambda behind the
+same CloudFront distribution). That puts an op on an SQS FIFO queue, and
+`ops pull` applies it at the start of the next scheduled check (`src/ops/`).
+Things that look simplifiable and aren't:
+
+- **Don't rely on SQS deduplication.** It lasts five minutes, and an add isn't
+  idempotent. `applyOp` checks `ops.log.jsonl` for the op id first, and a
+  message is deleted only after its result is logged. Remove either and a crash
+  mid-apply adds the alert twice.
+- **A rejection is a result, an exception is not.** Bad input, a stale page, or
+  the engine saying no gets logged and deleted. A thrown error (Schwab login
+  expired) propagates, and `pullOps` stops with that op and everything after it
+  still queued, because a later edit may target an alert an earlier add creates.
+- **Edits target by id only.** `findAlert` also accepts a ticker. Don't pass an
+  op's target through it, or an edit can land on a different alert on that symbol.
+- **`expect.condition` is the conflict guard**: `describeAlertCondition` as the
+  page showed it. If you change that function's wording, every edit queued before
+  the deploy is rejected once. That's acceptable, but know it will happen.
+- **Validation lives in `src/ops/validate.ts`** and the CLI uses it too. Don't
+  add a check to `cmdAlertAdd`/`cmdAlertEdit` only, or the page will accept what
+  the CLI refuses.
+- **The Lambda's handler is inline in `cloudformation.yaml`** and checks shape and
+  token only. It can't import from `src/`. All semantic checks happen in the worker.
+- **`opResults` is not in `VOLATILE_KEYS`** on purpose: a new result must publish,
+  or the page never learns its edit landed.
+- **The page's editing controls have browser tests:** `npm run test:ui`
+  (`playwright/`). `playwright/server.ts` builds the documents from fixture
+  alerts with the real builders and fakes the Lambda. Specs are `*.e2e.ts`
+  because vitest's default pattern would otherwise pick up `*.spec.ts`.
+
 ## Trigger details before 2026-09-13 are incomplete, and can't be backfilled
 
 `RevisitEntry.condition` and `RevisitEntry.volume` are recorded by the engine

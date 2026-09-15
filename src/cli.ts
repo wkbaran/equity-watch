@@ -14,8 +14,6 @@ import {
   addAlert,
   checkAlerts,
   editAlert,
-  type AddAlertInput,
-  type AlertEdit,
   type BaselineResolver,
   type FollowUpEvent,
   type MarketData,
@@ -25,17 +23,12 @@ import { baselineKey, computeBaseline } from "./alerts/volumeBaseline.js";
 import {
   DEFAULT_ALERT_DIRECTION,
   effectiveTrigger,
-  type AlertDirection,
-  type MaAlert,
-  type MaApproach,
   type VolumeCondition,
-  type VolumePeriodUnit,
 } from "./alerts/models.js";
 import { endedOnFiredSide, entryDirection, reversalOf, reversionWindowFor } from "./alerts/reversion.js";
 import { DEFAULT_TOUCH_MARGIN_PCT, describeMaAlert, type DailyHistoryResolver } from "./alerts/maEngine.js";
 import { describeAlertCondition, describeVolumeCondition } from "./alerts/describe.js";
 import { liveAlertsFor, normalizeSymbolQuery, renderSymbolAlerts } from "./alerts/symbolView.js";
-import { parseMaSpec, type MaSpec } from "./indicators/movingAverage.js";
 import { ConsoleNotifier } from "./alerts/notify.js";
 import { writeAlertTriggerReport } from "./alerts/report.js";
 import {
@@ -70,6 +63,9 @@ import { localDateString } from "./timezone.js";
 import { isEntryPoint } from "./entrypoint.js";
 import { publishSite } from "./web/publish.js";
 import { buildAlertRows } from "./web/alertsPage.js";
+import { applyOp, DEFAULT_OP_LOG, loadOpLog, parseOp, recentOpResults } from "./ops/apply.js";
+import { pullOps, sqsOpsQueue } from "./ops/pull.js";
+import { parseAddInput, parseAlertEdit } from "./ops/validate.js";
 import { shouldPublish, siteDocument, siteFingerprint, writeSite, type PublishState } from "./web/site.js";
 import {
   EXTENDED_SESSIONS,
@@ -343,16 +339,6 @@ function buildMarketData(opts: CommonOpts): MarketData {
   };
 }
 
-/** Parses "30m" / "2h" / "1d" / "45s" into a VolumeCondition's period fields. */
-function parseVolumePeriod(raw: string): { periodValue: number; periodUnit: VolumePeriodUnit } {
-  const match = /^(\d+(?:\.\d+)?)(s|m|h|d)$/.exec(raw.trim());
-  if (!match) {
-    console.error(`Invalid --volume-period "${raw}" — expected a number followed by s, m, h, or d (e.g. "30m").`);
-    process.exit(1);
-  }
-  return { periodValue: parseFloat(match[1]), periodUnit: match[2] as VolumePeriodUnit };
-}
-
 async function cmdSchwabLogin(opts: CommonOpts): Promise<void> {
   const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
   const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
@@ -576,175 +562,20 @@ function formatVolumeCondition(v: VolumeCondition): string {
   return describeVolumeCondition(v);
 }
 
-/** Builds the optional VolumeCondition shared by static/trailing/volume alert creation. Exits on bad input. */
-function parseVolumeFlags(opts: {
-  volumeAtLeast?: string;
-  volumeRatio?: string;
-  volumePeriod?: string;
-}): VolumeCondition | undefined {
-  if (opts.volumeAtLeast !== undefined && opts.volumeRatio !== undefined) {
-    console.error("Specify --volume-at-least (absolute shares) or --volume-ratio (multiple of normal), not both.");
-    process.exit(1);
-  }
-  if (opts.volumeRatio !== undefined) {
-    const ratio = parseFloat(opts.volumeRatio);
-    if (!Number.isFinite(ratio) || ratio <= 0) {
-      console.error(`Invalid --volume-ratio "${opts.volumeRatio}" — expected a positive multiple, e.g. 1.5.`);
-      process.exit(1);
-    }
-    const period = opts.volumePeriod === undefined ? undefined : parseVolumePeriod(opts.volumePeriod);
-    return period === undefined ? { ratio, mode: "today" } : { ratio, mode: "period", ...period };
-  }
-  if (opts.volumeAtLeast === undefined) {
-    if (opts.volumePeriod !== undefined) {
-      console.error("--volume-period requires --volume-at-least or --volume-ratio.");
-      process.exit(1);
-    }
-    return undefined;
-  }
-  const threshold = parseFloat(opts.volumeAtLeast);
-  if (opts.volumePeriod === undefined) {
-    return { threshold, mode: "today" };
-  }
-  const { periodValue, periodUnit } = parseVolumePeriod(opts.volumePeriod);
-  return { threshold, mode: "period", periodValue, periodUnit };
-}
-
 interface AlertListOpts extends AlertCommonOpts {
   all?: boolean;
 }
 
-async function cmdAlertAddMa(opts: AlertAddOpts): Promise<void> {
-  const conflicting = [opts.level, opts.near, opts.trailPercent, opts.trailAmount, opts.volumeAtLeast, opts.volumeRatio, opts.volumePeriod];
-  if (conflicting.some((v) => v !== undefined)) {
-    console.error("--ma can't be combined with --level, --near, --trail-*, or --volume-* (no volume condition on moving averages yet).");
-    process.exit(1);
-  }
-
-  let spec: MaSpec;
-  try {
-    spec = parseMaSpec(opts.ma!);
-  } catch (err) {
-    console.error((err as Error).message);
-    process.exit(1);
-  }
-
-  const isTouch = opts.touch !== undefined;
-  let marginPct = DEFAULT_TOUCH_MARGIN_PCT;
-  if (typeof opts.touch === "string") {
-    marginPct = parseFloat(opts.touch);
-    if (!Number.isFinite(marginPct) || marginPct <= 0 || marginPct > 10) {
-      console.error(`Invalid --touch margin "${opts.touch}" — expected a percent between 0 and 10, e.g. 0.25.`);
-      process.exit(1);
-    }
-  }
-
-  let from: MaApproach = "either";
-  if (opts.direction !== undefined) {
-    if (isTouch) {
-      console.error("--direction applies to crosses. For a touch, use --from above|below.");
-      process.exit(1);
-    }
-    if (opts.direction !== "up" && opts.direction !== "down") {
-      console.error(`Invalid --direction "${opts.direction}" — expected up or down.`);
-      process.exit(1);
-    }
-    from = opts.direction === "up" ? "below" : "above";
-  }
-  if (opts.from !== undefined) {
-    if (!isTouch) {
-      console.error("--from applies to touches (--touch). For a cross, use --direction up|down.");
-      process.exit(1);
-    }
-    if (opts.from !== "above" && opts.from !== "below") {
-      console.error(`Invalid --from "${opts.from}" — expected above or below.`);
-      process.exit(1);
-    }
-    from = opts.from;
-  }
-
-  const market = buildMarketData(opts);
-  const result = await addAlert(
-    opts.alertsFile,
-    { kind: "ma", symbol: opts.symbol, ...spec, trigger: isTouch ? "touch" : "cross", from, marginPct },
-    market
-  );
-  if (result.rejectedReason) {
-    console.log(`Not added: ${result.rejectedReason}`);
-    return;
-  }
-  const a = result.added as MaAlert;
-  console.log(
-    `Added ma alert ${a.id} (${a.symbol}, ${describeMaAlert(a)}). ` +
-      `The next check records where price sits; it can fire from the check after that.`
-  );
-}
-
 async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
-  if (opts.ma !== undefined) {
-    return cmdAlertAddMa(opts);
-  }
-  const hasLevel = opts.level !== undefined;
-  const hasNear = opts.near !== undefined;
-  if (hasLevel && hasNear) {
-    console.error("Specify at most one of --level (static alert) or --near (trailing alert).");
+  // Shared with the dashboard's queued ops, so both reject the same input.
+  const parsed = parseAddInput(opts);
+  if (!parsed.ok) {
+    console.error(parsed.error);
     process.exit(1);
-  }
-  // --direction means "which crossings fire" for both a static level and a
-  // moving-average cross, but a static level also accepts "either". Trailing
-  // and volume alerts have their direction built in.
-  if (opts.direction !== undefined && !hasLevel) {
-    console.error("--direction applies to --level (up|down|either) or --ma crosses (up|down).");
-    process.exit(1);
-  }
-  // Parse the volume flags first: they decide whether a bare `alert add` is a
-  // standalone volume alert, and they own their own validation messages.
-  const volume = parseVolumeFlags(opts);
-  if (!hasLevel && !hasNear && volume === undefined) {
-    console.error("Specify --level, --near, or --volume-at-least/--volume-ratio (a standalone volume alert).");
-    process.exit(1);
-  }
-
-  let input: AddAlertInput;
-  if (hasLevel) {
-    if (opts.trailPercent !== undefined || opts.trailAmount !== undefined) {
-      console.error("--trail-percent/--trail-amount only apply to trailing alerts (--near).");
-      process.exit(1);
-    }
-    let direction: AlertDirection = DEFAULT_ALERT_DIRECTION;
-    if (opts.direction !== undefined) {
-      if (opts.direction !== "up" && opts.direction !== "down" && opts.direction !== "either") {
-        console.error(`Invalid --direction "${opts.direction}" — expected up, down, or either.`);
-        process.exit(1);
-      }
-      direction = opts.direction;
-    }
-    input = { kind: "static", symbol: opts.symbol, level: parseFloat(opts.level!), direction, volume };
-  } else if (hasNear) {
-    const hasPercent = opts.trailPercent !== undefined;
-    const hasAmount = opts.trailAmount !== undefined;
-    if (hasPercent === hasAmount) {
-      console.error("Specify exactly one of --trail-percent or --trail-amount for a trailing alert.");
-      process.exit(1);
-    }
-    input = {
-      kind: "trailing",
-      symbol: opts.symbol,
-      near: parseFloat(opts.near!),
-      trailType: hasPercent ? "percent" : "amount",
-      trailValue: parseFloat((hasPercent ? opts.trailPercent : opts.trailAmount)!),
-      volume,
-    };
-  } else {
-    if (opts.trailPercent !== undefined || opts.trailAmount !== undefined) {
-      console.error("--trail-percent/--trail-amount require --near.");
-      process.exit(1);
-    }
-    input = { kind: "volume", symbol: opts.symbol, volume: volume! };
   }
 
   const market = buildMarketData(opts);
-  const result = await addAlert(opts.alertsFile, input, market);
+  const result = await addAlert(opts.alertsFile, parsed.value, market);
 
   if (result.rejectedReason) {
     console.log(`Not added: ${result.rejectedReason}`);
@@ -756,7 +587,10 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
     return;
   }
   if (a.kind === "ma") {
-    console.log(`Added ma alert ${a.id} (${a.symbol}, ${describeMaAlert(a)}).`);
+    console.log(
+      `Added ma alert ${a.id} (${a.symbol}, ${describeMaAlert(a)}). ` +
+        `The next check records where price sits; it can fire from the check after that.`
+    );
     return;
   }
   const trigger = effectiveTrigger(a);
@@ -1072,60 +906,13 @@ const OFFLINE_MARKET: MarketData = {
 };
 
 async function cmdAlertEdit(id: string, opts: AlertEditOpts): Promise<void> {
-  const edit: AlertEdit = {};
-  if (opts.level !== undefined) {
-    edit.level = parsePositiveFlag("--level", opts.level);
-  }
-  if (opts.direction !== undefined) {
-    if (opts.direction !== "up" && opts.direction !== "down" && opts.direction !== "either") {
-      console.error(`Invalid --direction "${opts.direction}" — expected up, down, or either.`);
-      process.exit(1);
-    }
-    edit.direction = opts.direction;
-  }
-  if (opts.trailPercent !== undefined && opts.trailAmount !== undefined) {
-    console.error("Specify --trail-percent or --trail-amount, not both.");
+  // Shared with the dashboard's queued ops, so both reject the same input.
+  const parsed = parseAlertEdit(opts);
+  if (!parsed.ok) {
+    console.error(parsed.error);
     process.exit(1);
   }
-  if (opts.trailPercent !== undefined) {
-    edit.trail = { type: "percent", value: parsePositiveFlag("--trail-percent", opts.trailPercent) };
-  }
-  if (opts.trailAmount !== undefined) {
-    edit.trail = { type: "amount", value: parsePositiveFlag("--trail-amount", opts.trailAmount) };
-  }
-  const volume = parseVolumeFlags(opts);
-  if (opts.clearVolume) {
-    if (volume !== undefined) {
-      console.error("--clear-volume can't be combined with --volume-at-least/--volume-ratio.");
-      process.exit(1);
-    }
-    edit.volume = null;
-  } else if (volume !== undefined) {
-    edit.volume = volume;
-  }
-  if (opts.ma !== undefined) {
-    try {
-      edit.ma = parseMaSpec(opts.ma);
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exit(1);
-    }
-  }
-  if (opts.touch !== undefined) {
-    const margin = Number(opts.touch);
-    if (!Number.isFinite(margin) || margin <= 0 || margin > 10) {
-      console.error(`Invalid --touch margin "${opts.touch}" — expected a percent between 0 and 10, e.g. 0.25.`);
-      process.exit(1);
-    }
-    edit.marginPct = margin;
-  }
-  if (opts.from !== undefined) {
-    if (opts.from !== "above" && opts.from !== "below" && opts.from !== "either") {
-      console.error(`Invalid --from "${opts.from}" — expected above, below, or either.`);
-      process.exit(1);
-    }
-    edit.from = opts.from;
-  }
+  const edit = parsed.value;
   if (Object.keys(edit).length === 0) {
     console.error("Nothing to change. See 'alert edit --help' for what can be edited.");
     process.exit(1);
@@ -1963,7 +1750,11 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   const config = loadTuningConfig(opts.config);
   const ignored = ignoredSymbols(config);
   const siteDir = opts.site ?? (opts.publish ? "site" : undefined);
-  const siteOptions = { holdings: config?.web?.holdings === true };
+  // ops: whether the page offers editing. The queue URL being configured here
+  // is the best available sign that the stack was deployed with EnableOps.
+  const siteOptions = { holdings: config?.web?.holdings === true, ops: Boolean(process.env.OPS_QUEUE_URL) };
+  // Results of ops applied from the page, so it can resolve what it has pending.
+  const opResults = recentOpResults(loadOpLog(DEFAULT_OP_LOG));
   // Chart links need each symbol's exchange; a bare symbol can open a foreign listing.
   const exchanges = exchangesFromProfiles(listCachedProfiles(opts.profileCacheDir));
   const unlisted = new Set(alerts.filter((a) => a.status === "live" && !exchanges.has(a.symbol)).map((a) => a.symbol));
@@ -1990,7 +1781,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   // quote-less build: a run with nothing new exits here without spending a
   // single quote request, which is what makes a tight cron interval affordable.
   if (opts.publish && opts.skipUnchanged) {
-    const decision = shouldPublish(loadPublishState(), siteFingerprint(siteDocument(build(new Map()), siteOptions), buildAlertRows(alerts, new Map(), ignored, exchanges)), new Date(), opts.maxStaleMinutes);
+    const decision = shouldPublish(loadPublishState(), siteFingerprint(siteDocument(build(new Map()), siteOptions, opResults), buildAlertRows(alerts, new Map(), ignored, exchanges)), new Date(), opts.maxStaleMinutes);
     if (!decision.publish) {
       console.log(`Skipped publish: ${decision.reason}.`);
       return;
@@ -2029,10 +1820,10 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
 
   // Fingerprint what is actually published, so holdings changes don't trigger
   // a publish while the holdings section is off.
-  const siteDashboard = siteDocument(dashboard, siteOptions);
+  const siteDashboard = siteDocument(dashboard, siteOptions, opResults);
   const alertRows = buildAlertRows(alerts, quotes, ignored, exchanges);
   if (siteDir !== undefined) {
-    writeSite(siteDir, dashboard, siteOptions, alertRows);
+    writeSite(siteDir, dashboard, siteOptions, alertRows, opResults);
     console.log(`Wrote site to ${siteDir}/${siteOptions.holdings ? "" : " (holdings excluded; set web.holdings in the config to include)"}`);
   }
 
@@ -2042,6 +1833,80 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     mkdirSync(dirname(PUBLISH_STATE_PATH), { recursive: true });
     const state: PublishState = { fingerprint: siteFingerprint(siteDashboard, alertRows), publishedAt: siteDashboard.generatedAt };
     writeFileSync(PUBLISH_STATE_PATH, JSON.stringify(state, null, 2));
+  }
+}
+
+interface OpsCommonOpts extends AlertCommonOpts {
+  opLog: string;
+}
+
+interface OpsApplyOpts extends OpsCommonOpts {
+  file: string;
+}
+
+interface OpsPullOpts extends OpsCommonOpts {
+  wait: number;
+  max: number;
+}
+
+/** Builds the Schwab client on first use, so an op that needs no quote works without a login. */
+function lazyMarketData(opts: CommonOpts): MarketData {
+  let market: MarketData | null = null;
+  const get = () => (market ??= buildMarketData(opts));
+  return {
+    getQuotes: (symbols) => get().getQuotes(symbols),
+    getIntradayBars: (symbol, daysBack) => get().getIntradayBars(symbol, daysBack),
+    getDailyBars: (symbol, start, end) => get().getDailyBars(symbol, start, end),
+  };
+}
+
+async function cmdOpsApply(opts: OpsApplyOpts): Promise<void> {
+  let body: unknown;
+  try {
+    body = JSON.parse(readFileSync(opts.file, "utf-8"));
+  } catch (err) {
+    console.error(`Couldn't read ${opts.file}: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  const parsed = parseOp(body);
+  if (!parsed.ok) {
+    console.error(`Invalid op: ${parsed.error}`);
+    process.exit(1);
+  }
+  const { result, duplicate } = await applyOp(parsed.op, { alertsFile: opts.alertsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) });
+  if (duplicate) {
+    console.log(`Already applied at ${result.appliedAt}, so nothing changed. It was: ${result.message}`);
+    return;
+  }
+  console.log(result.ok ? result.message : `Rejected: ${result.message}`);
+  if (!result.ok) {
+    process.exitCode = 1;
+  }
+}
+
+async function cmdOpsPull(opts: OpsPullOpts): Promise<void> {
+  const queueUrl = process.env.OPS_QUEUE_URL;
+  if (!queueUrl) {
+    console.log("Ops disabled: OPS_QUEUE_URL is not set in .env.");
+    return;
+  }
+  const queue = sqsOpsQueue(queueUrl, process.env.AWS_REGION ?? "us-east-1");
+  const summary = await pullOps(
+    queue,
+    { alertsFile: opts.alertsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) },
+    { max: opts.max, waitSeconds: opts.wait, log: (line) => console.log(line) }
+  );
+  const total = summary.applied + summary.rejected + summary.duplicates + summary.malformed;
+  if (total > 0) {
+    console.log(
+      `Ops: ${summary.applied} applied, ${summary.rejected} rejected, ${summary.duplicates} already applied, ${summary.malformed} malformed.`
+    );
+  } else if (summary.error === null) {
+    console.log("No queued ops.");
+  }
+  if (summary.error !== null) {
+    console.error(`Stopped at op ${summary.error}. It and any after it stay queued for the next run.`);
+    process.exit(1);
   }
 }
 
@@ -2259,6 +2124,21 @@ function buildProgram(): Command {
     .option("--ignore-hours", "Poll regardless of market hours")
     .option("--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars")
     .action((opts: AlertCheckOpts) => cmdAlertCheck(opts));
+
+  const opsCmd = program.command("ops").description("Alert changes queued from the browser dashboard");
+  const withOpsCommon = (cmd: Command): Command =>
+    withAlertCommon(cmd).option("--op-log <path>", "Log of applied op results (makes re-applying an op a no-op)", DEFAULT_OP_LOG);
+
+  withOpsCommon(opsCmd.command("pull"))
+    .description("Apply changes queued from the dashboard (OPS_QUEUE_URL in .env); does nothing when that's unset")
+    .option("--wait <seconds>", "Long-poll this long for the first op (0-20)", (v) => parseInt(v, 10), 0)
+    .option("--max <n>", "Apply at most this many ops", (v) => parseInt(v, 10), 50)
+    .action((opts: OpsPullOpts) => cmdOpsPull(opts));
+
+  withOpsCommon(opsCmd.command("apply"))
+    .description("Apply one op from a JSON file, with no AWS involved: {id, type: alert.add|alert.edit, params, ...}")
+    .requiredOption("--file <path>", "The op, as JSON")
+    .action((opts: OpsApplyOpts) => cmdOpsApply(opts));
 
   const holdingsCmd = program.command("holdings").description("Track holdings (lots, stops) and basis-relative alerts");
 

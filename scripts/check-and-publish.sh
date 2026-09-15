@@ -10,5 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "=== $(date -Is) ==="
+# Dashboard changes first, so the check evaluates them. A failure doesn't stop the check.
+node dist/cli.js ops pull || echo "ops pull failed; continuing with the check."
 node dist/cli.js alert check
 node dist/cli.js dashboard --site site --publish --skip-unchanged --quiet

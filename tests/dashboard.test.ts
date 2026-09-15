@@ -176,6 +176,13 @@ describe("siteDocument", () => {
     const off = { holdings: false };
     expect(dashboardFingerprint(siteDocument(held(), off))).toBe(dashboardFingerprint(siteDocument(more, off)));
   });
+
+  // The page resolves its pending edits from opResults, so a new result must publish.
+  it("moves the fingerprint when an op result arrives", () => {
+    const off = { holdings: false };
+    const result = { id: "op-0001", type: "alert.add", symbol: "AAPL", alertId: "a1", ok: true, message: "Added", appliedAt: "2026-09-15T15:00:00.000Z" };
+    expect(dashboardFingerprint(siteDocument(held(), off, [result]))).not.toBe(dashboardFingerprint(siteDocument(held(), off)));
+  });
 });
 
 describe("dashboardFingerprint", () => {

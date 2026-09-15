@@ -182,6 +182,297 @@
     return btn;
   }
 
+  // ---- editing (ops) --------------------------------------------------------
+  //
+  // The page can't write alerts.json: it lives on the machine that runs the
+  // checks. A change is POSTed to api/ops (a Lambda behind CloudFront), queued,
+  // and applied by `ops pull` at the start of the next scheduled check. Results
+  // come back in dashboard.json's opResults. The token only opens the queue;
+  // the worker validates every change again against the real alert.
+
+  const OPS_TOKEN_KEY = "equity-watch.opsToken";
+  const PENDING_KEY = "equity-watch.pendingOps";
+
+  function storageGet(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+
+  function storageSet(key, value) {
+    try {
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, value);
+    } catch {
+      /* lasts for this tab only */
+    }
+  }
+
+  let opsToken = storageGet(OPS_TOKEN_KEY);
+  // { id, type, symbol, alertId, summary, queuedAt }, kept so a reload doesn't lose what's waiting.
+  let pendingOps = (() => {
+    try {
+      const v = JSON.parse(storageGet(PENDING_KEY) ?? "[]");
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
+  })();
+  const savePending = () => storageSet(PENDING_KEY, JSON.stringify(pendingOps));
+  const opsEnabled = () => current?.site?.ops === true;
+  const canEdit = () => opsEnabled() && Boolean(opsToken);
+  // Forms are built once and reused, so a poll re-rendering the view doesn't wipe what's typed.
+  let addFormEl = null;
+  let editForm = null; // { alertId, condition, el }
+
+  function rerenderOps() {
+    renderOpsControls();
+    if (baseView === "alerts") renderAlerts();
+    renderDrawer(parseRoute().drawer);
+  }
+
+  function setToken(token) {
+    opsToken = token;
+    storageSet(OPS_TOKEN_KEY, token);
+    rerenderOps();
+  }
+
+  function renderOpsControls() {
+    const btn = $("ops-btn");
+    btn.hidden = !opsEnabled();
+    btn.textContent = opsToken ? "Lock editing" : "Unlock editing";
+  }
+
+  function notice(text, ok, alertId = null) {
+    const el = h(
+      "div",
+      { class: `toast ${ok ? "ok" : "bad"}`, role: "status" },
+      h("div", { class: alertId ? "t-body" : null, onclick: alertId ? () => (location.hash = alertHash(alertId)) : null, text }),
+      h("button", { "aria-label": "Dismiss", text: "×", onclick: () => el.remove() })
+    );
+    $("toasts").append(el);
+    setTimeout(() => el.remove(), ok ? 15_000 : 60_000);
+  }
+
+  async function submitOp(op, { symbol, alertId = null, summary }) {
+    const body = { ...op, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
+    let resp;
+    try {
+      resp = await fetch("api/ops", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${opsToken}` },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      notice(`Couldn't queue ${summary} (${err.message}).`, false);
+      return false;
+    }
+    if (resp.status === 401) {
+      setToken(null);
+      notice("The ops token was rejected. Unlock editing with the right one.", false);
+      return false;
+    }
+    if (resp.status !== 202) {
+      let reason = `HTTP ${resp.status}`;
+      try {
+        reason = (await resp.json()).error ?? reason;
+      } catch {
+        /* not JSON */
+      }
+      notice(`Couldn't queue ${summary}: ${reason}.`, false);
+      return false;
+    }
+    pendingOps.push({ id: body.id, type: body.type, symbol, alertId, summary, queuedAt: body.createdAt });
+    savePending();
+    notice(`Queued: ${summary}. It applies at the next scheduled check.`, true);
+    rerenderOps();
+    return true;
+  }
+
+  function resolvePending(results) {
+    if (pendingOps.length === 0) return;
+    const byId = new Map((results ?? []).map((r) => [r.id, r]));
+    const done = pendingOps.filter((p) => byId.has(p.id));
+    if (done.length === 0) return;
+    pendingOps = pendingOps.filter((p) => !byId.has(p.id));
+    savePending();
+    for (const p of done) {
+      const r = byId.get(p.id);
+      notice(r.ok ? r.message : `${p.summary} rejected: ${r.message}`, r.ok, r.ok ? r.alertId : p.alertId);
+    }
+    ensureAlerts(true);
+    rerenderOps();
+  }
+
+  const pendingFor = (alertId) => pendingOps.filter((p) => p.alertId === alertId);
+  const pendingTag = (alertId) => (pendingFor(alertId).length ? h("span", { class: "tag pending", text: "edit pending" }) : null);
+
+  function renderPending() {
+    const box = $("ops-pending");
+    box.hidden = pendingOps.length === 0;
+    box.replaceChildren(
+      ...pendingOps.map((p) =>
+        h(
+          "div",
+          { class: "pending-row" },
+          h("span", { class: "tag pending", text: "pending" }),
+          p.summary,
+          muted(`· queued ${ago(p.queuedAt)}`),
+          h("button", {
+            text: "Forget",
+            title: "Stop waiting for this result here. The change stays queued.",
+            onclick: () => {
+              pendingOps = pendingOps.filter((x) => x.id !== p.id);
+              savePending();
+              rerenderOps();
+            },
+          })
+        )
+      )
+    );
+  }
+
+  const field = (label, input) => h("label", { class: "field" }, h("span", { text: label }), input);
+  const numberInput = (value, attrs = {}) => h("input", { type: "number", step: "any", min: "0", inputmode: "decimal", value: value ?? "", ...attrs });
+  function directionSelect(value) {
+    const select = h("select", {}, ...["up", "down", "either"].map((d) => h("option", { value: d, text: DIRECTION_LABEL[d] })));
+    select.value = value ?? "up";
+    return select;
+  }
+  // Page-side checks are only for quick feedback. The worker is the authority.
+  const positive = (raw) => {
+    const n = Number(raw);
+    return raw.trim() !== "" && Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  function renderAddForm() {
+    const slot = $("alert-add");
+    slot.hidden = !canEdit();
+    if (!canEdit()) return;
+    if (addFormEl) {
+      if (!slot.contains(addFormEl)) slot.replaceChildren(addFormEl);
+      return;
+    }
+    const symbol = h("input", { type: "text", placeholder: "GMED", autocapitalize: "characters", autocomplete: "off", spellcheck: "false", maxlength: "16" });
+    const level = numberInput(null, { placeholder: "80.50" });
+    const direction = directionSelect("up");
+    const ratio = numberInput(null, { placeholder: "optional" });
+    const error = h("span", { class: "form-error" });
+    const button = h("button", { type: "submit", text: "Add alert" });
+    addFormEl = h(
+      "form",
+      {
+        class: "ops-form card",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          error.textContent = "";
+          const sym = symbol.value.trim().toUpperCase();
+          const lvl = positive(level.value);
+          const vr = ratio.value.trim() === "" ? undefined : positive(ratio.value);
+          if (!sym) return (error.textContent = "Enter a symbol.");
+          if (lvl === null) return (error.textContent = "Enter a level above 0.");
+          if (vr === null) return (error.textContent = "Volume ratio must be above 0, or empty.");
+          const params = { symbol: sym, level: lvl, direction: direction.value, ...(vr !== undefined ? { volumeRatio: vr } : {}) };
+          const summary = `add ${sym} ${DIRECTION_LABEL[direction.value].toLowerCase()} ${lvl}${vr !== undefined ? ` with volume ≥ ${vr}x normal today` : ""}`;
+          button.disabled = true;
+          const queued = await submitOp({ type: "alert.add", params }, { symbol: sym, summary });
+          button.disabled = false;
+          if (queued) {
+            symbol.value = "";
+            level.value = "";
+            ratio.value = "";
+          }
+        },
+      },
+      h("strong", { class: "form-title", text: "New price alert" }),
+      field("Symbol", symbol),
+      field("Level", level),
+      field("Fires on", direction),
+      field("Volume ≥ x normal", ratio),
+      button,
+      error,
+      h("div", { class: "note", text: "Applied at the next scheduled check, against a live quote. A level at the current price is rejected." })
+    );
+    slot.replaceChildren(addFormEl);
+  }
+
+  function editSection(a) {
+    if (!canEdit()) return null;
+    const pending = pendingFor(a.id).map((p) => h("p", { class: "note" }, h("span", { class: "tag pending", text: "pending" }), ` ${p.summary}, queued ${ago(p.queuedAt)}`));
+    if (a.kind !== "static" && a.kind !== "trailing") {
+      return [...pending, h("p", { class: "note", text: "This kind can't be edited from the page yet. Use alert edit in the CLI." })];
+    }
+    // Reuse the form while the alert is unchanged; rebuild it once an edit has landed.
+    if (editForm?.alertId !== a.id || editForm.condition !== a.condition) {
+      editForm = { alertId: a.id, condition: a.condition, el: buildEditForm(a) };
+    }
+    return [...pending, editForm.el];
+  }
+
+  function buildEditForm(a) {
+    const error = h("span", { class: "form-error" });
+    const button = h("button", { type: "submit", text: "Queue edit" });
+    const fields = [];
+    let collect;
+    if (a.kind === "static") {
+      const level = numberInput(a.level);
+      const direction = directionSelect(a.direction);
+      fields.push(field("Level", level), field("Fires on", direction));
+      collect = () => {
+        const lvl = positive(level.value);
+        if (lvl === null) return { error: "Enter a level above 0." };
+        const params = {};
+        const changes = [];
+        if (lvl !== a.level) {
+          params.level = lvl;
+          changes.push(`level ${a.level} → ${lvl}`);
+        }
+        if (direction.value !== a.direction) {
+          params.direction = direction.value;
+          changes.push(`${DIRECTION_LABEL[a.direction].toLowerCase()} → ${DIRECTION_LABEL[direction.value].toLowerCase()}`);
+        }
+        return { params, changes };
+      };
+    } else {
+      const type = h("select", {}, h("option", { value: "percent", text: "Percent" }), h("option", { value: "amount", text: "Dollars" }));
+      const value = numberInput(null, { placeholder: "e.g. 3" });
+      fields.push(field("Trail by", type), field("Distance", value));
+      collect = () => {
+        const v = positive(value.value);
+        if (v === null) return { error: "Enter a trail distance above 0." };
+        const params = type.value === "percent" ? { trailPercent: v } : { trailAmount: v };
+        return { params, changes: [`trail ${type.value === "percent" ? `${v}%` : `$${v}`}`] };
+      };
+    }
+    return h(
+      "form",
+      {
+        class: "ops-form card",
+        style: "margin-top:1.25rem",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          error.textContent = "";
+          const c = collect();
+          if (c.error) return (error.textContent = c.error);
+          if (c.changes.length === 0) return (error.textContent = "Nothing changed.");
+          button.disabled = true;
+          await submitOp(
+            { type: "alert.edit", target: { alertId: a.id }, expect: { condition: a.condition }, params: c.params },
+            { symbol: a.symbol, alertId: a.id, summary: `edit ${a.symbol} ${c.changes.join(", ")}` }
+          );
+          button.disabled = false;
+        },
+      },
+      h("strong", { class: "form-title", text: "Edit" }),
+      ...fields,
+      button,
+      error,
+      h("div", { class: "note", text: "Applied at the next scheduled check. Rejected if the alert changes before then." })
+    );
+  }
+
   // ---- state ----------------------------------------------------------------
 
   let current = null; // dashboard.json
@@ -380,6 +671,7 @@
     $("holdings-section").hidden = !showHoldings;
     if (showHoldings) renderHoldings(d.holdings);
     renderQuiet(d.quietWatches, d.quietTotal);
+    renderOpsControls();
     renderDrawer(parseRoute().drawer);
   }
 
@@ -436,6 +728,8 @@
   };
 
   function renderAlerts() {
+    renderAddForm();
+    renderPending();
     const table = $("alerts-table");
     if (!alertsDoc) {
       table.replaceChildren();
@@ -463,7 +757,7 @@
           },
         },
         h("td", {}, symbolLink(a.symbol, a.chartUrl)),
-        h("td", { class: "cond", text: a.condition }),
+        h("td", { class: "cond" }, a.condition, pendingTag(a.id)),
         h("td", { class: "dir", text: a.direction ? DIRECTION_LABEL[a.direction] ?? a.direction : "–" }),
         h("td", {}, money(a.level ?? a.movingLevel), a.level === null && a.movingLevel !== null ? h("span", { class: "tag", text: "moving" }) : null),
         h("td", { text: money(a.price) }),
@@ -642,6 +936,8 @@
         h("a", { href: a.chartUrl, target: CHART_TARGET, text: "Chart" }),
         copyButton("Copy remove", `${CLI} alert remove ${a.id}`)
       ),
+      // A wrapper, because replaceChildren renders a null argument as the text "null".
+      h("div", {}, editSection(a)),
     ];
   }
 
@@ -798,6 +1094,7 @@
     }
     saveSeen(seen);
     render(d);
+    resolvePending(d.opResults);
     if (baseView === "alerts" || parseRoute().drawer?.type === "alert") ensureAlerts(true);
   }
 
@@ -852,6 +1149,14 @@
   $("alerts-sort").addEventListener("change", (e) => {
     alertsFilter.sort = e.target.value;
     renderAlerts();
+  });
+  $("ops-btn").addEventListener("click", () => {
+    if (opsToken) {
+      setToken(null);
+      return;
+    }
+    const token = window.prompt("Ops token (the stack's OpsToken parameter):");
+    if (token && token.trim()) setToken(token.trim());
   });
   $("drawer-close").addEventListener("click", closeDrawer);
   $("backdrop").addEventListener("click", closeDrawer);

@@ -232,6 +232,10 @@ weakness" above).
   `node dist\cli.js schwab-login` in cmd. When it lapses, checks fail and the log says so.
 - **After pulling code:** `git pull`, `npm ci`, `npm run build`. The script
   builds only when `dist\` is missing, not on every run.
+- **Dashboard edits:** each run starts with `ops pull`, which applies alert
+  changes queued from the page. It needs `OPS_QUEUE_URL` in `.env` (stack output
+  `OpsQueueUrl`, with `EnableOps=true`). Without it, the step logs "Ops disabled".
+  A failed pull doesn't stop the check, and its ops stay queued.
 - **Logs:** `logs\check-YYYY-MM-DD.log`, kept 14 days. Task Scheduler's History
   tab shows each run's result code.
 

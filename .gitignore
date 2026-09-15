@@ -11,6 +11,8 @@ history/
 /alerts.json
 /revisits.json
 /holdings.json
+# Results of changes applied from the dashboard; also what makes a redelivered op a no-op.
+/ops.log.jsonl
 
 # Real exports. The trimmed/anonymized stand-ins under tests/fixtures/ are
 # deliberately NOT covered by these root-anchored patterns.
@@ -24,6 +26,8 @@ schwab_tokens.json
 
 # Browser-automation artifacts (screenshots, console logs, page snapshots)
 .playwright-mcp/
+/playwright/test-results/
+/playwright-report/
 
 # Built browser dashboard and cron logs
 /site/

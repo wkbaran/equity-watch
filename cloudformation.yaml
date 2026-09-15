@@ -11,6 +11,10 @@ Description: >
   Basic auth is off by default and the site is public. Set
   EnableBasicAuth=true before turning on web.holdings in analysis.config.json.
 
+  EnableOps=true lets the page add and edit alerts: POST /api/ops goes to a
+  Lambda (token check) that queues the change on SQS, and `ops pull` on the
+  machine running checks applies it. Reads stay public; only writes need the token.
+
 Parameters:
 
   BucketName:
@@ -39,6 +43,23 @@ Parameters:
       use 12+ characters). It is embedded in the CloudFront Function code, so
       anyone with CloudFront console access to this account can read it.
 
+  EnableOps:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['false', 'true']
+    Description: >
+      Let the dashboard queue alert changes (add, edit) for `ops pull` to apply.
+      Requires OpsToken.
+
+  OpsToken:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >
+      Bearer token the page must send to queue a change (only with EnableOps=true).
+      32+ random characters, e.g. from `openssl rand -hex 32`. The Lambda refuses
+      every request while it is shorter. Stored in the Lambda's environment.
+
   CustomDomain:
     Type: String
     Default: watch.billbaran.us
@@ -55,6 +76,7 @@ Parameters:
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomain, '']]
   HasBasicAuth: !Equals [!Ref EnableBasicAuth, 'true']
+  HasOps: !Equals [!Ref EnableOps, 'true']
 
 Resources:
 
@@ -121,6 +143,152 @@ Resources:
         - Expected:
             Fn::Base64: !Sub '${BasicAuthUser}:${BasicAuthPassword}'
 
+  # ---- Ops: dashboard write-back (EnableOps) ---------------------------------
+
+  OpsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Condition: HasOps
+    Properties:
+      QueueName: !Sub '${BucketName}-ops-dlq.fifo'
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600
+
+  # FIFO with the op id as the dedup id: ordered, and a double-click is one
+  # message. Dedup lasts only 5 minutes, so the worker's op log is what really
+  # prevents a double apply. maxReceiveCount is generous because a message is
+  # received once per scheduled run, and a lapsed Schwab login fails every run
+  # until you log in again.
+  OpsQueue:
+    Type: AWS::SQS::Queue
+    Condition: HasOps
+    Properties:
+      QueueName: !Sub '${BucketName}-ops.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      MessageRetentionPeriod: 345600
+      VisibilityTimeout: 120
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OpsDeadLetterQueue.Arn
+        maxReceiveCount: 40
+
+  OpsFunctionRole:
+    Type: AWS::IAM::Role
+    Condition: HasOps
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: OpsEnqueue
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt OpsQueue.Arn
+
+  # Token and shape checks only. Every semantic check (does the alert exist,
+  # does the level make sense against a live quote) happens in `ops pull`,
+  # against real state. Inline, so it can't import from src/.
+  OpsFunction:
+    Type: AWS::Lambda::Function
+    Condition: HasOps
+    Properties:
+      FunctionName: !Sub '${BucketName}-ops'
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt OpsFunctionRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          OPS_TOKEN: !Ref OpsToken
+          QUEUE_URL: !Ref OpsQueue
+      Code:
+        ZipFile: |
+          const crypto = require("crypto");
+          const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
+          const sqs = new SQSClient({});
+          const TOKEN = process.env.OPS_TOKEN || "";
+          const ID = /^[A-Za-z0-9-]{8,64}$/;
+          const MAX_BODY = 16384;
+          const reply = (statusCode, body) => ({
+            statusCode,
+            headers: { "content-type": "application/json", "cache-control": "no-store" },
+            body: JSON.stringify(body),
+          });
+          const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+          function authorized(header) {
+            const m = /^Bearer (.+)$/.exec(header || "");
+            if (!m || TOKEN.length < 32) return false;
+            // Hash both sides so the comparison is constant-time whatever the lengths.
+            const given = crypto.createHash("sha256").update(m[1]).digest();
+            const expected = crypto.createHash("sha256").update(TOKEN).digest();
+            return crypto.timingSafeEqual(given, expected);
+          }
+          exports.handler = async (event) => {
+            const method = event.requestContext && event.requestContext.http && event.requestContext.http.method;
+            if (method !== "POST") return reply(405, { error: "POST only" });
+            if (!authorized(event.headers && event.headers.authorization)) return reply(401, { error: "Bad or missing token" });
+            let raw = event.body || "";
+            if (event.isBase64Encoded) raw = Buffer.from(raw, "base64").toString("utf8");
+            if (raw.length > MAX_BODY) return reply(413, { error: "Body too large" });
+            let op;
+            try {
+              op = JSON.parse(raw);
+            } catch (e) {
+              return reply(400, { error: "Body must be JSON" });
+            }
+            if (!isObject(op) || typeof op.id !== "string" || !ID.test(op.id)) return reply(400, { error: "Bad op id" });
+            if (op.type !== "alert.add" && op.type !== "alert.edit") return reply(400, { error: "Unknown op type" });
+            if (!isObject(op.params)) return reply(400, { error: "params must be an object" });
+            if (op.type === "alert.edit" && (!isObject(op.target) || typeof op.target.alertId !== "string" || !isObject(op.expect) || typeof op.expect.condition !== "string")) {
+              return reply(400, { error: "An edit needs target.alertId and expect.condition" });
+            }
+            const message = { id: op.id, type: op.type, createdAt: new Date().toISOString(), params: op.params, target: op.target, expect: op.expect };
+            await sqs.send(new SendMessageCommand({
+              QueueUrl: process.env.QUEUE_URL,
+              MessageBody: JSON.stringify(message),
+              MessageGroupId: "ops",
+              MessageDeduplicationId: op.id,
+            }));
+            return reply(202, { id: op.id, queued: true });
+          };
+
+  OpsFunctionUrl:
+    Type: AWS::Lambda::Url
+    Condition: HasOps
+    Properties:
+      TargetFunctionArn: !GetAtt OpsFunction.Arn
+      AuthType: NONE
+
+  # Since October 2025 a public function URL needs both permissions, or every
+  # request gets 403. InvokedViaFunctionUrl limits the second to URL calls, so
+  # this doesn't also open the function to direct Invoke from any account.
+  OpsFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasOps
+    Properties:
+      FunctionName: !Ref OpsFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  OpsFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasOps
+    Properties:
+      FunctionName: !Ref OpsFunction
+      Action: lambda:InvokeFunction
+      Principal: '*'
+      InvokedViaFunctionUrl: true
+
   Certificate:
     Type: AWS::CertificateManager::Certificate
     Condition: HasCustomDomain
@@ -146,6 +314,30 @@ Resources:
             S3OriginConfig:
               OriginAccessIdentity: ''
             OriginAccessControlId: !Ref OAC
+          - !If
+            - HasOps
+            - Id: OpsOrigin
+              # FunctionUrl is https://<id>.lambda-url.<region>.on.aws/; the origin wants the bare host.
+              DomainName: !Select [2, !Split ['/', !GetAtt OpsFunctionUrl.FunctionUrl]]
+              CustomOriginConfig:
+                OriginProtocolPolicy: https-only
+                OriginSSLProtocols: [TLSv1.2]
+            - !Ref AWS::NoValue
+        # Same origin as the page, so the POST needs no CORS. No basic-auth
+        # function here: the Lambda's token check is the gate for writes.
+        CacheBehaviors: !If
+          - HasOps
+          - - PathPattern: /api/*
+              TargetOriginId: OpsOrigin
+              ViewerProtocolPolicy: https-only
+              AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+              # AWS managed CachingDisabled.
+              CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+              # AWS managed AllViewerExceptHostHeader: forwards Authorization,
+              # but not Host, which a function URL rejects if it's the site's.
+              OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+              Compress: false
+          - !Ref AWS::NoValue
         DefaultCacheBehavior:
           TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
@@ -197,6 +389,12 @@ Resources:
               - Effect: Allow
                 Action: [s3:PutObject, s3:DeleteObject]
                 Resource: !Sub '${Bucket.Arn}/*'
+              - !If
+                - HasOps
+                - Effect: Allow
+                  Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
+                  Resource: !GetAtt OpsQueue.Arn
+                - !Ref AWS::NoValue
 
   PublishAccessKey:
     Type: AWS::IAM::AccessKey
@@ -221,3 +419,7 @@ Outputs:
   SecretAccessKey:
     Description: AWS_SECRET_ACCESS_KEY in .env (visible here only; store securely)
     Value: !GetAtt PublishAccessKey.SecretAccessKey
+  OpsQueueUrl:
+    Condition: HasOps
+    Description: OPS_QUEUE_URL in .env (enables `ops pull` and the page's editing controls)
+    Value: !Ref OpsQueue

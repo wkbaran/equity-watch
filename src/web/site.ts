@@ -14,6 +14,7 @@ import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Dashboard } from "../dashboard.js";
+import type { OpResult } from "../ops/apply.js";
 import type { AlertRow } from "./alertsPage.js";
 
 /** Static assets copied verbatim into the site directory. */
@@ -33,9 +34,16 @@ function assetDir(): string {
  */
 export interface SiteOptions {
   holdings: boolean;
+  /** Whether the page offers editing (the ops queue is configured). Absent means no. */
+  ops?: boolean;
 }
 
-export type SiteDocument = Dashboard & { site: SiteOptions };
+/**
+ * opResults are browser-only, like alerts.json: the page matches the ops it
+ * has pending against them. Not volatile: a new result is news and should
+ * publish.
+ */
+export type SiteDocument = Dashboard & { site: SiteOptions; opResults: OpResult[] };
 
 /**
  * The document as published. With holdings off, the holdings rows (share
@@ -44,20 +52,20 @@ export type SiteDocument = Dashboard & { site: SiteOptions };
  * "Holding MKS crossed below 110" headlines, story ordering, and "held position" in
  * priority breakdowns say nothing about size or value.
  */
-export function siteDocument(dashboard: Dashboard, options: SiteOptions): SiteDocument {
-  return { ...dashboard, holdings: options.holdings ? dashboard.holdings : [], site: options };
+export function siteDocument(dashboard: Dashboard, options: SiteOptions, opResults: OpResult[] = []): SiteDocument {
+  return { ...dashboard, holdings: options.holdings ? dashboard.holdings : [], site: options, opResults };
 }
 
 /**
  * dashboard.json is what the page polls; alerts.json is the full alert book,
  * fetched only by the Alerts view (see src/web/alertsPage.ts).
  */
-export function writeSite(dir: string, dashboard: Dashboard, options: SiteOptions, alerts: AlertRow[]): void {
+export function writeSite(dir: string, dashboard: Dashboard, options: SiteOptions, alerts: AlertRow[], opResults: OpResult[] = []): void {
   mkdirSync(dir, { recursive: true });
   for (const name of SITE_ASSETS) {
     copyFileSync(join(assetDir(), name), join(dir, name));
   }
-  writeFileSync(join(dir, "dashboard.json"), JSON.stringify(siteDocument(dashboard, options)));
+  writeFileSync(join(dir, "dashboard.json"), JSON.stringify(siteDocument(dashboard, options, opResults)));
   writeFileSync(join(dir, "alerts.json"), JSON.stringify({ generatedAt: dashboard.generatedAt, alerts }));
 }
 
