@@ -113,12 +113,26 @@
     const prefix = current?.tradingViewPrefixes?.[symbol];
     return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(prefix ? `${prefix}:${symbol}` : symbol)}`;
   };
-  // Every chart opens in one named tab, so clicking through tickers reuses it
-  // instead of piling up tabs. No rel="noopener" on these: a tab opened with
-  // noopener can't be found by name again, so each click would open a new one.
+  // Every chart opens in the same panel (openChart), which swaps its iframe's
+  // src per symbol, so clicking through tickers never piles up tabs. The href
+  // and target are kept as a fallback: a modified click (ctrl/cmd/shift) or a
+  // middle click skips our handler entirely and falls through to opening (or
+  // reusing, by name) a real tradingview.com tab instead. No rel="noopener" on
+  // that fallback: a tab opened with noopener can't be found by name again.
   const CHART_TARGET = "tradingview";
   const symbolLink = (symbol, href = tvUrl(symbol)) =>
-    h("a", { class: "sym", href, target: CHART_TARGET, text: symbol, onclick: (e) => e.stopPropagation() });
+    h("a", {
+      class: "sym",
+      href,
+      target: CHART_TARGET,
+      text: symbol,
+      onclick: (e) => {
+        e.stopPropagation();
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        openChart(symbol, href);
+      },
+    });
   // For generated sentences that open with the ticker ("MKS: watching since…").
   function linkLeadingSymbol(text, symbol) {
     return symbol && text.startsWith(symbol) ? [symbolLink(symbol), text.slice(symbol.length)] : [text];
@@ -1375,6 +1389,75 @@
     }
   }
 
+  // ---- chart panel ------------------------------------------------------------
+
+  // https://s.tradingview.com/embed-widget/advanced-chart/#<json> is what
+  // TradingView's own embed-widget-advanced-chart.js currently builds (read
+  // out of that script directly: it JSON-stringifies its settings object,
+  // including `studies`, into the URL hash - not query params, and not the
+  // older `widgetembed/?symbol=...` endpoint, which doesn't take `studies`).
+  // It's a cross-origin sandboxed frame with no postMessage API, so this
+  // panel can only choose what src to load - it never hears about
+  // symbol/timeframe/indicator changes made inside it.
+  //
+  // `studies_overrides` (the documented way to set a study's length) is
+  // unreliable on this endpoint - verified with Playwright against the live
+  // page, it repeatedly made the *whole* chart fall back to a blank default
+  // (light theme, no indicators), including on at least one run of a config
+  // that didn't even use it. Not a key-naming issue to chase, just flakiness
+  // in an undocumented endpoint - so no overrides of any kind here.
+  //
+  // "Moving Average Ribbon" (Pine std id "STD;MA%Ribbon", found by searching
+  // the chart's own Indicators picker and reading the id off the WebSocket
+  // frame it sends) sidesteps that entirely: it plots four SMAs, and its own
+  // out-of-the-box default lengths are exactly 20/50/100/200, so no override
+  // is needed to get them - confirmed by screenshotting the live rendered
+  // chart, not just the URL. `colorTheme` (not `theme`) is the key verified
+  // working in that same screenshot; don't swap it back without re-checking.
+  let chartSymbol = null;
+  let chartHref = null;
+  function chartEmbedUrl(href) {
+    let symbol = "";
+    try {
+      symbol = new URL(href, location.href).searchParams.get("symbol") ?? "";
+    } catch {
+      /* malformed href: fall through with no symbol, same as TradingView's own default */
+    }
+    const colorTheme = root.getAttribute("data-theme") === "light" ? "light" : "dark";
+    const settings = {
+      symbol,
+      interval: "D",
+      timezone: "America/New_York",
+      colorTheme,
+      style: "1",
+      autosize: true,
+      hide_side_toolbar: true,
+      allow_symbol_change: true,
+      studies: ["STD;MA%Ribbon"],
+    };
+    return `https://s.tradingview.com/embed-widget/advanced-chart/#${encodeURIComponent(JSON.stringify(settings))}`;
+  }
+
+  function openChart(symbol, href) {
+    chartSymbol = symbol;
+    chartHref = href;
+    $("chart-title").textContent = symbol;
+    $("chart-frame").src = chartEmbedUrl(href);
+    $("chart-backdrop").hidden = false;
+    $("chart-panel").hidden = false;
+    document.body.classList.add("chart-open");
+    $("chart-panel").focus();
+  }
+
+  function closeChart() {
+    chartSymbol = null;
+    chartHref = null;
+    $("chart-panel").hidden = true;
+    $("chart-backdrop").hidden = true;
+    document.body.classList.remove("chart-open");
+    $("chart-frame").src = "about:blank"; // stop the widget while it's hidden, not just visually hide it
+  }
+
   // ---- routing --------------------------------------------------------------
 
   // Views with their own hash; anything unrecognized is the overview.
@@ -1552,6 +1635,8 @@
       /* choice just won't persist */
     }
     updateThemeLabel();
+    // The widget only reads theme at load, so an open chart needs a fresh src.
+    if (chartSymbol !== null) $("chart-frame").src = chartEmbedUrl(chartHref);
   });
   updateThemeLabel();
 
@@ -1579,8 +1664,12 @@
   });
   $("drawer-close").addEventListener("click", closeDrawer);
   $("backdrop").addEventListener("click", closeDrawer);
+  $("chart-close").addEventListener("click", closeChart);
+  $("chart-backdrop").addEventListener("click", closeChart);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && openDrawerKey !== null) closeDrawer();
+    if (e.key !== "Escape") return;
+    if (chartSymbol !== null) closeChart();
+    else if (openDrawerKey !== null) closeDrawer();
   });
   window.addEventListener("hashchange", applyRoute);
 

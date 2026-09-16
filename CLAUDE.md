@@ -414,3 +414,50 @@ groups by bare symbol (the alert engine's symbol+side uniqueness rule, the
 profile cache) will silently merge two different instruments. `LKFT` also
 has `GLPG Crossing 35.19` as its description — a post-rename row where the
 `Symbol` and `Description` disagree.
+
+## The dashboard's TradingView chart panel: studies_overrides is a dead end, use indicators with the right defaults instead
+
+`web/app.js`'s `openChart`/`chartEmbedUrl` load a chart in an iframe pointed
+at `https://s.tradingview.com/embed-widget/advanced-chart/#<json>` — the
+current URL scheme TradingView's own `embed-widget-advanced-chart.js` builds
+(confirmed by reading that script directly: it JSON-stringifies its settings
+into the URL hash, not query params). It's the free, unauthenticated,
+cross-origin widget — no postMessage API, so the panel can only choose what
+`src` to load; it never hears about symbol, timeframe, or indicator changes
+made inside it.
+
+`symbol`, `interval`, `colorTheme` (not `theme` — both parse, but only
+`colorTheme` was confirmed live alongside a working `studies` entry),
+`autosize`, `hide_side_toolbar`, and `allow_symbol_change` all work reliably
+in that hash JSON (verified with Playwright against the live page,
+screenshotting the actual rendered iframe, not just checking the `src` we
+built). **`studies_overrides` does not.** Every config that included it
+rendered as if the hash were empty entirely — light theme, no indicators,
+none of the other settings applied either — and on one run the *same* config
+without any override-shaped key failed the same way once too. That
+inconsistency means it isn't a key-naming problem to chase: this is
+flakiness in an undocumented endpoint, not a spec to satisfy. Don't spend
+more time on `studies_overrides` here.
+
+The `studies` array itself (no overrides) renders reliably — the fix was
+picking a study whose own defaults are already what's wanted, not fighting
+to override one. `"STD;MA%Ribbon"` ("Moving Average Ribbon") plots four SMAs
+and ships with exactly 20/50/100/200 as its out-of-the-box lengths, so it's
+preset in `chartEmbedUrl` with nothing else needed. That id is a Pine
+standard-library id, not the legacy `NAME@tv-basicstudies` family (e.g.
+`MASimple@tv-basicstudies`) documented elsewhere — found by driving the
+chart's own Indicators search in Playwright and reading the real id off the
+`create_study` WebSocket frame it sent, not by guessing from tutorials.
+If another indicator needs preloading, that's the fastest way to get its
+real id and confirm its actual default inputs — searching TradingView's own
+docs/tutorials for `tv-basicstudies` names turns up stale or wrong answers.
+
+Verifying this kind of thing needs an actual browser: `node --check` and
+`curl` can confirm markup exists and endpoints return 200, but they can't
+tell you a `hidden` attribute isn't visually hidden, that a config key
+silently no-ops, or what an indicator's real id and defaults are. Use
+Playwright (`playwright/server.ts` builds a fixture server from the real
+document builders; `npm run test:ui` runs the suite) — it's already wired up
+and can screenshot into cross-origin iframe content, and capture the
+WebSocket frames such a page sends, neither of which our own page's JS can
+ever read.

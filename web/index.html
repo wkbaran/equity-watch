@@ -169,6 +169,24 @@
   }
   .drawer-close { float: right; }
   .drawer-title { font-size: 1.1rem; margin: 0.25rem 0 1rem; padding-right: 4rem; }
+  /* Sits above the drawer (a ticker inside a trigger/alert drawer opens the
+     chart on top of it), in one shared panel that swaps its iframe's src per
+     symbol rather than opening a new tab per ticker. */
+  .chart-backdrop { z-index: 21; }
+  .chart-panel {
+    position: fixed; inset: 4vh 4vw; z-index: 22; flex-direction: column;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 1rem 1.25rem; outline: none;
+  }
+  /* display must stay unset in the base rule above: an author-stylesheet
+     `display` on this class overrides the UA stylesheet's `[hidden] { display:
+     none }` even while the hidden attribute is present, at equal specificity. */
+  .chart-panel:not([hidden]) { display: flex; }
+  .chart-panel iframe { flex: 1; width: 100%; border: 0; border-radius: 6px; }
+  body.chart-open { overflow: hidden; }
+  @media (max-width: 700px) {
+    .chart-panel { inset: 2vh 2vw; padding: 0.6rem; }
+  }
   .drawer-sub { font-size: 0.9rem; margin: 1.5rem 0 0.5rem; color: var(--subtext); }
   dl.kv-list { display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 1rem; margin: 0; }
   dl.kv-list dt { color: var(--subtext); font-size: 0.85rem; }
@@ -300,6 +318,13 @@
 <aside id="drawer" class="drawer" tabindex="-1" aria-label="Details" hidden>
   <button id="drawer-close" class="drawer-close" aria-label="Close details">Close</button>
   <div id="drawer-body"></div>
+</aside>
+
+<div id="chart-backdrop" class="backdrop chart-backdrop" hidden></div>
+<aside id="chart-panel" class="chart-panel" tabindex="-1" aria-label="Chart" hidden>
+  <button id="chart-close" class="drawer-close" aria-label="Close chart">Close</button>
+  <h2 id="chart-title" class="drawer-title"></h2>
+  <iframe id="chart-frame" title="TradingView chart"></iframe>
 </aside>
 
 <div id="toasts" aria-live="polite"></div>
