@@ -5,6 +5,12 @@
  * there is no separate watcher. A message is deleted only after its result is
  * logged. A crash in between redelivers it, and the op log turns the repeat
  * into a no-op (see src/ops/apply.ts).
+ *
+ * It drains until the queue is empty; `max` is an opt-in valve, not a default.
+ * The work is local and cheap, and the publish that follows is one document
+ * however many ops were applied. The scheduled task is killed at ten minutes,
+ * but that is safe for the same reason a crash is: whatever was applied is
+ * logged and deleted, and the next run finishes the rest.
  */
 
 import { DeleteMessageCommand, ReceiveMessageCommand, SQSClient } from "@aws-sdk/client-sqs";

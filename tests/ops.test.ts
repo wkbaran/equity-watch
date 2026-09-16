@@ -334,7 +334,21 @@ describe("pullOps", () => {
     expect(existsSync(opLogFile) ? readFileSync(opLogFile, "utf-8") : "").toBe("");
   });
 
-  it("respects --max", async () => {
+  // The default is no limit: a burst bigger than one batch must not need a second run.
+  it("drains a queue larger than a receive batch in one call", async () => {
+    const bodies = Array.from({ length: 25 }, (_, i) => addBody(`op-burst-${String(i).padStart(3, "0")}`, "AAA"));
+    const queue = fakeQueue(bodies);
+    const summary = await pullOps(
+      queue,
+      { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) },
+      { max: Number.POSITIVE_INFINITY, waitSeconds: 0, log }
+    );
+    // Each add supersedes the previous alert on the same symbol and side, so all 25 apply.
+    expect(summary).toMatchObject({ applied: 25, duplicates: 0, rejected: 0, error: null });
+    expect(queue.removed).toHaveLength(25);
+  });
+
+  it("respects --max when one is given", async () => {
     const queue = fakeQueue([addBody("op-pull-005", "AAA"), addBody("op-pull-006", "AAA"), addBody("op-pull-007", "AAA")]);
     await pullOps(queue, { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) }, { max: 1, waitSeconds: 0, log });
     expect(queue.removed).toEqual(["r0"]);

@@ -242,6 +242,12 @@ Things that look simplifiable and aren't:
   share count, basis, or price, not even a rejected one. The page shows details
   from its own record of what it sent. A test asserts that no holdings message
   contains a digit.
+- **`ops pull` drains until the queue is empty.** `--max` exists for manual runs;
+  it has no default, and the scheduled script passes none. It used to default to
+  50, which silently left the rest of a 70-change burst queued until the next run.
+  Overrunning the task's ten-minute limit is safe — an interrupted drain resumes —
+  but the published result list is capped separately (`recentOpResults`), so a
+  burst past that cap still leaves pending rows on the page with no result.
 - **Parsing an op checks only its envelope** (id and type). A bad target, expect,
   or params becomes a logged rejection. If it were dropped as malformed, the
   page would wait forever for a result.

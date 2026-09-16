@@ -1863,7 +1863,8 @@ interface OpsApplyOpts extends OpsCommonOpts {
 
 interface OpsPullOpts extends OpsCommonOpts {
   wait: number;
-  max: number;
+  /** Undefined means no limit: drain until the queue is empty. */
+  max?: number;
 }
 
 /** Builds the Schwab client on first use, so an op that needs no quote works without a login. */
@@ -1911,7 +1912,7 @@ async function cmdOpsPull(opts: OpsPullOpts): Promise<void> {
   const summary = await pullOps(
     queue,
     { alertsFile: opts.alertsFile, holdingsFile: opts.holdingsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) },
-    { max: opts.max, waitSeconds: opts.wait, log: (line) => console.log(line) }
+    { max: opts.max ?? Number.POSITIVE_INFINITY, waitSeconds: opts.wait, log: (line) => console.log(line) }
   );
   const total = summary.applied + summary.rejected + summary.duplicates + summary.malformed;
   if (total > 0) {
@@ -2151,7 +2152,7 @@ function buildProgram(): Command {
   withOpsCommon(opsCmd.command("pull"))
     .description("Apply changes queued from the dashboard (OPS_QUEUE_URL in .env); does nothing when that's unset")
     .option("--wait <seconds>", "Long-poll this long for the first op (0-20)", (v) => parseInt(v, 10), 0)
-    .option("--max <n>", "Apply at most this many ops", (v) => parseInt(v, 10), 50)
+    .option("--max <n>", "Stop after this many ops (default: no limit, so one run empties the queue)", (v) => parseInt(v, 10))
     .action((opts: OpsPullOpts) => cmdOpsPull(opts));
 
   withOpsCommon(opsCmd.command("apply"))
