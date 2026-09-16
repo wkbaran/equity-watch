@@ -3,26 +3,29 @@ import { COVER_ABOVE_PRICE, coverLevel } from "../src/holdings/cover.js";
 import { ignoredSymbols, isIgnored } from "../src/tuning.js";
 
 describe("coverLevel", () => {
-  it("is 10% above the current price, whatever the basis", () => {
-    // Basis no longer affects the level at all - only whether the position is
-    // interesting elsewhere.
-    expect(coverLevel(100, 95).level).toBe(104.5);
+  it("is 10% above price when the position is up", () => {
     expect(coverLevel(100, 108).level).toBe(118.8);
     expect(coverLevel(12.97, 17.3).level).toBe(19.03);
   });
 
-  it("gives a beaten-down position a reachable level instead of demanding a recovery", () => {
-    // Down 69%: anchoring to basis would ask for a near-triple before saying
-    // anything. Anchoring to price asks for a 10% bounce.
+  it("is 10% above basis when price is below it", () => {
+    // The higher of the two references, so an underwater position is asked to
+    // clear its cost before it says anything.
+    expect(coverLevel(100, 95).level).toBe(110);
+    expect(coverLevel(22.24, 21.12).level).toBe(24.46);
+  });
+
+  it("asks a deep loser for a full recovery, which can be far away", () => {
+    // Down 69%: basis+10% is more than triple the price. Accepted deliberately;
+    // it only applies to a position with no alert, i.e. normally a fresh buy.
     const r = coverLevel(4.45, 1.38);
-    expect(r.level).toBe(1.52);
+    expect(r.level).toBe(4.9);
     expect(r.pctFromBasis).toBeCloseTo(-69, 0);
   });
 
-  it("gives the same answer either side of basis", () => {
-    // The rule has no branches, so nothing changes as price crosses basis.
-    expect(coverLevel(100, 100).level).toBe(coverLevel(50, 100).level);
-    expect(coverLevel(1000, 100).level).toBe(coverLevel(1, 100).level);
+  it("takes whichever reference is higher", () => {
+    expect(coverLevel(50, 100).level).toBe(110);
+    expect(coverLevel(1000, 100).level).toBe(1100);
   });
 
   it("never places a level at or below the live price", () => {
@@ -42,6 +45,10 @@ describe("coverLevel", () => {
   it("uses one flat percentage, with no volatility scaling", () => {
     expect(coverLevel(8.4, 11).level).toBe(12.1);
     expect(COVER_ABOVE_PRICE).toBe(0.1);
+  });
+
+  it("stays above the live price on a fresh buy, where price and basis are equal", () => {
+    expect(coverLevel(50, 50).level).toBe(55);
   });
 });
 

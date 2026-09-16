@@ -1,31 +1,28 @@
 /**
  * Choosing a starting alert level for a position that has none.
  *
- * The rule: **10% above the current price.**
+ * The rule: **10% above the current price or the basis, whichever is higher**
+ * (the user's call, 2026-09-16).
  *
- * This started as "10% above basis, or the current price, whichever is
- * higher", but every branch collapsed onto the same answer once each case was
- * worked through, and basis dropped out of the level entirely:
+ * It was price-only for a while, on the argument that basis+10% fires instantly
+ * on a position that has already run and is unreachable on one that has fallen.
+ * Taking the higher of the two keeps the first half of that (above basis, price
+ * is higher, so price wins and nothing fires instantly) and accepts the second:
+ * on a position under water the level now sits at basis+10%, which is a target
+ * worth hearing about rather than a 10% bounce off a low.
  *
- *   - **Well above basis** (a position up 33%): basis+10% is already in the
- *     past and sits far below price, so it would fire instantly and mean
- *     nothing. Price is the only sensible reference.
- *   - **Below basis** (a position down 69%): basis+10% is a demand that the
- *     position roughly triple before you hear anything. Price again.
- *   - **Between the two**: price+10% is above basis+10% whenever price is
- *     above basis, so price wins there as well.
+ * The cost is real on a deep loser: at 69% down, basis+10% is more than triple
+ * the price, so the alert is effectively silent. That only matters for a
+ * position with no alert at all, which in practice means a fresh buy, where
+ * price and basis are close. Watch for it if an old, beaten-down position ever
+ * loses its alert.
  *
- * So one number, one reference: tell me when this moves 10% up from here.
- * Basis still decides *whether* a position is interesting elsewhere (the
- * above-basis and stagnant alerts in engine.ts) - it just doesn't set this
- * level. Deliberately not volatility-scaled: a flat 10% is the whole rule.
- *
- * A useful side effect: the level is always comfortably clear of the live
- * price, which matters because an alert *at* the live price has no side to
- * fire on and `addAlert` rejects it outright.
+ * Deliberately not volatility-scaled: a flat 10% is the whole rule. The level
+ * is also always clear of the live price - an alert *at* the live price has no
+ * side to fire on and `addAlert` rejects it outright.
  */
 
-/** Fraction above the current price used as the starting target. */
+/** Fraction above the reference (the higher of price and basis) used as the starting target. */
 export const COVER_ABOVE_PRICE = 0.1;
 
 export interface CoverLevel {
@@ -40,7 +37,7 @@ function round2(n: number): number {
 
 export function coverLevel(blendedBasis: number, currentPrice: number): CoverLevel {
   return {
-    level: round2(currentPrice * (1 + COVER_ABOVE_PRICE)),
+    level: round2(Math.max(currentPrice, blendedBasis) * (1 + COVER_ABOVE_PRICE)),
     pctFromBasis: blendedBasis > 0 ? ((currentPrice - blendedBasis) / blendedBasis) * 100 : 0,
   };
 }

@@ -12,5 +12,7 @@ cd "$(dirname "$0")/.."
 echo "=== $(date -Is) ==="
 # Dashboard changes first, so the check evaluates them. A failure doesn't stop the check.
 node dist/cli.js ops pull || echo "ops pull failed; continuing with the check."
+# Cover any position that has no alert, whatever added it. Free when all are covered.
+node dist/cli.js holdings cover || echo "holdings cover failed; continuing with the check."
 node dist/cli.js alert check
 node dist/cli.js dashboard --site site --publish --skip-unchanged --quiet

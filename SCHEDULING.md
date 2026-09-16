@@ -236,6 +236,9 @@ weakness" above).
   changes queued from the page. It needs `OPS_QUEUE_URL` in `.env` (stack output
   `OpsQueueUrl`, with `EnableOps=true`). Without it, the step logs "Ops disabled".
   A failed pull doesn't stop the check, and its ops stay queued.
+- **New positions:** each run also does `holdings cover`, so any held symbol
+  without a live alert gets one at 10% above the higher of price and basis,
+  however the position was added. It fetches no quotes when nothing is uncovered.
 - **Logs:** `logs\check-YYYY-MM-DD.log`, kept 14 days. Task Scheduler's History
   tab shows each run's result code.
 

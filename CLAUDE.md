@@ -335,14 +335,23 @@ covers both, `npm run typecheck` runs it, and `npm test` runs it before vitest.
 If you add a field to an Alert/RevisitEntry/Lot, `npm test` will now tell you
 which fixtures need it.
 
-## `holdings cover` anchors to price, not basis — on purpose
+## `holdings cover` takes the higher of price and basis
 
-`coverLevel` is 10% above the *current price*, and basis does not enter the
-calculation. This looks like an oversight and isn't: anchoring to basis fires
-instantly on a position that has already run (basis+10% is in the past) and is
-unreachable on one that has fallen (a 69% loser would have to nearly triple).
-Price+10% also beats basis+10% whenever price is above basis, so the basis
-branch only ever applied to losers, where it was worst. Don't reintroduce it.
+`coverLevel` is 10% above the *higher* of the current price and the blended
+basis (the user's call, 2026-09-16; it was price-only before, and the git
+history and this file both used to say basis must never come back).
+
+Above basis, price is the higher reference, so this behaves exactly as the
+price-only rule did. Under water it anchors to basis, which is what the user
+wants to hear about: clearing cost, not a 10% bounce off a low. The known cost
+is a deep loser — at 69% down the level is more than triple the price, so the
+alert is effectively silent. It only ever applies to a position with **no live
+alert**, which normally means a fresh buy where the two references are close.
+
+`holdings cover` runs in the scheduled script (after `ops pull`, before
+`alert check`), so a lot added from the dashboard, a CSV import, or the CLI is
+covered the same way within one cycle. It exits before fetching a single quote
+when every held symbol already has an alert, so a quiet run costs nothing.
 
 Round *before* comparing any level against a live price. `100 * 1.1` is
 `110.00000000000001`, which beats a price of `110` on a raw comparison but

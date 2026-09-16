@@ -117,6 +117,14 @@ if ($code -ne 0) {
     Write-Log "Continuing with the check anyway."
 }
 
+# Give any position that has no alert a starting one, so a lot added from the
+# dashboard, an import, or the CLI is all handled the same way. It costs nothing
+# when every position is already covered: it exits before fetching any quote.
+$code = Invoke-Logged "holdings cover" "node" @($cli, "holdings", "cover")
+if ($code -ne 0) {
+    Write-Log "Continuing with the check anyway."
+}
+
 $code = Invoke-Logged "alert check" "node" @($cli, "alert", "check")
 if ($code -ne 0) {
     Stop-Run $code
