@@ -110,6 +110,27 @@ Re-fire suppression differs per kind and is *not* uniform: static alerts use
 use `mutedUntil` because a crossed volume threshold stays crossed and would
 otherwise fire on every poll.
 
+## The one-alert-per-symbol+side rule is settled differently per caller
+
+`addAlert` takes an `onConflict` option (2026-09-16), and the two callers that
+pass `"replace"` are not an oversight:
+
+- **`alert seed` and `holdings cover` use the default `"keep-closest"`**: a
+  candidate farther from the live price than the live alert already on that
+  side is rejected. A bulk re-level of hundreds of TradingView rows must not
+  talk an existing, nearer alert outwards. (`holdings cover` only ever touches
+  symbols with no live alert, so it never reaches the rule.)
+- **`alert add` and the dashboard's queued `alert.add` pass `"replace"`**: a
+  typed level is a stated intention, not a suggestion. `alert add EIPI 25`
+  cancels the alert at 28 rather than making the user run `alert remove` first.
+
+Don't collapse these back into one policy, and don't move the choice into
+`parseAddInput` — the parser is shared by the CLI and the page precisely so
+both *validate* identically; the conflict policy is the caller's, not the
+input's. The CLI and ops messages both name the replaced alert's condition
+(`describeAlertCondition`), because under `"replace"` the thing being cancelled
+may be the nearer of the two and the user should see what they gave up.
+
 ## Static alerts watch one direction, and crossings back fold onto the fire
 
 Until 2026-09-14 a static alert fired on *any* change of `lastKnownSide`, so

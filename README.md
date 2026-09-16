@@ -263,11 +263,14 @@ For static/trailing, whether it's an "above" or "below" alert is
 *inferred* by comparing `--level`/`--near` to the live price at the moment
 you add it. You don't choose it, and for a static alert it isn't the
 direction: a level below the price with the default `--direction up` fires
-only when price drops under it and then comes back up through it. Adding a new alert that's closer to
-the live price than an existing live one on the same symbol+side replaces
-it (regardless of kind); adding one that's farther is rejected. Above and
-below coexist independently, so you can watch both sides of a symbol at
-once. Standalone volume alerts sit outside this rule entirely (no natural
+only when price drops under it and then comes back up through it. Only one
+live alert watches a given symbol+side, so adding another replaces it
+(regardless of kind). How the conflict is settled depends on who is adding:
+`alert add` and the dashboard's add always replace, because you typed the
+level you want; `alert seed` keeps whichever is closer to the live price and
+rejects a farther candidate, so a bulk re-level can't talk an existing alert
+outwards. Above and below coexist independently, so you can watch both sides
+of a symbol at once. Standalone volume alerts sit outside this rule entirely (no natural
 "side" to dedup on) and just coexist freely.
 
 For a static alert combined with a volume condition, a price crossing that

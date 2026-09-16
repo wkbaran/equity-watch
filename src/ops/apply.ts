@@ -161,7 +161,9 @@ async function applyAdd(op: Op, ctx: ApplyContext): Promise<Outcome> {
   if (!parsed.ok) {
     return reject(symbol, null, parsed.error);
   }
-  const result = await addAlert(ctx.alertsFile, parsed.value, ctx.market);
+  // Same as a typed `alert add`: the page's add states the level it wants, so
+  // it replaces the alert already on that side even when that one is nearer.
+  const result = await addAlert(ctx.alertsFile, parsed.value, ctx.market, { onConflict: "replace" });
   if (result.rejectedReason !== null || result.added === null) {
     return reject(parsed.value.symbol, null, `Not added: ${result.rejectedReason ?? "unknown reason"}`);
   }

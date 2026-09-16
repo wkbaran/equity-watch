@@ -191,6 +191,17 @@ describe("applyOp", () => {
     expect(loadOpLog(opLogFile)).toEqual([result]);
   });
 
+  it("replaces a nearer alert on the same side, as a typed add does", async () => {
+    const market = fakeMarket({ GMED: 75 });
+    const near = await applyOp(add({ symbol: "GMED", level: 78 }), { alertsFile, opLogFile, market, now: NOW });
+    const far = await applyOp(add({ symbol: "GMED", level: 90 }, "op-add-0002"), { alertsFile, opLogFile, market, now: NOW });
+    expect(far.result.ok).toBe(true);
+    expect(far.result.message).toContain(`Replaced alert ${near.result.alertId}`);
+    const live = loadAlerts(alertsFile).filter((a) => a.status === "live");
+    expect(live).toHaveLength(1);
+    expect(live[0].id).toBe(far.result.alertId);
+  });
+
   it("applies the same op id only once", async () => {
     const market = fakeMarket({ GMED: 75 });
     const op = add({ symbol: "GMED", level: 80.5 });

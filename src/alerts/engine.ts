@@ -397,7 +397,28 @@ export interface AddAlertResult {
   rejectedReason: string | null;
 }
 
-export async function addAlert(path: string, input: AddAlertInput, market: MarketData): Promise<AddAlertResult> {
+export interface AddAlertOptions {
+  /**
+   * What to do when a live alert already watches this symbol on this side.
+   *
+   * - `keep-closest` (the default) rejects a candidate that sits farther from
+   *   the live price than the alert already there. That is what a bulk import
+   *   wants: `alert seed` re-levels hundreds of rows and must not talk an
+   *   existing, nearer alert down to a level price has to travel further to
+   *   reach.
+   * - `replace` always cancels the incumbent. A typed `alert add` is a stated
+   *   intention, not a suggestion — the user is moving the level, and a
+   *   rejection there just means typing `alert remove` first.
+   */
+  onConflict?: "keep-closest" | "replace";
+}
+
+export async function addAlert(
+  path: string,
+  input: AddAlertInput,
+  market: MarketData,
+  options: AddAlertOptions = {}
+): Promise<AddAlertResult> {
   const quotes = await market.getQuotes([input.symbol]);
   const quote = quotes.get(input.symbol);
   if (quote === undefined) {
@@ -501,7 +522,7 @@ export async function addAlert(path: string, input: AddAlertInput, market: Marke
 
   if (existing) {
     const existingDistance = Math.abs(livePrice - effectiveTrigger(existing));
-    if (candidateDistance > existingDistance) {
+    if (options.onConflict !== "replace" && candidateDistance > existingDistance) {
       return {
         added: null,
         replaced: null,

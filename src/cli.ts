@@ -576,7 +576,9 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
   }
 
   const market = buildMarketData(opts);
-  const result = await addAlert(opts.alertsFile, parsed.value, market);
+  // A typed add says what the level should be now. Unlike `alert seed`, it
+  // replaces the alert already on that side even when it sits farther out.
+  const result = await addAlert(opts.alertsFile, parsed.value, market, { onConflict: "replace" });
 
   if (result.rejectedReason) {
     console.log(`Not added: ${result.rejectedReason}`);
@@ -599,8 +601,8 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
   const direction = a.kind === "static" ? `, fires on ${a.direction === "either" ? "either crossing" : `${a.direction} crosses`}` : "";
   if (result.replaced) {
     console.log(
-      `Replaced ${result.replaced.kind} alert ${result.replaced.id} — added ${a.kind} alert ${a.id} ` +
-        `(${a.symbol}, ${a.side}, trigger ${trigger}${andVolume}${direction}).`
+      `Replaced ${result.replaced.kind} alert ${result.replaced.id} (${describeAlertCondition(result.replaced)}) — ` +
+        `added ${a.kind} alert ${a.id} (${a.symbol}, ${a.side}, trigger ${trigger}${andVolume}${direction}).`
     );
   } else {
     console.log(`Added ${a.kind} alert ${a.id} (${a.symbol}, ${a.side}, trigger ${trigger}${andVolume}${direction}).`);

@@ -659,6 +659,19 @@ describe("addAlert", () => {
     expect(untouched.status).toBe("live");
   });
 
+  it("replaces a nearer alert anyway when the caller asks to (a typed add, not a bulk seed)", async () => {
+    const market = fakeMarket({ prices: { TEST: 100 } });
+    const close = await addAlert(path, { kind: "static", symbol: "TEST", level: 95 }, market);
+
+    const farther = await addAlert(path, { kind: "static", symbol: "TEST", level: 80 }, market, { onConflict: "replace" });
+    expect(farther.rejectedReason).toBeNull();
+    expect(farther.replaced?.id).toBe(close.added!.id);
+
+    const stored = loadAlerts(path);
+    expect(stored.find((a) => a.id === close.added!.id)!.status).toBe("cancelled");
+    expect(stored.find((a) => a.id === farther.added!.id)!.status).toBe("live");
+  });
+
   it("lets above and below alerts coexist on the same symbol", async () => {
     const market = fakeMarket({ prices: { TEST: 100 } });
     const below = await addAlert(path, { kind: "static", symbol: "TEST", level: 90 }, market);
