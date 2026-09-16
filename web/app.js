@@ -300,13 +300,24 @@
     return true;
   }
 
-  function resolvePending(results) {
+  function resolvePending(results, processedThrough) {
     if (pendingOps.length === 0) return;
     const byId = new Map((results ?? []).map((r) => [r.id, r]));
     const done = pendingOps.filter((p) => byId.has(p.id));
-    if (done.length === 0) return;
-    pendingOps = pendingOps.filter((p) => !byId.has(p.id));
+    // A drain applies everything queued before it started, so anything older
+    // than the watermark is done even when its result is no longer published
+    // (the document keeps only the most recent ones).
+    const cutoff = processedThrough ? new Date(processedThrough).getTime() : null;
+    const processed = cutoff === null ? [] : pendingOps.filter((p) => !byId.has(p.id) && new Date(p.queuedAt).getTime() < cutoff);
+    if (done.length === 0 && processed.length === 0) return;
+    const retired = new Set([...done, ...processed].map((p) => p.id));
+    pendingOps = pendingOps.filter((p) => !retired.has(p.id));
     savePending();
+    if (processed.length === 1) {
+      notice(`${processed[0].summary}: applied. Its result is no longer published.`, true);
+    } else if (processed.length > 1) {
+      notice(`${processed.length} earlier changes were applied. Their results are no longer published.`, true);
+    }
     for (const p of done) {
       const r = byId.get(p.id);
       // Holdings results are published, so they carry no sizes or prices; the
@@ -1500,7 +1511,7 @@
     }
     saveSeen(seen);
     render(d);
-    resolvePending(d.opResults);
+    resolvePending(d.opResults, d.opsProcessedThrough);
     // Re-read on every poll: the vault is republished alongside the results, and prices move.
     refreshVault();
     if (baseView === "alerts" || parseRoute().drawer?.type === "alert") ensureAlerts(true);

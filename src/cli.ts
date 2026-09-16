@@ -1739,6 +1739,15 @@ function defaultDashboardPath(now: Date): string {
 }
 
 const PUBLISH_STATE_PATH = join(".cache", "web_publish.json");
+const OPS_PULL_STATE_PATH = join(".cache", "ops_pull.json");
+
+/** When the last clean drain began, or null if `ops pull` has never finished one. */
+function loadOpsWatermark(): string | null {
+  if (!existsSync(OPS_PULL_STATE_PATH)) {
+    return null;
+  }
+  return (JSON.parse(readFileSync(OPS_PULL_STATE_PATH, "utf-8")) as { processedThrough: string }).processedThrough;
+}
 
 function loadPublishState(): PublishState | null {
   return existsSync(PUBLISH_STATE_PATH) ? (JSON.parse(readFileSync(PUBLISH_STATE_PATH, "utf-8")) as PublishState) : null;
@@ -1764,6 +1773,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   };
   // Results of ops applied from the page, so it can resolve what it has pending.
   const opResults = recentOpResults(loadOpLog(DEFAULT_OP_LOG));
+  const opsProcessedThrough = loadOpsWatermark();
   // Chart links need each symbol's exchange; a bare symbol can open a foreign listing.
   const exchanges = exchangesFromProfiles(listCachedProfiles(opts.profileCacheDir));
   const unlisted = new Set(alerts.filter((a) => a.status === "live" && !exchanges.has(a.symbol)).map((a) => a.symbol));
@@ -1792,7 +1802,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   if (opts.publish && opts.skipUnchanged) {
     const quoteless = build(new Map());
     const fingerprint = siteFingerprint(
-      siteDocument(quoteless, siteOptions, opResults),
+      siteDocument(quoteless, siteOptions, opResults, opsProcessedThrough),
       buildAlertRows(alerts, new Map(), ignored, exchanges),
       vaultToken === null ? null : vaultContents(quoteless.holdings, holdings)
     );
@@ -1835,11 +1845,11 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
 
   // Fingerprint what is actually published, so holdings changes don't trigger
   // a publish while the holdings section is off.
-  const siteDashboard = siteDocument(dashboard, siteOptions, opResults);
+  const siteDashboard = siteDocument(dashboard, siteOptions, opResults, opsProcessedThrough);
   const alertRows = buildAlertRows(alerts, quotes, ignored, exchanges);
   const vault = vaultToken === null ? null : vaultContents(dashboard.holdings, holdings);
   if (siteDir !== undefined) {
-    writeSite(siteDir, dashboard, siteOptions, alertRows, opResults, vault === null ? null : sealVault(vault, vaultToken!));
+    writeSite(siteDir, dashboard, siteOptions, alertRows, opResults, vault === null ? null : sealVault(vault, vaultToken!), opsProcessedThrough);
     console.log(`Wrote site to ${siteDir}/${siteOptions.holdings ? "" : " (holdings excluded; set web.holdings in the config to include)"}`);
   }
 
@@ -1914,6 +1924,13 @@ async function cmdOpsPull(opts: OpsPullOpts): Promise<void> {
     { alertsFile: opts.alertsFile, holdingsFile: opts.holdingsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) },
     { max: opts.max ?? Number.POSITIVE_INFINITY, waitSeconds: opts.wait, log: (line) => console.log(line) }
   );
+  // A clean drain is a watermark: everything queued before it started has been
+  // applied. The page retires pending rows older than this, so a burst bigger
+  // than the published result list doesn't leave rows waiting forever.
+  if (summary.error === null) {
+    mkdirSync(dirname(OPS_PULL_STATE_PATH), { recursive: true });
+    writeFileSync(OPS_PULL_STATE_PATH, JSON.stringify({ processedThrough: summary.startedAt }));
+  }
   const total = summary.applied + summary.rejected + summary.duplicates + summary.malformed;
   if (total > 0) {
     console.log(

@@ -33,6 +33,8 @@ const TYPES: Record<string, string> = { html: "text/html", js: "text/javascript"
 type QueuedOp = { id: string; type: string; params: Record<string, unknown>; target?: Record<string, string> };
 let ops: QueuedOp[] = [];
 let released = false;
+/** /__release?results=none: set the watermark but publish no results, as a drain past the result cap would. */
+let suppressResults = false;
 
 function resultFor(op: QueuedOp): OpResult {
   const appliedAt = new Date().toISOString();
@@ -51,7 +53,12 @@ function documents() {
   const quotes = new Map<string, Quote>(Object.entries(PRICES).map(([symbol, lastPrice]) => [symbol, { lastPrice, totalVolume: 0 }]));
   const dashboard = buildDashboard({ alerts: FIXTURE_ALERTS, revisits: [], holdings: HOLDINGS, quotes, now: new Date() });
   return {
-    "dashboard.json": siteDocument(dashboard, { holdings: false, ops: true, vault: true }, released ? ops.map(resultFor) : []),
+    "dashboard.json": siteDocument(
+      dashboard,
+      { holdings: false, ops: true, vault: true },
+      released && !suppressResults ? ops.map(resultFor) : [],
+      released ? new Date().toISOString() : null
+    ),
     "alerts.json": { generatedAt: dashboard.generatedAt, alerts: buildAlertRows(FIXTURE_ALERTS, quotes, new Set()) },
     "vault.json": sealVault(vaultContents(dashboard.holdings, HOLDINGS), OPS_TOKEN),
   };
@@ -62,7 +69,8 @@ createServer(async (req, res) => {
     res.writeHead(status, { "content-type": type, "cache-control": "no-store" });
     res.end(typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body));
   };
-  const path = new URL(req.url ?? "/", "http://localhost").pathname.replace(/^\//, "") || "index.html";
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const path = url.pathname.replace(/^\//, "") || "index.html";
 
   if (path === "api/ops") {
     let body = "";
@@ -75,12 +83,14 @@ createServer(async (req, res) => {
   }
   if (path === "__release") {
     released = true;
-    return send(200, { released });
+    suppressResults = url.searchParams.get("results") === "none";
+    return send(200, { released, suppressResults });
   }
   if (path === "__ops") return send(200, ops);
   if (path === "__reset") {
     ops = [];
     released = false;
+    suppressResults = false;
     return send(200, { reset: true });
   }
   if (path === "dashboard.json" || path === "alerts.json" || path === "vault.json") return send(200, documents()[path]);

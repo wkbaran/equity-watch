@@ -315,7 +315,8 @@ describe("pullOps", () => {
   it("applies, logs, then deletes each message, across batches", async () => {
     const queue = fakeQueue([addBody("op-pull-001", "AAA"), "not json", addBody("op-pull-002", "NOPE"), addBody("op-pull-001", "AAA")]);
     const summary = await pullOps(queue, { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) }, { max: 10, waitSeconds: 20, log });
-    expect(summary).toEqual({ applied: 1, rejected: 1, duplicates: 1, malformed: 1, error: null });
+    expect(summary).toMatchObject({ applied: 1, rejected: 1, duplicates: 1, malformed: 1, error: null });
+    expect(summary.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(queue.removed).toEqual(["r0", "r1", "r2", "r3"]);
     expect(queue.waits[0]).toBe(20);
     expect(queue.waits.slice(1).every((w) => w === 0)).toBe(true);

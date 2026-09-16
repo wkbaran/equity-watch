@@ -183,6 +183,15 @@ describe("siteDocument", () => {
     const result = { id: "op-0001", type: "alert.add", symbol: "AAPL", alertId: "a1", ok: true, message: "Added", appliedAt: "2026-09-15T15:00:00.000Z" };
     expect(dashboardFingerprint(siteDocument(held(), off, [result]))).not.toBe(dashboardFingerprint(siteDocument(held(), off)));
   });
+
+  // It advances on every clean drain, so hashing it would publish on every run.
+  it("carries the ops watermark without letting it move the fingerprint", () => {
+    const off = { holdings: false };
+    const doc = siteDocument(held(), off, [], "2026-09-16T04:00:00.000Z");
+    expect(doc.opsProcessedThrough).toBe("2026-09-16T04:00:00.000Z");
+    expect(dashboardFingerprint(doc)).toBe(dashboardFingerprint(siteDocument(held(), off, [], "2026-09-16T05:00:00.000Z")));
+    expect(siteDocument(held(), off).opsProcessedThrough).toBeNull();
+  });
 });
 
 describe("dashboardFingerprint", () => {

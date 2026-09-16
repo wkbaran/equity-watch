@@ -46,7 +46,16 @@ export interface SiteOptions {
  * has pending against them. Not volatile: a new result is news and should
  * publish.
  */
-export type SiteDocument = Dashboard & { site: SiteOptions; opResults: OpResult[] };
+export type SiteDocument = Dashboard & {
+  site: SiteOptions;
+  opResults: OpResult[];
+  /**
+   * When the last clean drain of the ops queue began. Everything queued before
+   * it has been applied, so the page can retire a pending row whose result has
+   * already fallen off the end of opResults.
+   */
+  opsProcessedThrough: string | null;
+};
 
 /**
  * The document as published. With holdings off, the holdings rows (share
@@ -55,8 +64,13 @@ export type SiteDocument = Dashboard & { site: SiteOptions; opResults: OpResult[
  * "Holding MKS crossed below 110" headlines, story ordering, and "held position" in
  * priority breakdowns say nothing about size or value.
  */
-export function siteDocument(dashboard: Dashboard, options: SiteOptions, opResults: OpResult[] = []): SiteDocument {
-  return { ...dashboard, holdings: options.holdings ? dashboard.holdings : [], site: options, opResults };
+export function siteDocument(
+  dashboard: Dashboard,
+  options: SiteOptions,
+  opResults: OpResult[] = [],
+  opsProcessedThrough: string | null = null
+): SiteDocument {
+  return { ...dashboard, holdings: options.holdings ? dashboard.holdings : [], site: options, opResults, opsProcessedThrough };
 }
 
 /**
@@ -69,13 +83,14 @@ export function writeSite(
   options: SiteOptions,
   alerts: AlertRow[],
   opResults: OpResult[] = [],
-  vault: VaultDocument | null = null
+  vault: VaultDocument | null = null,
+  opsProcessedThrough: string | null = null
 ): void {
   mkdirSync(dir, { recursive: true });
   for (const name of SITE_ASSETS) {
     copyFileSync(join(assetDir(), name), join(dir, name));
   }
-  writeFileSync(join(dir, "dashboard.json"), JSON.stringify(siteDocument(dashboard, options, opResults)));
+  writeFileSync(join(dir, "dashboard.json"), JSON.stringify(siteDocument(dashboard, options, opResults, opsProcessedThrough)));
   writeFileSync(join(dir, "alerts.json"), JSON.stringify({ generatedAt: dashboard.generatedAt, alerts }));
   if (vault !== null) {
     writeFileSync(join(dir, VAULT_FILE), JSON.stringify(vault));
@@ -109,6 +124,9 @@ const VOLATILE_KEYS = new Set([
   // on nearly every check, and distance moves with price.
   "movingLevel",
   "vsLevelPct",
+  // Advances on every clean drain, so it moves with the clock rather than with
+  // anything that happened. It rides along with publishes that have a reason.
+  "opsProcessedThrough",
 ]);
 
 function stableHash(value: unknown): string {

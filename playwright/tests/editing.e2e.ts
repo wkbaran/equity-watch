@@ -197,6 +197,23 @@ test.describe("results", () => {
     expect(await page.evaluate(() => localStorage.getItem("equity-watch.pendingOps"))).toBe("[]");
   });
 
+  // A burst bigger than the published result list: the watermark is what clears these.
+  test("a pending op whose result was never published retires at the watermark", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    const add = page.locator("#alert-add form");
+    await add.locator("input[type=text]").fill("GMED");
+    await add.locator("input[type=number]").first().fill("80.5");
+    await add.locator("button[type=submit]").click();
+    await expect(page.locator("#ops-pending .pending-row")).toHaveCount(1);
+
+    await page.request.get("/__release?results=none");
+    await poll(page);
+    await expect(page.locator("#ops-pending")).toBeHidden();
+    await expect(page.locator("#toasts")).toContainText("applied. Its result is no longer published.");
+    expect(await page.evaluate(() => localStorage.getItem("equity-watch.pendingOps"))).toBe("[]");
+  });
+
   test("Forget drops a pending op without a result", async ({ page }) => {
     await storeToken(page);
     await openAlerts(page);

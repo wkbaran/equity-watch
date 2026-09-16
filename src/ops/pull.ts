@@ -46,6 +46,12 @@ export interface PullSummary {
   rejected: number;
   duplicates: number;
   malformed: number;
+  /**
+   * When the drain began. With no error, every op queued before this was
+   * received and applied, which is what lets the page stop waiting on one
+   * whose result is no longer published.
+   */
+  startedAt: string;
   /** Set when an op threw; it and everything after it stay queued. */
   error: string | null;
 }
@@ -55,7 +61,7 @@ export async function pullOps(
   ctx: ApplyContext,
   opts: { max: number; waitSeconds: number; log: (line: string) => void }
 ): Promise<PullSummary> {
-  const summary: PullSummary = { applied: 0, rejected: 0, duplicates: 0, malformed: 0, error: null };
+  const summary: PullSummary = { applied: 0, rejected: 0, duplicates: 0, malformed: 0, startedAt: new Date().toISOString(), error: null };
   let seen = 0;
   let wait = opts.waitSeconds;
   while (seen < opts.max) {
