@@ -220,6 +220,29 @@ market value, and stops are not. If you add a field carrying any of those
 outside `holdings`, strip it in `siteDocument` too. The `siteDocument` tests in
 `tests/dashboard.test.ts` check the JSON for `shares`/`basis`/`marketValue` keys.
 
+That rule is why the details drawer's **Position** row is assembled in the
+browser (`positionValue` in `web/app.js`) out of `holdingRows()`, and not read
+off the trigger or alert row. The obvious implementation - hang shares, basis,
+and value on `TriggerRow` in `dashboard.ts` so the drawer can just print them -
+publishes every held position's size in `dashboard.json` on a site with no
+login. A `heldPosition` boolean is the *only* holdings fact that may travel in
+a published document, and both `TriggerRow` and `AlertRow` carry one so the
+tag reads the same locked as unlocked; everything with a number in it comes
+from the decrypted vault (or from the document only when `web.holdings` is
+on), so the Position row is simply absent on the public page. The **Story**
+section in the same drawer is client-side for a duller reason:
+`Dashboard.stories` already carries every story, keyed by symbol, so there is
+nothing to add server-side.
+
+The `held` tag is a link, not a label: `#/holdings/<symbol>` with
+`target="equity-watch-holdings"`, so every click lands in one reused tab rather
+than navigating the overview away or piling up tabs (same trick as the chart
+link's `CHART_TARGET`). It calls `stopPropagation` but **not** `preventDefault`
+- the browser's own window targeting is what reuses the tab, and preventing the
+default would turn it back into an in-place navigation. `parseRoute` therefore
+returns a `focus` for base views, and only a base route may change it: a drawer
+route has `base: null` and must not clear the highlight it is sitting on.
+
 Two more things that look wrong and aren't:
 
 - **No CloudFront invalidation.** The congress project's publisher invalidates
@@ -247,6 +270,59 @@ Things that look simplifiable and aren't:
   still queued, because a later edit may target an alert an earlier add creates.
 - **Edits target by id only.** `findAlert` also accepts a ticker. Don't pass an
   op's target through it, or an edit can land on a different alert on that symbol.
+- **An edit may also close a revisit entry.** The trigger details panel edits
+  the alert behind the fire and sends `target.revisitId` alongside `alertId`;
+  `applyEdit` then marks that entry `applied` (with `appliedFrom`/`appliedTo`
+  when the level moved), exactly as `alert revisit apply` does. The entry is
+  checked **before** the edit — it must exist, belong to that alert, and still
+  be open — so a stale panel is one rejection rather than an alert moved with
+  its queue entry left open. That is why `ApplyContext` carries a
+  `revisitsFile`; both `ops pull` and `ops apply` pass `--revisits-file`
+  through, and it defaults to `revisits.json` when omitted.
+- **Nothing can push to the machine, so there is no "apply now" button.** The
+  page is static on S3/CloudFront and the Lambda can only write to SQS; the
+  drain happens when the Windows task next runs `ops pull`. A button would need
+  either an always-on local watcher long-polling SQS (explicitly not the design
+  — see the header of `src/ops/pull.ts`) or an inbound path to the machine.
+  What the page does instead is *say when*, from two sources in order.
+  - **`opsNextCheckAt` is the scheduler's own answer**, not an inference:
+    `check-and-publish.ps1` reads `(Get-ScheduledTaskInfo).NextRunTime` and
+    passes it as `dashboard --next-check`. It already accounts for both the
+    repetition and the daily window, so at 18:10 it is tomorrow's 01:55 rather
+    than 18:25. **Don't derive this from market hours instead.** The task
+    window only happens to bracket extended hours (01:55 MT = 03:55 ET, 18:10
+    MT = 20:10 ET); that is how the task is configured, not something the code
+    knows, and `ops pull` has no hours gate at all — a queued edit lands at the
+    next check whether or not the market is open.
+  - **The page only trusts it while it is still in the future.** A quiet run
+    publishes nothing (`--skip-unchanged`), so it goes stale by up to
+    `--max-stale-minutes` with the task running perfectly; treating a past
+    value as "the check didn't run" would cry wolf. Past that it falls back to
+    the cadence `ops pull` measured for itself (`drainIntervalMinutes`,
+    `src/ops/schedule.ts`, published as `opsIntervalMinutes`), which counts
+    down and then warns. The `.sh`/cron path passes no `--next-check` and lives
+    on that fallback entirely.
+  - **The cadence is a median, never a mean or the last gap.** The scheduled
+    task has a daily window (01:55–18:10 as of 2026-09-16, `PT15M` repeating
+    for `PT16H20M`), so one gap per night is ~8 hours. A mean would read that
+    as the cadence and promise "applies in ~1 hr" all the next day.
+  - **Past the cadence the page warns instead of counting down.** This is the
+    case that prompted it (2026-09-16): nine ops sat queued all evening because
+    the window had closed, and the page said only "pending". `OPS_OVERDUE_FACTOR`
+    in `web/app.js` is the grace before a late run is called stopped.
+  - `opsIntervalMinutes` and `opsNextCheckAt` are in `VOLATILE_KEYS` alongside
+    `opsProcessedThrough`: all three advance with the clock every run, so
+    fingerprinting any of them would publish every run.
+- **The page has no dismiss.** The "Copy dismiss" buttons are gone (2026-09-16);
+  editing the alert from the panel is how an entry is closed from the browser.
+  `alert revisit dismiss` still exists for closing one without touching the
+  alert. The queue row keeps showing until the next check applies the op, so it
+  carries `pendingTag` — and `rerenderOps` has to re-render the queue for that
+  tag to appear without waiting for a poll.
+- **Both drawers fetch `alerts.json`.** The trigger drawer needs the alert's
+  *current* level and direction for the edit form, and `TriggerRow` carries
+  neither (it records what fired, not what is set now). `RevisitRow.alertId`
+  exists for the same feature: the queue row needs it to show the pending tag.
 - **`expect.condition` is the conflict guard**: `describeAlertCondition` as the
   page showed it. If you change that function's wording, every edit queued before
   the deploy is rejected once. That's acceptable, but know it will happen.

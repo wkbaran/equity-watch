@@ -38,6 +38,14 @@ export interface AlertRow {
   price: number | null;
   /** Price relative to the level (or moving level), in percent. Positive means price is above it. */
   vsLevelPct: number | null;
+  /**
+   * Whether the symbol is a position. The same flag TriggerRow carries, and
+   * publishable for the same reason: that a name is held says nothing about
+   * size or value (see siteDocument). Without it the page could only tell
+   * from the decrypted vault, so the public Alerts view would be the one
+   * place a held name didn't say so.
+   */
+  heldPosition: boolean;
   chartUrl: string;
 }
 
@@ -50,7 +58,9 @@ export function buildAlertRows(
   alerts: Alert[],
   quotes: Map<string, Quote>,
   ignored: Set<string>,
-  exchanges: Map<string, string> = new Map()
+  exchanges: Map<string, string> = new Map(),
+  /** Held symbols, upper-cased, as buildDashboard derives them from the lots. */
+  held: Set<string> = new Set()
 ): AlertRow[] {
   return alerts
     .filter((a) => a.status === "live" && !ignored.has(a.symbol.toUpperCase()))
@@ -77,6 +87,7 @@ export function buildAlertRows(
         watchingSinceApprox: a.watchingSinceApprox,
         price,
         vsLevelPct: price === null || reference === null || reference === 0 ? null : round2(((price - reference) / reference) * 100),
+        heldPosition: held.has(a.symbol.toUpperCase()),
         chartUrl: tradingViewUrl(a.symbol, exchanges.get(a.symbol)),
       };
     })

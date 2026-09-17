@@ -146,6 +146,17 @@ describe("buildAlertRows", () => {
   it("leaves price and distance null without a quote", () => {
     expect(buildAlertRows([makeStatic()], new Map(), new Set())[0]).toMatchObject({ price: null, vsLevelPct: null });
   });
+
+  it("marks alerts on held symbols, so the public Alerts view can say so without the vault", () => {
+    const alerts = [makeStatic({ id: "s1", symbol: "ZZZ" }), makeStatic({ id: "s2", symbol: "AAA" })];
+    const rows = buildAlertRows(alerts, new Map(), new Set(), new Map(), new Set(["ZZZ"]));
+    expect(rows.map((r) => [r.symbol, r.heldPosition])).toEqual([
+      ["AAA", false],
+      ["ZZZ", true],
+    ]);
+    // Held is a flag, never a size: nothing about the position rides along.
+    expect(JSON.stringify(rows)).not.toMatch(/shares|basis|marketValue|stopPrice/);
+  });
 });
 
 describe("siteFingerprint", () => {

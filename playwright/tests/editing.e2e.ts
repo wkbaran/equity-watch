@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { MOVING_AVERAGE, OPS_TOKEN, STATIC, TRAILING } from "../fixtures.js";
+import { FIXTURE_REVISITS, MOVING_AVERAGE, OPS_TOKEN, STATIC, TRAILING } from "../fixtures.js";
 
 // poll() runs on visibilitychange while the page is visible; it's the only
 // hook into the page's IIFE, and saves waiting a minute for the interval.
@@ -159,11 +159,144 @@ test.describe("edit", () => {
     });
   });
 
+  // The revisit queue's details panel edits the alert behind the fire, and the
+  // same op closes the entry: acting on the trigger is what the queue asks for.
+  test("an open trigger's panel edits the alert it fired from and closes the entry", async ({ page }) => {
+    await storeToken(page);
+    await page.goto("/#/trigger/rv0000a2");
+    const form = page.locator("#drawer-body form");
+    await expect(form.locator(".form-title")).toHaveText("Edit this alert");
+    await expect(form.locator(".note")).toContainText("drops this entry from the revisit queue");
+    // The alert's own settings, read from alerts.json rather than the trigger row.
+    await expect(form.locator("input[type=number]")).toHaveValue(String(STATIC.level));
+
+    await form.locator("input[type=number]").fill("61");
+    await form.locator("button[type=submit]").click();
+    await expect(page.locator("#toasts")).toContainText("edit AA level 55 → 61 and close its queue entry");
+
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({
+      type: "alert.edit",
+      target: { alertId: STATIC.id, revisitId: "rv0000a2" },
+      expect: { condition: "price crosses above 55" },
+      params: { level: 61 },
+    });
+
+    // The entry stays in the queue until the next check applies the op, so the
+    // row has to say the edit is on its way rather than look untouched.
+    await page.goto("/#/queue");
+    await expect(page.locator("#queue .queue-row", { hasText: "crossed above 55" }).locator(".tag.pending")).toHaveText("edit pending");
+  });
+
+  // A closed entry has nothing left to decide, so the panel is read-only.
+  test("a trigger that is already resolved offers no edit", async ({ page }) => {
+    const resolved = FIXTURE_REVISITS.find((e) => e.status !== "open")!;
+    await storeToken(page);
+    await page.goto(`/#/trigger/${resolved.id}`);
+    await expect(page.locator("#drawer-body .kv-list")).toBeVisible();
+    await expect(page.locator("#drawer-body form")).toHaveCount(0);
+  });
+
+  test("a locked page shows the trigger panel without the edit form", async ({ page }) => {
+    await page.goto("/#/trigger/rv0000a2");
+    await expect(page.locator("#drawer-body .kv-list")).toBeVisible();
+    await expect(page.locator("#drawer-body form")).toHaveCount(0);
+  });
+
   test("a moving-average alert points to the CLI", async ({ page }) => {
     await storeToken(page);
     await page.goto(`/#/alert/${MOVING_AVERAGE.id}`);
     await expect(page.locator("#drawer-body")).toContainText("can't be edited from the page yet");
     await expect(page.locator("#drawer-body form")).toHaveCount(0);
+  });
+});
+
+// Nothing on a static site knows the checker's schedule, so `ops pull` measures
+// its own cadence and the publisher ships it. Without this the page said
+// "pending" forever, whether the drain was nine minutes off or overnight.
+test.describe("when a pending change lands", () => {
+  const queueOne = async (page: Page) => {
+    await openAlerts(page);
+    const add = page.locator("#alert-add form");
+    await add.locator("input[type=text]").fill("GMED");
+    await add.locator("input[type=number]").first().fill("80.5");
+    await add.locator("button[type=submit]").click();
+    await expect(page.locator("#ops-pending .pending-row")).toHaveCount(1);
+  };
+
+  // The scheduler's own next-run time, which already accounts for the daily
+  // window: at 18:10 it is tomorrow's 01:55, not 18:25.
+  test("shows the scheduled next-check time when the publisher supplied one", async ({ page }) => {
+    await storeToken(page);
+    await page.request.get("/__cadence?minutesAgo=6&interval=15&nextInMin=9");
+    await queueOne(page);
+    await expect(page.locator("#ops-pending .note")).toHaveText(/^Applies at the next check, .+ \(in 9 min\)\.$/);
+  });
+
+  test("shows a next check hours away rather than counting minutes", async ({ page }) => {
+    await storeToken(page);
+    // 18:10, window over: the next run is tomorrow morning.
+    await page.request.get("/__cadence?minutesAgo=6&interval=15&nextInMin=358");
+    await queueOne(page);
+    await expect(page.locator("#ops-pending .note")).toContainText("(in 5 hr 58 min)");
+  });
+
+  // A quiet run publishes nothing, so this field goes stale while the task is
+  // running fine. Falling back is what stops that becoming a false alarm.
+  test("falls back to the measured cadence once the published next-check has passed", async ({ page }) => {
+    await storeToken(page);
+    await page.request.get("/__cadence?minutesAgo=6&interval=15&nextInMin=-20");
+    await queueOne(page);
+    await expect(page.locator("#ops-pending .note")).toHaveText("Applies in ~9 min.");
+    await expect(page.locator("#ops-pending .note.warn")).toHaveCount(0);
+  });
+
+  test("counts down to the next drain", async ({ page }) => {
+    await storeToken(page);
+    await page.request.get("/__cadence?minutesAgo=6&interval=15");
+    await queueOne(page);
+    await expect(page.locator("#ops-pending .note")).toHaveText("Applies in ~9 min.");
+    await expect(page.locator("#ops-pending .note.warn")).toHaveCount(0);
+  });
+
+  test("says due now while a drain is merely late", async ({ page }) => {
+    await storeToken(page);
+    await page.request.get("/__cadence?minutesAgo=17&interval=15");
+    await queueOne(page);
+    await expect(page.locator("#ops-pending .note")).toHaveText("Applies at the next check, due now.");
+    await expect(page.locator("#ops-pending .note.warn")).toHaveCount(0);
+  });
+
+  // The situation that prompted this: the scheduled task's daily window had
+  // ended, and nine ops sat in the queue with the page saying only "pending".
+  test("warns once no drain has happened for well past the cadence", async ({ page }) => {
+    await storeToken(page);
+    await page.request.get("/__cadence?minutesAgo=106&interval=15");
+    await queueOne(page);
+    const note = page.locator("#ops-pending .note.warn");
+    await expect(note).toContainText("No check since");
+    await expect(note).toContainText("they run about every 15 min");
+    await expect(note).toContainText("may be outside its daily window or stopped");
+  });
+
+  test("falls back to the watermark alone when the cadence isn't known yet", async ({ page }) => {
+    await storeToken(page);
+    await page.request.get("/__cadence?minutesAgo=6&interval=none");
+    await queueOne(page);
+    await expect(page.locator("#ops-pending .note")).toHaveText("Applied by the next scheduled check. Last check 6 min ago.");
+  });
+
+  // The queue's details panel is where a revisit edit is made, so it answers
+  // the same question without a trip to the pending list.
+  test("the drawer's pending note carries it too", async ({ page }) => {
+    await storeToken(page);
+    await page.request.get("/__cadence?minutesAgo=6&interval=15");
+    await page.goto("/#/trigger/rv0000a2");
+    const form = page.locator("#drawer-body form");
+    await form.locator("input[type=number]").fill("61");
+    await form.locator("button[type=submit]").click();
+    await expect(page.locator("#drawer-body .tag.pending")).toHaveCount(1);
+    await expect(page.locator("#drawer-body .note", { hasText: "Applies in ~" })).toHaveText("Applies in ~9 min.");
   });
 });
 

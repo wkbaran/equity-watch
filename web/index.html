@@ -71,6 +71,8 @@
   code { font-size: 0.85em; background: var(--surface2); padding: 0 0.3rem; border-radius: 4px; }
   .muted { color: var(--muted); }
   .note { color: var(--muted); font-size: 0.78rem; }
+  /* A queued change that is past due: still the note's size, but not ignorable. */
+  .note.warn { color: var(--yellow); }
 
   .site-header {
     background: var(--surface); border-bottom: 1px solid var(--border);
@@ -116,6 +118,8 @@
   .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
   .tag { display: inline-block; font-size: 0.72rem; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--subtext); margin-left: 6px; vertical-align: 1px; }
   .tag.held { border-color: var(--accent); color: var(--accent); }
+  /* The held tag is a link into the Holdings view; keep it looking like a tag. */
+  a.tag:hover { text-decoration: none; background: var(--surface2); }
   .tag.reversed { border-color: var(--peach); color: var(--peach); }
   .reversal-note { color: var(--peach); }
   ol.timeline { margin: 0; padding-left: 18px; }
@@ -144,6 +148,9 @@
   th:first-child, td:first-child { text-align: left; }
   tr.ignored td { color: var(--muted); }
   tr.clickable { cursor: pointer; }
+  /* The position #/holdings/<symbol> points at, scrolled to and marked. */
+  tr.focused > td { background: var(--surface2); }
+  tr.focused > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   #alerts-table th { cursor: default; }
   #alerts-table th:nth-child(2) { text-align: left; }
   #alerts-table td.cond { text-align: left; white-space: normal; min-width: 14rem; color: var(--subtext); }

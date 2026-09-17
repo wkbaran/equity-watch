@@ -11,6 +11,10 @@
     14 days.
   - Builds dist\ first only if it's missing. After pulling new code, run
     `npm ci` and `npm run build` yourself.
+  - Tells the dashboard when the next run is due, read from this task's own
+    registration, so the published page can say "applies at the next check,
+    1:55 AM" instead of guessing. Task Scheduler's NextRunTime already accounts
+    for both the repetition interval and the daily window.
   - If HEALTHCHECK_URL is set in .env, pings it on success and <url>/fail on
     failure, so a dead-man's-switch service notices when runs stop.
   - `alert check` exits immediately outside market sessions without fetching
@@ -19,7 +23,11 @@
   Exits 0 on success, or with the first failing step's exit code.
 #>
 [CmdletBinding()]
-param()
+param(
+    # The registered task to read NextRunTime from. Only used for what the page
+    # displays; a wrong or missing name costs nothing but that line.
+    [string]$TaskName = "equity-watch check"
+)
 
 $ErrorActionPreference = "Continue"
 $ProjectDir = Split-Path -Parent $PSScriptRoot
@@ -65,6 +73,25 @@ function Send-Healthcheck {
     } catch {
         Write-Log "Healthcheck ping failed: $($_.Exception.Message)"
     }
+}
+
+# The scheduler is the only thing that knows when the next run is, so ask it
+# rather than inferring. Returns $null when the task can't be read (a manual run
+# on another machine, a renamed task); the page then falls back to the cadence
+# `ops pull` has measured for itself.
+function Get-NextCheckTime {
+    try {
+        $info = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction Stop
+    } catch {
+        Write-Log "No scheduled task '$TaskName' to read NextRunTime from; the page will estimate instead."
+        return $null
+    }
+    $next = $info.NextRunTime
+    # A disabled or one-shot task reports no next run.
+    if ($null -eq $next) {
+        return $null
+    }
+    return $next.ToUniversalTime().ToString("o")
 }
 
 function Invoke-Logged {
@@ -130,5 +157,10 @@ if ($code -ne 0) {
     Stop-Run $code
 }
 
-$code = Invoke-Logged "dashboard publish" "node" @($cli, "dashboard", "--site", "site", "--publish", "--skip-unchanged", "--quiet")
+$publishArgs = @($cli, "dashboard", "--site", "site", "--publish", "--skip-unchanged", "--quiet")
+$nextCheck = Get-NextCheckTime
+if ($nextCheck) {
+    $publishArgs += @("--next-check", $nextCheck)
+}
+$code = Invoke-Logged "dashboard publish" "node" $publishArgs
 Stop-Run $code

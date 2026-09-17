@@ -115,7 +115,17 @@ export function migrateDirectionStores(
   return { backups, staticAlerts: rawStatic.length, directionsChanged, fold };
 }
 
-export function resolveRevisit(path: string, id: string, status: "applied" | "dismissed"): RevisitEntry | null {
+/**
+ * Closes one entry. `moved` records what an apply actually did to the level,
+ * so the ticker story can say what you changed and not just that you changed
+ * something; it is the same pair `alert revisit apply` writes.
+ */
+export function resolveRevisit(
+  path: string,
+  id: string,
+  status: "applied" | "dismissed",
+  moved?: { from: number | null; to: number | null }
+): RevisitEntry | null {
   const entries = loadRevisits(path);
   const entry = entries.find((e) => e.id === id);
   if (entry === undefined) {
@@ -123,6 +133,10 @@ export function resolveRevisit(path: string, id: string, status: "applied" | "di
   }
   entry.status = status;
   entry.resolvedAt = new Date().toISOString();
+  if (moved !== undefined) {
+    entry.appliedFrom = moved.from;
+    entry.appliedTo = moved.to;
+  }
   saveRevisits(path, entries);
   return entry;
 }

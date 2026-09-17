@@ -11,7 +11,10 @@
  *                   remembered ops, as `ops pull` would publish them: adds
  *                   succeed, edits are rejected (so both toasts get exercised)
  *   GET  /__ops     the remembered op bodies, for assertions
- *   GET  /__reset   forget ops and un-release, between tests
+ *   GET  /__cadence set the published drain watermark, interval and next-check
+ *                   time, so specs can drive the countdown, the scheduler's own
+ *                   next-run time, and the overdue warning
+ *   GET  /__reset   forget ops, un-release, and restore the default cadence
  */
 
 import { createServer } from "node:http";
@@ -24,7 +27,7 @@ import type { Quote } from "../src/providers/schwab.js";
 import { buildAlertRows } from "../src/web/alertsPage.js";
 import { SITE_ASSETS, siteDocument } from "../src/web/site.js";
 import { sealVault, vaultContents } from "../src/web/vault.js";
-import { FIXTURE_ALERTS, HOLDINGS, OPS_TOKEN, PRICES } from "./fixtures.js";
+import { FIXTURE_ALERTS, FIXTURE_REVISITS, HOLDINGS, OPS_TOKEN, PRICES } from "./fixtures.js";
 
 const PORT = Number(process.env.PW_PORT ?? 4178);
 const WEB_DIR = fileURLToPath(new URL("../web/", import.meta.url));
@@ -35,6 +38,13 @@ let ops: QueuedOp[] = [];
 let released = false;
 /** /__release?results=none: set the watermark but publish no results, as a drain past the result cap would. */
 let suppressResults = false;
+/**
+ * The cadence the real publisher measures (src/ops/schedule.ts). The watermark
+ * has to sit in the past: an op queued before it is one a drain already
+ * covered, and the page retires it on sight.
+ */
+const DEFAULT_CADENCE = { minutesAgo: 6, interval: 15 as number | null, nextInMin: null as number | null };
+let cadence = { ...DEFAULT_CADENCE };
 
 function resultFor(op: QueuedOp): OpResult {
   const appliedAt = new Date().toISOString();
@@ -51,15 +61,16 @@ function resultFor(op: QueuedOp): OpResult {
 
 function documents() {
   const quotes = new Map<string, Quote>(Object.entries(PRICES).map(([symbol, lastPrice]) => [symbol, { lastPrice, totalVolume: 0 }]));
-  const dashboard = buildDashboard({ alerts: FIXTURE_ALERTS, revisits: [], holdings: HOLDINGS, quotes, now: new Date() });
+  const dashboard = buildDashboard({ alerts: FIXTURE_ALERTS, revisits: FIXTURE_REVISITS, holdings: HOLDINGS, quotes, now: new Date() });
+  const heldSymbols = new Set(HOLDINGS.lots.map((l) => l.symbol.toUpperCase()));
   return {
-    "dashboard.json": siteDocument(
-      dashboard,
-      { holdings: false, ops: true, vault: true },
-      released && !suppressResults ? ops.map(resultFor) : [],
-      released ? new Date().toISOString() : null
-    ),
-    "alerts.json": { generatedAt: dashboard.generatedAt, alerts: buildAlertRows(FIXTURE_ALERTS, quotes, new Set()) },
+    "dashboard.json": siteDocument(dashboard, { holdings: false, ops: true, vault: true }, {
+      results: released && !suppressResults ? ops.map(resultFor) : [],
+      processedThrough: released ? new Date().toISOString() : new Date(Date.now() - cadence.minutesAgo * 60_000).toISOString(),
+      intervalMinutes: cadence.interval,
+      nextCheckAt: cadence.nextInMin === null ? null : new Date(Date.now() + cadence.nextInMin * 60_000).toISOString(),
+    }),
+    "alerts.json": { generatedAt: dashboard.generatedAt, alerts: buildAlertRows(FIXTURE_ALERTS, quotes, new Set(), new Map(), heldSymbols) },
     "vault.json": sealVault(vaultContents(dashboard.holdings, HOLDINGS), OPS_TOKEN),
   };
 }
@@ -87,10 +98,21 @@ createServer(async (req, res) => {
     return send(200, { released, suppressResults });
   }
   if (path === "__ops") return send(200, ops);
+  if (path === "__cadence") {
+    const interval = url.searchParams.get("interval");
+    const next = url.searchParams.get("nextInMin");
+    cadence = {
+      minutesAgo: Number(url.searchParams.get("minutesAgo") ?? 0),
+      interval: interval === "none" ? null : Number(interval ?? DEFAULT_CADENCE.interval),
+      nextInMin: next === null ? null : Number(next),
+    };
+    return send(200, cadence);
+  }
   if (path === "__reset") {
     ops = [];
     released = false;
     suppressResults = false;
+    cadence = { ...DEFAULT_CADENCE };
     return send(200, { reset: true });
   }
   if (path === "dashboard.json" || path === "alerts.json" || path === "vault.json") return send(200, documents()[path]);

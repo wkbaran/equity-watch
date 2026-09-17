@@ -42,19 +42,51 @@ export interface SiteOptions {
 }
 
 /**
- * opResults are browser-only, like alerts.json: the page matches the ops it
- * has pending against them. Not volatile: a new result is news and should
- * publish.
+ * What the page needs to reason about changes it has queued but not yet seen
+ * applied. Gathered by the CLI from the op log and `.cache/ops_pull.json`,
+ * since none of it comes out of the Dashboard document itself.
  */
-export type SiteDocument = Dashboard & {
-  site: SiteOptions;
-  opResults: OpResult[];
+export interface OpsPublishState {
+  /**
+   * Browser-only, like alerts.json: the page matches its pending ops against
+   * these. Not volatile — a new result is news and should publish.
+   */
+  results: OpResult[];
   /**
    * When the last clean drain of the ops queue began. Everything queued before
    * it has been applied, so the page can retire a pending row whose result has
-   * already fallen off the end of opResults.
+   * already fallen off the end of `results`.
    */
+  processedThrough: string | null;
+  /**
+   * Observed minutes between drains (src/ops/schedule.ts), or null when too
+   * few have been recorded to say. The page turns it into "applies in ~9 min",
+   * and into a warning once that passes with no drain.
+   */
+  intervalMinutes: number | null;
+  /**
+   * When the scheduler says the next check runs (`--next-check`), or null when
+   * nothing told us. This is read from Task Scheduler rather than inferred, so
+   * it already accounts for the repetition *and* the daily window: at 18:10,
+   * with the window over, it is tomorrow's 01:55 and not 18:25.
+   *
+   * The page prefers it while it is still in the future and falls back to the
+   * measured cadence otherwise. That fallback matters: a quiet run publishes
+   * nothing (--skip-unchanged), so this can go stale by up to
+   * --max-stale-minutes while the task is running perfectly well, and treating
+   * a past value as "the check didn't run" would cry wolf.
+   */
+  nextCheckAt: string | null;
+}
+
+export const NO_OPS: OpsPublishState = { results: [], processedThrough: null, intervalMinutes: null, nextCheckAt: null };
+
+export type SiteDocument = Dashboard & {
+  site: SiteOptions;
+  opResults: OpResult[];
   opsProcessedThrough: string | null;
+  opsIntervalMinutes: number | null;
+  opsNextCheckAt: string | null;
 };
 
 /**
@@ -64,13 +96,16 @@ export type SiteDocument = Dashboard & {
  * "Holding MKS crossed below 110" headlines, story ordering, and "held position" in
  * priority breakdowns say nothing about size or value.
  */
-export function siteDocument(
-  dashboard: Dashboard,
-  options: SiteOptions,
-  opResults: OpResult[] = [],
-  opsProcessedThrough: string | null = null
-): SiteDocument {
-  return { ...dashboard, holdings: options.holdings ? dashboard.holdings : [], site: options, opResults, opsProcessedThrough };
+export function siteDocument(dashboard: Dashboard, options: SiteOptions, ops: OpsPublishState = NO_OPS): SiteDocument {
+  return {
+    ...dashboard,
+    holdings: options.holdings ? dashboard.holdings : [],
+    site: options,
+    opResults: ops.results,
+    opsProcessedThrough: ops.processedThrough,
+    opsIntervalMinutes: ops.intervalMinutes,
+    opsNextCheckAt: ops.nextCheckAt,
+  };
 }
 
 /**
@@ -82,15 +117,14 @@ export function writeSite(
   dashboard: Dashboard,
   options: SiteOptions,
   alerts: AlertRow[],
-  opResults: OpResult[] = [],
-  vault: VaultDocument | null = null,
-  opsProcessedThrough: string | null = null
+  ops: OpsPublishState = NO_OPS,
+  vault: VaultDocument | null = null
 ): void {
   mkdirSync(dir, { recursive: true });
   for (const name of SITE_ASSETS) {
     copyFileSync(join(assetDir(), name), join(dir, name));
   }
-  writeFileSync(join(dir, "dashboard.json"), JSON.stringify(siteDocument(dashboard, options, opResults, opsProcessedThrough)));
+  writeFileSync(join(dir, "dashboard.json"), JSON.stringify(siteDocument(dashboard, options, ops)));
   writeFileSync(join(dir, "alerts.json"), JSON.stringify({ generatedAt: dashboard.generatedAt, alerts }));
   if (vault !== null) {
     writeFileSync(join(dir, VAULT_FILE), JSON.stringify(vault));
@@ -124,9 +158,13 @@ const VOLATILE_KEYS = new Set([
   // on nearly every check, and distance moves with price.
   "movingLevel",
   "vsLevelPct",
-  // Advances on every clean drain, so it moves with the clock rather than with
-  // anything that happened. It rides along with publishes that have a reason.
+  // Advance/drift with the clock rather than with anything that happened: the
+  // watermark moves on every clean drain, and the cadence is a rounded median
+  // of those gaps. Both ride along with publishes that have a reason.
   "opsProcessedThrough",
+  "opsIntervalMinutes",
+  // Advances by one repetition on every run, so it would publish every run.
+  "opsNextCheckAt",
 ]);
 
 function stableHash(value: unknown): string {

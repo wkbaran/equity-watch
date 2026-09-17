@@ -65,9 +65,10 @@ import { publishSite } from "./web/publish.js";
 import { buildAlertRows } from "./web/alertsPage.js";
 import { applyOp, DEFAULT_OP_LOG, loadOpLog, parseOp, recentOpResults } from "./ops/apply.js";
 import { pullOps, sqsOpsQueue } from "./ops/pull.js";
+import { drainIntervalMinutes, recordDrain, type OpsPullState } from "./ops/schedule.js";
 import { parseAddInput, parseAlertEdit } from "./ops/validate.js";
 import { sealVault, vaultContents } from "./web/vault.js";
-import { shouldPublish, siteDocument, siteFingerprint, writeSite, type PublishState } from "./web/site.js";
+import { shouldPublish, siteDocument, siteFingerprint, writeSite, type OpsPublishState, type PublishState } from "./web/site.js";
 import {
   EXTENDED_SESSIONS,
   REGULAR_SESSIONS,
@@ -1733,6 +1734,8 @@ interface DashboardOpts extends AlertCommonOpts {
   skipUnchanged?: boolean;
   maxStaleMinutes: number;
   profileCacheDir: string;
+  /** When the scheduler says the next check runs; shown on the page. */
+  nextCheck?: string;
 }
 
 function defaultDashboardPath(now: Date): string {
@@ -1743,12 +1746,30 @@ function defaultDashboardPath(now: Date): string {
 const PUBLISH_STATE_PATH = join(".cache", "web_publish.json");
 const OPS_PULL_STATE_PATH = join(".cache", "ops_pull.json");
 
+function loadOpsPullState(): OpsPullState | null {
+  return existsSync(OPS_PULL_STATE_PATH) ? (JSON.parse(readFileSync(OPS_PULL_STATE_PATH, "utf-8")) as OpsPullState) : null;
+}
+
 /** When the last clean drain began, or null if `ops pull` has never finished one. */
 function loadOpsWatermark(): string | null {
-  if (!existsSync(OPS_PULL_STATE_PATH)) {
+  return loadOpsPullState()?.processedThrough ?? null;
+}
+
+/**
+ * `--next-check`, as the scheduler reports it. Bad input is a warning rather
+ * than a failure: the page falls back to the measured cadence, and a publish
+ * must not die over a cosmetic field.
+ */
+function parseNextCheck(raw: string | undefined): string | null {
+  if (raw === undefined || raw.trim() === "") {
     return null;
   }
-  return (JSON.parse(readFileSync(OPS_PULL_STATE_PATH, "utf-8")) as { processedThrough: string }).processedThrough;
+  const at = new Date(raw);
+  if (Number.isNaN(at.getTime())) {
+    console.error(`  ! ignoring --next-check "${raw}": not a date.`);
+    return null;
+  }
+  return at.toISOString();
 }
 
 function loadPublishState(): PublishState | null {
@@ -1773,15 +1794,24 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     ops: Boolean(process.env.OPS_QUEUE_URL),
     vault: vaultToken !== null,
   };
-  // Results of ops applied from the page, so it can resolve what it has pending.
-  const opResults = recentOpResults(loadOpLog(DEFAULT_OP_LOG));
-  const opsProcessedThrough = loadOpsWatermark();
+  // What the page needs to reason about changes it queued: the results of ops
+  // already applied, the drain watermark, and how often drains actually happen.
+  const opsPullState = loadOpsPullState();
+  const ops: OpsPublishState = {
+    results: recentOpResults(loadOpLog(DEFAULT_OP_LOG)),
+    processedThrough: opsPullState?.processedThrough ?? null,
+    intervalMinutes: drainIntervalMinutes(opsPullState),
+    nextCheckAt: parseNextCheck(opts.nextCheck),
+  };
   // Chart links need each symbol's exchange; a bare symbol can open a foreign listing.
   const exchanges = exchangesFromProfiles(listCachedProfiles(opts.profileCacheDir));
   const unlisted = new Set(alerts.filter((a) => a.status === "live" && !exchanges.has(a.symbol)).map((a) => a.symbol));
   if (unlisted.size > 0 && !opts.quiet) {
     console.log(`${unlisted.size} symbols have no cached exchange, so their chart links are unprefixed. Run: profile fetch --all-known`);
   }
+
+  // The same set buildDashboard derives for its own heldPosition flags.
+  const heldSymbols = new Set(holdings.lots.map((l) => l.symbol.toUpperCase()));
 
   const build = (quotes: Map<string, Quote>) =>
     buildDashboard({
@@ -1804,8 +1834,8 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   if (opts.publish && opts.skipUnchanged) {
     const quoteless = build(new Map());
     const fingerprint = siteFingerprint(
-      siteDocument(quoteless, siteOptions, opResults, opsProcessedThrough),
-      buildAlertRows(alerts, new Map(), ignored, exchanges),
+      siteDocument(quoteless, siteOptions, ops),
+      buildAlertRows(alerts, new Map(), ignored, exchanges, heldSymbols),
       vaultToken === null ? null : vaultContents(quoteless.holdings, holdings)
     );
     const decision = shouldPublish(loadPublishState(), fingerprint, new Date(), opts.maxStaleMinutes);
@@ -1847,11 +1877,11 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
 
   // Fingerprint what is actually published, so holdings changes don't trigger
   // a publish while the holdings section is off.
-  const siteDashboard = siteDocument(dashboard, siteOptions, opResults, opsProcessedThrough);
-  const alertRows = buildAlertRows(alerts, quotes, ignored, exchanges);
+  const siteDashboard = siteDocument(dashboard, siteOptions, ops);
+  const alertRows = buildAlertRows(alerts, quotes, ignored, exchanges, heldSymbols);
   const vault = vaultToken === null ? null : vaultContents(dashboard.holdings, holdings);
   if (siteDir !== undefined) {
-    writeSite(siteDir, dashboard, siteOptions, alertRows, opResults, vault === null ? null : sealVault(vault, vaultToken!), opsProcessedThrough);
+    writeSite(siteDir, dashboard, siteOptions, alertRows, ops, vault === null ? null : sealVault(vault, vaultToken!));
     console.log(`Wrote site to ${siteDir}/${siteOptions.holdings ? "" : " (holdings excluded; set web.holdings in the config to include)"}`);
   }
 
@@ -1903,7 +1933,7 @@ async function cmdOpsApply(opts: OpsApplyOpts): Promise<void> {
     console.error(`Invalid op: ${parsed.error}`);
     process.exit(1);
   }
-  const { result, duplicate } = await applyOp(parsed.op, { alertsFile: opts.alertsFile, holdingsFile: opts.holdingsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) });
+  const { result, duplicate } = await applyOp(parsed.op, { alertsFile: opts.alertsFile, holdingsFile: opts.holdingsFile, revisitsFile: opts.revisitsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) });
   if (duplicate) {
     console.log(`Already applied at ${result.appliedAt}, so nothing changed. It was: ${result.message}`);
     return;
@@ -1923,7 +1953,7 @@ async function cmdOpsPull(opts: OpsPullOpts): Promise<void> {
   const queue = sqsOpsQueue(queueUrl, process.env.AWS_REGION ?? "us-east-1");
   const summary = await pullOps(
     queue,
-    { alertsFile: opts.alertsFile, holdingsFile: opts.holdingsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) },
+    { alertsFile: opts.alertsFile, holdingsFile: opts.holdingsFile, revisitsFile: opts.revisitsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) },
     { max: opts.max ?? Number.POSITIVE_INFINITY, waitSeconds: opts.wait, log: (line) => console.log(line) }
   );
   // A clean drain is a watermark: everything queued before it started has been
@@ -1931,7 +1961,9 @@ async function cmdOpsPull(opts: OpsPullOpts): Promise<void> {
   // than the published result list doesn't leave rows waiting forever.
   if (summary.error === null) {
     mkdirSync(dirname(OPS_PULL_STATE_PATH), { recursive: true });
-    writeFileSync(OPS_PULL_STATE_PATH, JSON.stringify({ processedThrough: summary.startedAt }));
+    // The history of drains is what tells the page how long a pending change
+    // has to wait; nothing else on the published site knows this schedule.
+    writeFileSync(OPS_PULL_STATE_PATH, JSON.stringify(recordDrain(loadOpsPullState(), summary.startedAt)));
   }
   const total = summary.applied + summary.rejected + summary.duplicates + summary.malformed;
   if (total > 0) {
@@ -2068,6 +2100,11 @@ function buildProgram(): Command {
     .option("--config <path>", "Per-ticker tuning config (supplies ignoreSymbols)", "analysis.config.json")
     .option("--site <dir>", "Also write the static browser dashboard to this directory (skips the reports/ JSON unless --out is given)")
     .option("--publish", "Sync the site to S3 (S3_BUCKET/AWS_* in .env); implies --site site")
+    .option(
+      "--next-check <iso>",
+      "When the next scheduled check runs, for the page to show. scripts/check-and-publish.ps1 reads it from Task Scheduler; " +
+        "without it the page falls back to the cadence ops pull has measured"
+    )
     .option("--skip-unchanged", "With --publish: do nothing, not even fetch quotes, unless something happened or prices are stale")
     .option("--max-stale-minutes <n>", "With --skip-unchanged: republish anyway once prices are this old", (v) => parseInt(v, 10), 30)
     .option("--profile-cache-dir <path>", "Profile cache, which supplies each symbol's exchange for chart links", ".cache/profiles")

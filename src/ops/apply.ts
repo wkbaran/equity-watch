@@ -17,12 +17,14 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { describeAlertCondition } from "../alerts/describe.js";
 import { addAlert, editAlert, type MarketData } from "../alerts/engine.js";
+import { loadRevisits, resolveRevisit } from "../alerts/revisitStore.js";
 import { loadAlerts } from "../alerts/store.js";
 import { applyHoldingsOp } from "./holdings.js";
 import { addFieldsFromJson, editFieldsFromJson, parseAddInput, parseAlertEdit, stringField } from "./validate.js";
 
 export const DEFAULT_OP_LOG = "ops.log.jsonl";
 export const DEFAULT_HOLDINGS_FILE = "holdings.json";
+export const DEFAULT_REVISITS_FILE = "revisits.json";
 
 export const OP_TYPES = ["alert.add", "alert.edit", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.remove"] as const;
 export type OpType = (typeof OP_TYPES)[number];
@@ -116,6 +118,8 @@ export interface ApplyContext {
   alertsFile: string;
   /** Default holdings.json. */
   holdingsFile?: string;
+  /** Default revisits.json. Only an edit sent from a trigger's details panel reads it. */
+  revisitsFile?: string;
   opLogFile: string;
   market: MarketData;
   now?: () => Date;
@@ -191,6 +195,24 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
   if (now !== expected) {
     return reject(alert.symbol, alertId, `Not edited: the alert changed since the page loaded. It is now "${now}".`);
   }
+  // An edit sent from a trigger's details panel also closes that trigger's
+  // queue entry: re-levelling from the panel *is* the decision the entry was
+  // waiting on. Checked before the edit so a stale panel is one rejection and
+  // no half-done change, rather than an alert moved with the entry still open.
+  const revisitId = stringField(op.target, "revisitId");
+  const revisitsFile = ctx.revisitsFile ?? DEFAULT_REVISITS_FILE;
+  if (revisitId !== null && revisitId !== "") {
+    const entry = loadRevisits(revisitsFile).find((e) => e.id === revisitId);
+    if (entry === undefined) {
+      return reject(alert.symbol, alertId, `No revisit entry with id ${revisitId}. It may already be closed.`);
+    }
+    if (entry.alertId !== alertId) {
+      return reject(alert.symbol, alertId, `Revisit ${revisitId} belongs to alert ${entry.alertId}, not ${alertId}.`);
+    }
+    if (entry.status !== "open") {
+      return reject(alert.symbol, alertId, `Revisit ${revisitId} is already ${entry.status}.`);
+    }
+  }
   const fields = editFieldsFromJson(op.params);
   if (!fields.ok) {
     return reject(alert.symbol, alertId, fields.error);
@@ -206,10 +228,19 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
   const replaced = result.replaced
     ? ` Cancelled alert ${result.replaced.id} (${describeAlertCondition(result.replaced)}): the new level is closer to price on the same side.`
     : "";
+  let closed = "";
+  if (revisitId !== null && revisitId !== "") {
+    // Same pair `alert revisit apply` records, so the ticker story can say
+    // what the level moved from and to. Both null for a non-level edit.
+    const from = result.before.kind === "static" ? result.before.level : null;
+    const to = result.edited.kind === "static" ? result.edited.level : null;
+    resolveRevisit(revisitsFile, revisitId, "applied", { from: from === to ? null : from, to: from === to ? null : to });
+    closed = ` Revisit ${revisitId} marked applied.`;
+  }
   return {
     symbol: alert.symbol,
     alertId,
     ok: true,
-    message: `Edited ${alert.kind} alert ${alertId}: was "${describeAlertCondition(result.before)}", now "${describeAlertCondition(result.edited)}".${replaced}`,
+    message: `Edited ${alert.kind} alert ${alertId}: was "${describeAlertCondition(result.before)}", now "${describeAlertCondition(result.edited)}".${replaced}${closed}`,
   };
 }

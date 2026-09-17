@@ -75,6 +75,8 @@ export interface CrossingDetails {
 
 export interface RevisitRow extends CrossingDetails {
   id: string;
+  /** The alert that fired. The browser dashboard edits it from this row's details panel. */
+  alertId: string;
   symbol: string;
   priority: number | null;
   /** Plain-English one-liner: "TGT crossed above 110 on volume and held". */
@@ -277,6 +279,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
     .slice(0, limit)
     .map((e) => ({
       id: e.id,
+      alertId: e.alertId,
       symbol: e.symbol,
       priority: e.priority,
       headline: triggerHeadline(e, narrativeCtx),

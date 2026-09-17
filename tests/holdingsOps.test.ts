@@ -11,7 +11,7 @@ import { loadHoldingsStore, saveHoldingsStore } from "../src/holdings/store.js";
 import { applyOp, parseOp, type OpResult } from "../src/ops/apply.js";
 import { parseLotEdit, parseLotInput, parseStopInput } from "../src/ops/validate.js";
 import type { Quote } from "../src/providers/schwab.js";
-import { siteDocument, siteFingerprint, writeSite } from "../src/web/site.js";
+import { NO_OPS, siteDocument, siteFingerprint, writeSite } from "../src/web/site.js";
 import { VAULT_FILE, openVault, sealVault, vaultContents } from "../src/web/vault.js";
 
 const TOKEN = "t".repeat(64);
@@ -263,7 +263,7 @@ describe("vault", () => {
     it("writes vault.json when given one and deletes a stale one otherwise", () => {
       const site = join(dir, "site");
       const d = build(store(), quotes);
-      writeSite(site, d, { holdings: false, vault: true }, [], [], sealVault(vaultContents(d.holdings, store()), TOKEN));
+      writeSite(site, d, { holdings: false, vault: true }, [], NO_OPS, sealVault(vaultContents(d.holdings, store()), TOKEN));
       expect(existsSync(join(site, VAULT_FILE))).toBe(true);
       expect(readFileSync(join(site, "dashboard.json"), "utf-8")).not.toMatch(/"shares"|"basis"|"marketValue"/);
       writeSite(site, d, { holdings: false }, []);

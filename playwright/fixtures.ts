@@ -1,10 +1,12 @@
 /**
- * Fixture alerts for the Playwright suite: one of each kind the page treats
- * differently when editing. Shared by the local server and the specs, so it
- * must stay free of side effects.
+ * Fixture alerts, holdings and fires for the Playwright suite: one alert of
+ * each kind the page treats differently when editing, a couple of positions,
+ * and enough triggers to render a queue, a story and a `held` tag. Shared by
+ * the local server and the specs, so it must stay free of side effects.
  */
 
 import type { MaAlert, StaticAlert, TrailingAlert } from "../src/alerts/models.js";
+import { scoreRevisit, type RevisitEntry } from "../src/alerts/revisit.js";
 import type { HoldingsStore } from "../src/holdings/models.js";
 
 /** The fake ops endpoint accepts exactly this bearer token. */
@@ -90,3 +92,98 @@ export const HOLDINGS: HoldingsStore = {
   stops: [{ id: "stop0001", symbol: "AA", count: null, stopPrice: 38, createdAt: "2026-09-02T15:00:00.000Z" }],
   alertState: [],
 };
+
+/**
+ * Fires, for the revisit queue, the recent-trigger list and the stories.
+ *
+ * Timestamps are relative to when this module loads rather than fixed dates,
+ * so every entry stays inside buildDashboard's 7-day recent-triggers window
+ * however long this suite lives. The clock time is pinned, so what a run
+ * renders is otherwise deterministic. Days are counted back from now, and the
+ * hour is set afterwards, which can only ever move an entry further into the
+ * past - never past `now`.
+ */
+const daysAgo = (days: number, hour = 14): string => {
+  const d = new Date(Date.now() - days * 86_400_000);
+  d.setUTCHours(hour, 30, 0, 0);
+  return d.toISOString();
+};
+
+/**
+ * Two fires on AA, which HOLDINGS holds: enough for a story (narrative.ts
+ * wants two) and for a `held` tag, with the newer one open so it also reaches
+ * the queue. One on MSFT, which isn't held and so gets neither a tag nor a
+ * story. Every alertId names a real fixture alert, so the trigger drawer's
+ * "Alert" link resolves. All of it is invented - no real position or level.
+ */
+export const FIXTURE_REVISITS: RevisitEntry[] = [
+  {
+    id: "rv0000a1",
+    alertId: STATIC.id,
+    symbol: "AA",
+    kind: "static",
+    triggeredAt: daysAgo(5),
+    triggerPrice: 44.1,
+    levelAtTrigger: 43,
+    condition: "price crosses above 43",
+    direction: "up",
+    session: "regular",
+    watchingSince: daysAgo(90),
+    watchingSinceApprox: false,
+    priceAtWatchStart: 38,
+    status: "applied",
+    appliedFrom: 43,
+    appliedTo: 55,
+    suggestedLevel: 55,
+    suggestedAt: daysAgo(5),
+    suggestionBasis: "the trigger price plus its recent range",
+    resolvedAt: daysAgo(4),
+    ...scoreRevisit({ verdict: "CONFIRMED_BREAKOUT", pctMovePastLevel: 2.6, daysOpen: 5, heldPosition: true, volumeRatio: 1.8, volumeTrendRatio: 1.2, direction: "up" }),
+  },
+  {
+    id: "rv0000a2",
+    alertId: STATIC.id,
+    symbol: "AA",
+    kind: "static",
+    triggeredAt: daysAgo(1),
+    triggerPrice: 55.6,
+    levelAtTrigger: 55,
+    condition: "price crosses above 55",
+    direction: "up",
+    session: "regular",
+    watchingSince: daysAgo(90),
+    watchingSinceApprox: false,
+    priceAtWatchStart: 38,
+    status: "open",
+    appliedFrom: null,
+    appliedTo: null,
+    suggestedLevel: 61,
+    suggestedAt: daysAgo(1),
+    suggestionBasis: "the trigger price plus its recent range",
+    resolvedAt: null,
+    ...scoreRevisit({ verdict: "WATCH", pctMovePastLevel: 1.1, daysOpen: 1, heldPosition: true, volumeRatio: 1.4, volumeTrendRatio: 1.1, direction: "up" }),
+  },
+  {
+    id: "rv0000m1",
+    alertId: STATIC_WITH_VOLUME.id,
+    symbol: "MSFT",
+    kind: "static",
+    triggeredAt: daysAgo(2),
+    triggerPrice: 396.4,
+    levelAtTrigger: 400,
+    condition: "price crosses below 400 with volume ≥ 1.5x normal today",
+    direction: "down",
+    session: "regular",
+    watchingSince: daysAgo(60),
+    watchingSinceApprox: false,
+    priceAtWatchStart: 410,
+    status: "open",
+    appliedFrom: null,
+    appliedTo: null,
+    suggestedLevel: null,
+    suggestedAt: null,
+    suggestionBasis: null,
+    resolvedAt: null,
+    ...scoreRevisit({ verdict: "NO_CLOSE_CONFIRM", pctMovePastLevel: -0.9, daysOpen: 2, heldPosition: false, volumeRatio: 1.1, volumeTrendRatio: null, direction: "down" }),
+  },
+];

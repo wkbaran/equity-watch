@@ -5,7 +5,7 @@ import type { RevisitEntry } from "../src/alerts/revisit.js";
 import { scoreRevisit } from "../src/alerts/revisit.js";
 import { emptyHoldingsStore, type HoldingsStore } from "../src/holdings/models.js";
 import type { Quote } from "../src/providers/schwab.js";
-import { dashboardFingerprint, siteDocument } from "../src/web/site.js";
+import { dashboardFingerprint, NO_OPS, siteDocument } from "../src/web/site.js";
 import { buildAlertRows } from "../src/web/alertsPage.js";
 
 describe("chart links", () => {
@@ -181,16 +181,23 @@ describe("siteDocument", () => {
   it("moves the fingerprint when an op result arrives", () => {
     const off = { holdings: false };
     const result = { id: "op-0001", type: "alert.add", symbol: "AAPL", alertId: "a1", ok: true, message: "Added", appliedAt: "2026-09-15T15:00:00.000Z" };
-    expect(dashboardFingerprint(siteDocument(held(), off, [result]))).not.toBe(dashboardFingerprint(siteDocument(held(), off)));
+    expect(dashboardFingerprint(siteDocument(held(), off, { ...NO_OPS, results: [result] }))).not.toBe(dashboardFingerprint(siteDocument(held(), off)));
   });
 
-  // It advances on every clean drain, so hashing it would publish on every run.
-  it("carries the ops watermark without letting it move the fingerprint", () => {
+  // Both advance with the clock on every clean drain, so hashing either would
+  // publish on every run.
+  it("carries the ops watermark and cadence without letting them move the fingerprint", () => {
     const off = { holdings: false };
-    const doc = siteDocument(held(), off, [], "2026-09-16T04:00:00.000Z");
+    const at4 = { results: [], processedThrough: "2026-09-16T04:00:00.000Z", intervalMinutes: 15, nextCheckAt: "2026-09-16T04:15:00.000Z" };
+    const doc = siteDocument(held(), off, at4);
     expect(doc.opsProcessedThrough).toBe("2026-09-16T04:00:00.000Z");
-    expect(dashboardFingerprint(doc)).toBe(dashboardFingerprint(siteDocument(held(), off, [], "2026-09-16T05:00:00.000Z")));
+    expect(doc.opsIntervalMinutes).toBe(15);
+    expect(doc.opsNextCheckAt).toBe("2026-09-16T04:15:00.000Z");
+    const at5 = { results: [], processedThrough: "2026-09-16T05:00:00.000Z", intervalMinutes: 16, nextCheckAt: "2026-09-16T05:15:00.000Z" };
+    expect(dashboardFingerprint(doc)).toBe(dashboardFingerprint(siteDocument(held(), off, at5)));
     expect(siteDocument(held(), off).opsProcessedThrough).toBeNull();
+    expect(siteDocument(held(), off).opsIntervalMinutes).toBeNull();
+    expect(siteDocument(held(), off).opsNextCheckAt).toBeNull();
   });
 });
 

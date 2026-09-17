@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MarketData } from "../src/alerts/engine.js";
 import type { StaticAlert } from "../src/alerts/models.js";
+import { newRevisitEntry, type RevisitEntry } from "../src/alerts/revisit.js";
+import { loadRevisits, saveRevisits } from "../src/alerts/revisitStore.js";
 import { loadAlerts, saveAlerts } from "../src/alerts/store.js";
 import { applyOp, loadOpLog, parseOp, recentOpResults, type Op, type OpResult } from "../src/ops/apply.js";
 import { pullOps, type OpsQueue, type QueueMessage } from "../src/ops/pull.js";
@@ -158,12 +160,14 @@ describe("parseOp", () => {
 describe("applyOp", () => {
   let dir: string;
   let alertsFile: string;
+  let revisitsFile: string;
   let opLogFile: string;
   const NOW = () => new Date("2026-09-15T15:00:00.000Z");
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "ops-"));
     alertsFile = join(dir, "alerts.json");
+    revisitsFile = join(dir, "revisits.json");
     opLogFile = join(dir, "ops.log.jsonl");
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -177,6 +181,23 @@ describe("applyOp", () => {
     const r = parseOp({ id, type: "alert.edit", target: { alertId }, expect: { condition }, params });
     if (!r.ok) throw new Error(r.error);
     return r.op;
+  };
+  /** An edit as the trigger details panel sends it: the alert, plus the queue entry it fired into. */
+  const editFromRevisit = (revisitId: string, params: Record<string, unknown>, id = "op-edit-0002"): Op => {
+    const r = parseOp({
+      id,
+      type: "alert.edit",
+      target: { alertId: "s1abcdef", revisitId },
+      expect: { condition: "price crosses above 100" },
+      params,
+    });
+    if (!r.ok) throw new Error(r.error);
+    return r.op;
+  };
+  const seedRevisit = (overrides: Partial<RevisitEntry> = {}): RevisitEntry => {
+    const entry = { ...newRevisitEntry(makeStatic(), 101, "2026-09-14T15:00:00.000Z", "regular"), id: "rv000001", ...overrides };
+    saveRevisits(revisitsFile, [entry]);
+    return entry;
   };
 
   it("adds an alert and logs the result", async () => {
@@ -233,6 +254,55 @@ describe("applyOp", () => {
     expect(result).toMatchObject({ ok: true, symbol: "TEST", alertId: "s1abcdef" });
     expect(result.message).toBe('Edited static alert s1abcdef: was "price crosses above 100", now "price crosses above 110".');
     expect((loadAlerts(alertsFile)[0] as StaticAlert).level).toBe(110);
+  });
+
+  // Editing the alert from a trigger's details panel is the decision its queue
+  // entry was waiting on, so the same op closes the entry.
+  it("closes the revisit entry an edit names, recording what the level moved", async () => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    seedRevisit();
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }) };
+    const { result } = await applyOp(editFromRevisit("rv000001", { level: 110 }), ctx);
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("Revisit rv000001 marked applied.");
+    expect((loadAlerts(alertsFile)[0] as StaticAlert).level).toBe(110);
+    expect(loadRevisits(revisitsFile)[0]).toMatchObject({ status: "applied", appliedFrom: 100, appliedTo: 110 });
+    expect(loadRevisits(revisitsFile)[0].resolvedAt).not.toBeNull();
+  });
+
+  it("leaves appliedFrom/appliedTo null when the edit didn't move the level", async () => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    seedRevisit();
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }) };
+    const { result } = await applyOp(editFromRevisit("rv000001", { direction: "either" }), ctx);
+    expect(result.ok).toBe(true);
+    expect(loadRevisits(revisitsFile)[0]).toMatchObject({ status: "applied", appliedFrom: null, appliedTo: null });
+  });
+
+  // Checked before the edit, so a stale panel is one rejection rather than an
+  // alert moved with its entry left open.
+  it.each([
+    ["rv-gone1", (): void => void seedRevisit(), "No revisit entry with id rv-gone1"],
+    ["rv000001", (): void => void seedRevisit({ alertId: "other123" }), "belongs to alert other123"],
+    ["rv000001", (): void => void seedRevisit({ status: "dismissed" }), "is already dismissed"],
+  ])("rejects an edit naming revisit %s without touching the alert", async (revisitId, seed, message) => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    seed();
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }) };
+    const { result } = await applyOp(editFromRevisit(revisitId, { level: 110 }), ctx);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain(message);
+    expect((loadAlerts(alertsFile)[0] as StaticAlert).level).toBe(100);
+  });
+
+  it("leaves the queue alone when an edit names no revisit", async () => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    seedRevisit();
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }) };
+    const { result } = await applyOp(edit("s1abcdef", "price crosses above 100", { level: 110 }), ctx);
+    expect(result.ok).toBe(true);
+    expect(result.message).not.toContain("Revisit");
+    expect(loadRevisits(revisitsFile)[0].status).toBe("open");
   });
 
   it("rejects an edit when the alert changed since the page loaded", async () => {

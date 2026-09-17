@@ -79,6 +79,16 @@
     return `${Math.round(hr / 24)} days ago`;
   }
 
+  function until(iso) {
+    const min = Math.round((new Date(iso).getTime() - Date.now()) / 60_000);
+    if (min <= 0) return "now";
+    if (min < 60) return `in ${min} min`;
+    const hr = Math.floor(min / 60);
+    const rest = min % 60;
+    if (hr < 24) return rest === 0 ? `in ${hr} hr` : `in ${hr} hr ${rest} min`;
+    return `in ${Math.round(hr / 24)} days`;
+  }
+
   function when(iso) {
     const d = new Date(iso);
     const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -101,8 +111,27 @@
   // Headlines lead with the symbol ("Holding MKS crossed below 110"). Where the
   // symbol is shown separately, drop it from the sentence; held becomes a tag.
   const bareHeadline = (t) => t.headline.replace(new RegExp(`^(Holding )?${escapeRe(t.symbol)} `), "");
-  const heldTag = (t) => (t.heldPosition ? h("span", { class: "tag held", text: "held" }) : null);
   const muted = (text) => h("span", { class: "muted", text });
+
+  // The held tag opens the Holdings view on that position, in one tab reused
+  // across every click (a named target, like the chart fallback below): the
+  // overview is a place you sit and watch, so checking a position shouldn't
+  // navigate it away. No preventDefault - the browser's own window targeting is
+  // what reuses the tab. stopPropagation only, so a tag inside a clickable row
+  // or toast doesn't also open that row's details.
+  const HOLDINGS_TARGET = "equity-watch-holdings";
+  const holdingsHash = (symbol) => `#/holdings/${encodeURIComponent(symbol)}`;
+  const heldTag = (t) =>
+    t.heldPosition
+      ? h("a", {
+          class: "tag held",
+          href: holdingsHash(t.symbol),
+          target: HOLDINGS_TARGET,
+          title: `Show ${t.symbol} in Holdings`,
+          text: "held",
+          onclick: (e) => e.stopPropagation(),
+        })
+      : null;
 
   // Every displayed ticker links to its TradingView chart. The click stops
   // there so a ticker inside a clickable row or toast doesn't also open details.
@@ -244,7 +273,11 @@
 
   function rerenderOps() {
     renderOpsControls();
-    if (current) renderTiles(current.summary, holdingRows() !== null);
+    if (current) {
+      renderTiles(current.summary, holdingRows() !== null);
+      // The queue rows carry an "edit pending" tag of their own.
+      renderQueue(current.revisitQueue);
+    }
     if (baseView === "alerts") renderAlerts();
     renderHoldingsView();
     renderDrawer(parseRoute().drawer);
@@ -344,6 +377,10 @@
     rerenderOps();
   }
 
+  // How far past the expected drain to wait before calling it late rather than
+  // merely due: at a 15 min cadence a run that slips a few minutes is normal.
+  const OPS_OVERDUE_FACTOR = 2;
+
   const pendingFor = (alertId) => pendingOps.filter((p) => p.alertId === alertId);
   const pendingTag = (alertId) => (pendingFor(alertId).length ? h("span", { class: "tag pending", text: "edit pending" }) : null);
 
@@ -354,7 +391,8 @@
 
   function renderPendingList(box, items) {
     box.hidden = items.length === 0;
-    box.replaceChildren(
+    const schedule = items.length === 0 ? null : opsScheduleNote();
+    const rows = [
       ...items.map((p) =>
         h(
           "div",
@@ -372,8 +410,53 @@
             },
           })
         )
-      )
-    );
+      ),
+    ];
+    // One line under the list rather than one per row: every pending op is
+    // waiting on the same next drain. Filtered, because replaceChildren renders
+    // a null argument as the text "null".
+    if (schedule) rows.push(schedule);
+    box.replaceChildren(...rows);
+  }
+
+  /**
+   * When the queued changes are expected to apply.
+   *
+   * Two sources, in order. `opsNextCheckAt` is the scheduler's own next-run
+   * time, passed in by scripts/check-and-publish.ps1, so it already accounts
+   * for the daily window: at 18:10 it is tomorrow's 01:55, not 18:25. It is
+   * only trusted while it is still in the future, because a quiet run
+   * publishes nothing (--skip-unchanged) and it can legitimately go stale by
+   * up to --max-stale-minutes with the task running fine.
+   *
+   * Otherwise the cadence `ops pull` measured for itself (src/ops/schedule.ts),
+   * counting down and then warning. Saying "applies in ~0 min" forever would
+   * be a lie: the run is late, or the task is outside its window or stopped.
+   *
+   * Market hours deliberately play no part. `ops pull` has no hours gate, so a
+   * queued edit lands at the next check whether or not the market is open.
+   */
+  function opsScheduleNote() {
+    const next = current?.opsNextCheckAt ?? null;
+    if (next !== null && new Date(next).getTime() > Date.now()) {
+      return h("div", { class: "note", text: `Applies at the next check, ${when(next)} (${until(next)}).` });
+    }
+    const last = current?.opsProcessedThrough ?? null;
+    if (last === null) return h("div", { class: "note", text: "Applied by the next scheduled check." });
+    const interval = current?.opsIntervalMinutes ?? null;
+    const elapsed = (Date.now() - new Date(last).getTime()) / 60_000;
+    if (interval === null) {
+      // Too few drains recorded to name a cadence; the watermark still says
+      // whether anything is running at all.
+      return h("div", { class: "note", text: `Applied by the next scheduled check. Last check ${ago(last)}.` });
+    }
+    const remaining = Math.round(interval - elapsed);
+    if (remaining > 0) return h("div", { class: "note", text: `Applies in ~${remaining} min.` });
+    if (elapsed < interval * OPS_OVERDUE_FACTOR) return h("div", { class: "note", text: "Applies at the next check, due now." });
+    return h("div", {
+      class: "note warn",
+      text: `⚠ No check since ${when(last)} (${ago(last)}), and they run about every ${interval} min. The scheduled task may be outside its daily window or stopped — queued changes keep waiting until it runs.`,
+    });
   }
 
   const field = (label, input) => h("label", { class: "field" }, h("span", { text: label }), input);
@@ -440,20 +523,31 @@
     slot.replaceChildren(addFormEl);
   }
 
-  function editSection(a) {
+  /**
+   * The Edit form for one alert. `revisitId` is set when the form is shown in
+   * a trigger's details panel: the queued edit then also closes that queue
+   * entry, because re-levelling from the panel is the decision it was waiting
+   * on. It is part of the reuse key, so the same alert's form is rebuilt when
+   * it is opened from the other drawer.
+   */
+  function editSection(a, revisitId = null) {
     if (!canEdit()) return null;
-    const pending = pendingFor(a.id).map((p) => h("p", { class: "note" }, h("span", { class: "tag pending", text: "pending" }), ` ${p.summary}, queued ${ago(p.queuedAt)}`));
+    const queued = pendingFor(a.id);
+    const pending = queued.map((p) => h("p", { class: "note" }, h("span", { class: "tag pending", text: "pending" }), ` ${p.summary}, queued ${ago(p.queuedAt)}`));
+    // The drawer is where a revisit-queue edit is made, so it is where "when
+    // does this land?" gets asked first.
+    if (queued.length > 0) pending.push(opsScheduleNote());
     if (a.kind !== "static" && a.kind !== "trailing") {
       return [...pending, h("p", { class: "note", text: "This kind can't be edited from the page yet. Use alert edit in the CLI." })];
     }
     // Reuse the form while the alert is unchanged; rebuild it once an edit has landed.
-    if (editForm?.alertId !== a.id || editForm.condition !== a.condition) {
-      editForm = { alertId: a.id, condition: a.condition, el: buildEditForm(a) };
+    if (editForm?.alertId !== a.id || editForm.condition !== a.condition || editForm.revisitId !== revisitId) {
+      editForm = { alertId: a.id, condition: a.condition, revisitId, el: buildEditForm(a, revisitId) };
     }
     return [...pending, editForm.el];
   }
 
-  function buildEditForm(a) {
+  function buildEditForm(a, revisitId = null) {
     const error = h("span", { class: "form-error" });
     const button = h("button", { type: "submit", text: "Queue edit" });
     const fields = [];
@@ -501,17 +595,32 @@
           if (c.changes.length === 0) return (error.textContent = "Nothing changed.");
           button.disabled = true;
           await submitOp(
-            { type: "alert.edit", target: { alertId: a.id }, expect: { condition: a.condition }, params: c.params },
-            { symbol: a.symbol, alertId: a.id, summary: `edit ${a.symbol} ${c.changes.join(", ")}` }
+            {
+              type: "alert.edit",
+              target: revisitId === null ? { alertId: a.id } : { alertId: a.id, revisitId },
+              expect: { condition: a.condition },
+              params: c.params,
+            },
+            {
+              symbol: a.symbol,
+              alertId: a.id,
+              summary: `edit ${a.symbol} ${c.changes.join(", ")}${revisitId === null ? "" : " and close its queue entry"}`,
+            }
           );
           button.disabled = false;
         },
       },
-      h("strong", { class: "form-title", text: "Edit" }),
+      h("strong", { class: "form-title", text: revisitId === null ? "Edit" : "Edit this alert" }),
       ...fields,
       button,
       error,
-      h("div", { class: "note", text: "Applied at the next scheduled check. Rejected if the alert changes before then." })
+      h("div", {
+        class: "note",
+        text:
+          revisitId === null
+            ? "Applied at the next scheduled check. Rejected if the alert changes before then."
+            : "Applied at the next scheduled check, which also drops this entry from the revisit queue. Rejected if the alert changes before then.",
+      })
     );
   }
 
@@ -592,7 +701,15 @@
         vaultError ??
         (vaultLoading ? "Loading holdings…" : opsEnabled() && current?.site?.vault ? "Holdings are private. Unlock editing to see and change them." : "Holdings aren't published.");
     } else {
-      status.textContent = current ? `Prices as of ${ago(current.generatedAt)}.${canEditHoldings() ? " Select a position for its lots and stops." : ""}` : "";
+      // A held tag can point at a symbol that is no longer a position (the tag
+      // rides on a trigger recorded when it was), so say so rather than
+      // highlighting nothing.
+      const missing = focusedHolding !== null && !rows.some((r) => r.symbol === focusedHolding);
+      status.textContent = current
+        ? `Prices as of ${ago(current.generatedAt)}.${canEditHoldings() ? " Select a position for its lots and stops." : ""}${
+            missing ? ` ${focusedHolding} isn't a position here.` : ""
+          }`
+        : "";
     }
     renderLotAddForm();
     renderPending();
@@ -882,6 +999,10 @@
   let alertsPromise = null;
   let freshIds = new Set();
   let holdingsSort = { key: "pctFromBasis", dir: -1 };
+  // The position #/holdings/<symbol> points at, and whether it still needs
+  // scrolling into view (once per arrival, not on every poll's re-render).
+  let focusedHolding = null;
+  let scrollToFocused = false;
   let baseView = "overview";
   let openDrawerKey = null;
   const alertsFilter = { q: "", kind: "all", sort: "symbol" };
@@ -915,7 +1036,19 @@
           h(
             "div",
             {},
-            h("div", { class: "headline" }, symbolLink(r.symbol, r.chartUrl), " ", h("a", { class: "plain", href: triggerHash(r.id), text: bareHeadline(r) }), heldTag(r), reversedTag(r)),
+            h(
+              "div",
+              { class: "headline" },
+              symbolLink(r.symbol, r.chartUrl),
+              " ",
+              h("a", { class: "plain", href: triggerHash(r.id), text: bareHeadline(r) }),
+              heldTag(r),
+              reversedTag(r),
+              // A queued edit from the details panel closes this entry, but not
+              // until the next check runs; say so rather than leave the row
+              // looking like nothing happened.
+              pendingTag(r.alertId)
+            ),
             h(
               "div",
               { class: "sub" },
@@ -931,8 +1064,7 @@
               { class: "actions" },
               h("a", { href: triggerHash(r.id), text: "Details" }),
               h("a", { href: r.chartUrl, target: CHART_TARGET, text: "Chart" }),
-              r.suggestedLevel !== null ? copyButton(`Copy apply → ${r.suggestedLevel}`, `${CLI} alert revisit apply ${r.id}`) : null,
-              copyButton("Copy dismiss", `${CLI} alert revisit dismiss ${r.id}`)
+              r.suggestedLevel !== null ? copyButton(`Copy apply → ${r.suggestedLevel}`, `${CLI} alert revisit apply ${r.id}`) : null
             )
           )
         )
@@ -1036,10 +1168,11 @@
         else expandedPositions.add(r.symbol);
         renderHoldings(rows);
       };
+      const focused = r.symbol === focusedHolding;
       const row = h(
         "tr",
         {
-          class: [r.ignored ? "ignored" : "", editable ? "clickable" : ""].join(" ").trim() || null,
+          class: [r.ignored ? "ignored" : "", editable ? "clickable" : "", focused ? "focused" : ""].filter(Boolean).join(" ") || null,
           title: r.ignored ? "Not alerted (ignoreSymbols)" : null,
           tabindex: editable ? "0" : null,
           "aria-expanded": editable ? String(open) : null,
@@ -1064,6 +1197,11 @@
         h("td", { class: "bar-cell" }, h("div", { class: "bar" }, p ? h("span", { class: p > 0 ? "up" : "down", style: `width:${width}%` }) : null)),
         h("td", { text: money(r.marketValue) })
       );
+      if (focused && scrollToFocused) {
+        scrollToFocused = false;
+        // After this batch is in the document, not while it is still detached.
+        requestAnimationFrame(() => row.scrollIntoView({ block: "center" }));
+      }
       return open ? [row, h("tr", { class: "detail-row" }, h("td", { colspan: String(HOLDING_COLS.length) }, positionDetail(r.symbol)))] : [row];
     });
     if (body.length === 0) {
@@ -1207,6 +1345,59 @@
 
   const kv = (label, ...value) => [h("dt", { text: label }), h("dd", {}, ...value)];
 
+  /**
+   * The position behind a `held` tag, for the row of the details drawer.
+   * Read from holdingRows(), never from the trigger or alert row: share
+   * counts, basis and value are only in the document when web.holdings is on,
+   * and otherwise only in the decrypted vault. On the public site this is
+   * simply absent, which is the point.
+   */
+  function positionValue(symbol) {
+    const rows = holdingRows();
+    if (rows === null) return null;
+    const r = rows.find((x) => x.symbol === symbol);
+    if (!r) return null;
+    const parts = [
+      `${r.shares} shares`,
+      `basis ${money(r.basis)}`,
+      r.pctFromBasis !== null ? `${pct(r.pctFromBasis)} vs basis` : null,
+      r.marketValue !== null ? `value ${money(r.marketValue)}` : null,
+    ].filter(Boolean);
+    return [
+      h("div", { text: parts.join(" · ") }),
+      r.stops.length ? h("div", { class: "note", text: `Stop ${r.stops.map(money).join(", ")}` }) : null,
+      h(
+        "div",
+        { class: "note" },
+        `Last bought ${r.lastPurchaseDate}${r.ignored ? " · not alerted (ignoreSymbols)" : ""} · `,
+        h("a", { href: holdingsHash(symbol), target: HOLDINGS_TARGET, text: "Holdings" })
+      ),
+    ].filter(Boolean);
+  }
+
+  /**
+   * The multi-trigger thread for this symbol, when there is one. Stories are
+   * built per symbol (narrative.ts, two triggers minimum), so a drawer either
+   * has one or the symbol has only fired once.
+   */
+  function storyBlock(symbol) {
+    const story = (current?.stories ?? []).find((s) => s.symbol === symbol);
+    if (!story) return null;
+    return [
+      h("h3", { class: "drawer-sub", text: "Story" }),
+      h(
+        "div",
+        { class: "card" },
+        h(
+          "div",
+          { class: "story" },
+          h("div", { class: "headline" }, ...linkLeadingSymbol(story.summary, story.symbol)),
+          h("ol", {}, ...story.lines.map((l) => h("li", { text: l.text })))
+        )
+      ),
+    ];
+  }
+
   function volumeText(v) {
     const window = v.window === "today" ? "today" : `in the last ${v.window}`;
     const multiple = v.required > 0 ? ` (${(v.observed / v.required).toFixed(2)}x)` : "";
@@ -1299,6 +1490,8 @@
     } else if (t.watchingSince) {
       rows.push(kv("Watching since", full(t.watchingSince), t.watchingSinceApprox ? muted(" (approximate)") : ""));
     }
+    const position = positionValue(t.symbol);
+    if (position) rows.push(kv("Position", ...position));
     rows.push(
       kv(
         "Alert",
@@ -1309,14 +1502,34 @@
     return [
       h("h2", { class: "drawer-title" }, symbolLink(t.symbol, t.chartUrl), " ", bareHeadline(t), heldTag(t), reversedTag(t)),
       h("dl", { class: "kv-list" }, ...rows),
+      ...(storyBlock(t.symbol) ?? []),
       h(
         "div",
         { class: "actions", style: "margin-top:1.25rem" },
         h("a", { href: t.chartUrl, target: CHART_TARGET, text: "Chart" }),
-        t.status === "open" && t.suggestedLevel !== null ? copyButton(`Copy apply → ${t.suggestedLevel}`, `${CLI} alert revisit apply ${t.id}`) : null,
-        t.status === "open" ? copyButton("Copy dismiss", `${CLI} alert revisit dismiss ${t.id}`) : null
+        t.status === "open" && t.suggestedLevel !== null ? copyButton(`Copy apply → ${t.suggestedLevel}`, `${CLI} alert revisit apply ${t.id}`) : null
       ),
+      // A wrapper, because replaceChildren renders a null argument as the text "null".
+      h("div", {}, triggerEditSection(t)),
     ];
+  }
+
+  /**
+   * Re-level the alert this trigger came from, without leaving the panel. The
+   * edit carries the entry's id, so applying it also closes the entry: acting
+   * on a trigger is what the queue is asking for, and a queue row left open
+   * behind an applied edit would only ask again.
+   *
+   * The alert's current settings live in alerts.json, not in the trigger row,
+   * so this waits on that fetch (applyRoute starts it for a trigger drawer).
+   */
+  function triggerEditSection(t) {
+    if (!canEdit() || t.status !== "open" || !t.alertExists) return null;
+    if (!alertsDoc) return h("p", { class: "note", text: "Loading the alert…" });
+    const a = alertsDoc.alerts.find((x) => x.id === t.alertId);
+    // Cancelled or on an ignored symbol: alerts.json only carries live ones.
+    if (!a) return h("p", { class: "note", text: "The alert behind this trigger is no longer live, so there is nothing to edit." });
+    return editSection(a, t.id);
   }
 
   function alertDetail(id) {
@@ -1352,12 +1565,15 @@
       )
     );
     rows.push(kv("Watching since", full(a.watchingSince), a.watchingSinceApprox ? muted(" (approximate, from an import)") : ""));
+    const position = positionValue(a.symbol);
+    if (position) rows.push(kv("Position", ...position));
     rows.push(kv("Alert id", h("code", { text: a.id })));
 
     const triggers = (current?.recentTriggers ?? []).filter((t) => t.alertId === a.id);
     return [
-      h("h2", { class: "drawer-title" }, symbolLink(a.symbol, a.chartUrl), " ", muted(KIND_LABEL[a.kind] ?? a.kind)),
+      h("h2", { class: "drawer-title" }, symbolLink(a.symbol, a.chartUrl), " ", muted(KIND_LABEL[a.kind] ?? a.kind), heldTag(a)),
       h("dl", { class: "kv-list" }, ...rows),
+      ...(storyBlock(a.symbol) ?? []),
       h("h3", { class: "drawer-sub", text: "Recent triggers" }),
       triggers.length ? h("div", { class: "card" }, ...triggers.map(triggerRow)) : h("p", { class: "muted", text: "None in the recent window." }),
       h(
@@ -1465,20 +1681,33 @@
 
   function parseRoute() {
     const [view, id] = location.hash.replace(/^#\/?/, "").split("/");
-    if (BASE_VIEWS.includes(view)) return { base: view, drawer: null };
-    if ((view === "trigger" || view === "alert") && id) return { base: null, drawer: { type: view, id: decodeURIComponent(id) } };
-    return { base: "overview", drawer: null };
+    // #/holdings/<symbol> is the held tag's link: the same view, scrolled to
+    // and highlighting one position.
+    if (BASE_VIEWS.includes(view)) return { base: view, focus: id ? decodeURIComponent(id) : null, drawer: null };
+    if ((view === "trigger" || view === "alert") && id) return { base: null, focus: null, drawer: { type: view, id: decodeURIComponent(id) } };
+    return { base: "overview", focus: null, drawer: null };
   }
 
   function applyRoute() {
     const route = parseRoute();
-    if (route.base) baseView = route.base;
+    // Only a base route changes the focus: a drawer opens over the current
+    // view (route.base is null) and must not clear what it is sitting on.
+    if (route.base) {
+      baseView = route.base;
+      const focus = route.base === "holdings" ? route.focus : null;
+      if (focus !== focusedHolding) {
+        focusedHolding = focus;
+        scrollToFocused = focus !== null;
+      }
+    }
     for (const view of ["overview", ...BASE_VIEWS]) $(`view-${view}`).hidden = baseView !== view;
     for (const link of document.querySelectorAll("[data-nav]")) {
       if (link.dataset.nav === baseView) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     }
-    if (baseView === "alerts" || route.drawer?.type === "alert") ensureAlerts();
+    // Both drawers read alerts.json now: the alert drawer to render itself,
+    // the trigger drawer for the edit form on the alert behind the fire.
+    if (baseView === "alerts" || route.drawer) ensureAlerts();
     if (baseView === "alerts") renderAlerts();
     if (baseView === "holdings") renderHoldingsView();
     renderDrawer(route.drawer);
@@ -1597,7 +1826,7 @@
     resolvePending(d.opResults, d.opsProcessedThrough);
     // Re-read on every poll: the vault is republished alongside the results, and prices move.
     refreshVault();
-    if (baseView === "alerts" || parseRoute().drawer?.type === "alert") ensureAlerts(true);
+    if (baseView === "alerts" || parseRoute().drawer) ensureAlerts(true);
   }
 
   document.addEventListener("visibilitychange", () => {
@@ -1681,6 +1910,9 @@
   setInterval(poll, POLL_MS);
   setInterval(() => {
     renderUpdated();
+    // "applies in ~9 min" counts down between polls, and goes to the overdue
+    // warning on its own when no drain arrives.
+    renderPending();
     if (baseView === "alerts" && alertsDoc) $("alerts-status").textContent = $("alerts-status").textContent.replace(/prices .*$/, `prices ${ago(alertsDoc.generatedAt)}`);
   }, 30_000);
 })();

@@ -74,8 +74,8 @@ test("the backdrop and Escape also close it", async ({ page }) => {
 });
 
 test("a chart opened from inside the alert drawer layers on top of it", async ({ page }) => {
-  // The fixture server seeds no revisits, so there's no trigger drawer to open here -
-  // the alert drawer (opened from the alerts table) exercises the same layering.
+  // The alert drawer stands in for both: it and the trigger drawer share one
+  // #drawer element, so either exercises the same layering.
   await page.goto("/#/alerts");
   await page.locator("#alerts-table tr.clickable").first().click();
   await expect(page.locator("#drawer")).toBeVisible();
