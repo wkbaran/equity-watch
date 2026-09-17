@@ -7,7 +7,7 @@
  * the details from its own record of what it sent.
  */
 
-import { addLot, addStop, editLot, removeLot, removePosition } from "../holdings/engine.js";
+import { addLot, addStop, editLot, removeLot, removePosition, replaceStop } from "../holdings/engine.js";
 import type { Lot } from "../holdings/models.js";
 import { loadHoldingsStore, removeStop } from "../holdings/store.js";
 import type { Op, Outcome } from "./apply.js";
@@ -37,7 +37,16 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       if (!parsed.ok) {
         return reject(stringField(op.params, "symbol")?.trim().toUpperCase() || null, parsed.error);
       }
-      const lot = addLot(holdingsFile, parsed.value);
+      const { stopPrice, stopCount, ...lotInput } = parsed.value;
+      const lot = addLot(holdingsFile, lotInput);
+      if (stopPrice !== undefined) {
+        // Whatever stop(s) the symbol already had (e.g. from a prior lot on this
+        // position) no longer describe where to get out now that the position's
+        // size or basis has changed, so this one replaces them rather than adding
+        // alongside.
+        replaceStop(holdingsFile, { symbol: lot.symbol, stopPrice, count: stopCount ?? null });
+        return ok(lot.symbol, `Added a lot of ${lot.symbol} and set its stop.`);
+      }
       return ok(lot.symbol, `Added a lot of ${lot.symbol}.`);
     }
 

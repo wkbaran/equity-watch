@@ -337,6 +337,9 @@ export interface LotInput {
   basisPerShare: number;
   purchaseDate?: string;
   account?: string;
+  /** Set together to replace whatever stop(s) the symbol already has with one new stop. */
+  stopPrice?: number;
+  stopCount?: number;
 }
 
 export interface StopInput {
@@ -346,7 +349,7 @@ export interface StopInput {
   count: number | null;
 }
 
-const LOT_KEYS = ["symbol", "count", "basisPerShare", "purchaseDate", "account"];
+const LOT_KEYS = ["symbol", "count", "basisPerShare", "purchaseDate", "account", "stopPrice", "stopCount"];
 const LOT_EDIT_KEYS = ["count", "basisPerShare", "purchaseDate", "account"];
 const STOP_KEYS = ["symbol", "stopPrice", "count"];
 
@@ -410,12 +413,19 @@ export function parseLotInput(params: unknown): Parsed<LotInput> {
   return attempt(() => {
     const f = objectFields(params, LOT_KEYS);
     const account = accountValue(f.account);
+    const stopPrice = present(f.stopPrice) ? positiveValue("Stop price", f.stopPrice) : undefined;
+    const stopCount = present(f.stopCount) ? positiveValue("Shares covered", f.stopCount) : undefined;
+    if (stopCount !== undefined && stopPrice === undefined) {
+      fail("A stop needs a price.");
+    }
     return {
       symbol: symbolValue(f.symbol),
       count: positiveValue("Shares", f.count),
       basisPerShare: positiveValue("Basis per share", f.basisPerShare),
       ...(present(f.purchaseDate) ? { purchaseDate: dateValue(f.purchaseDate) } : {}),
       ...(account !== null ? { account } : {}),
+      ...(stopPrice !== undefined ? { stopPrice } : {}),
+      ...(stopCount !== undefined ? { stopCount } : {}),
     };
   });
 }

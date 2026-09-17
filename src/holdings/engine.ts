@@ -188,3 +188,19 @@ export function addStop(path: string, input: { symbol: string; stopPrice: number
   saveHoldingsStore(path, store);
   return stop;
 }
+
+/** Drops every existing stop on the symbol and adds one new one, in a single save. */
+export function replaceStop(path: string, input: { symbol: string; stopPrice: number; count?: number | null }): Stop {
+  const store = loadHoldingsStore(path);
+  store.stops = store.stops.filter((s) => s.symbol !== input.symbol);
+  const stop: Stop = {
+    id: randomUUID().slice(0, 8),
+    symbol: input.symbol,
+    count: input.count ?? null,
+    stopPrice: input.stopPrice,
+    createdAt: new Date().toISOString(),
+  };
+  store.stops.push(stop);
+  saveHoldingsStore(path, store);
+  return stop;
+}
