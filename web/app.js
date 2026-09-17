@@ -1686,8 +1686,15 @@
   // frame it sends) sidesteps that entirely: it plots four SMAs, and its own
   // out-of-the-box default lengths are exactly 20/50/100/200, so no override
   // is needed to get them - confirmed by screenshotting the live rendered
-  // chart, not just the URL. `colorTheme` (not `theme`) is the key verified
-  // working in that same screenshot; don't swap it back without re-checking.
+  // chart, not just the URL.
+  //
+  // The theme goes out under BOTH `theme` and `colorTheme`. `colorTheme` alone
+  // worked when this landed, then stopped (2026-09-17: charts opened light
+  // while symbol, interval, the ribbon and the hidden side toolbar all still
+  // applied - so the hash was still being read, and only that one key was
+  // being dropped). `colorTheme` is the key TradingView's *other* widgets take;
+  // `theme` is the advanced chart's own. Both parse, so send both and let
+  // whichever the endpoint currently honors win. Don't "tidy" this back to one.
   let chartSymbol = null;
   let chartHref = null;
   function chartEmbedUrl(href) {
@@ -1702,6 +1709,7 @@
       symbol,
       interval: "D",
       timezone: "America/New_York",
+      theme: colorTheme,
       colorTheme,
       style: "1",
       autosize: true,
