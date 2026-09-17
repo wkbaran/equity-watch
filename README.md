@@ -968,10 +968,79 @@ The two failure modes are treated differently on purpose:
 - **An exception is not.** A lapsed Schwab login throws, `pullOps` stops at that
   op, and it and everything after it stay queued for the next run.
 
-`ops pull` drains until the queue is empty. Overrunning the scheduled task's ten
-minute limit is safe for the same reason a crash is. A message that fails 40
-receives goes to a dead-letter queue; the main queue keeps messages 4 days, the
-DLQ 14.
+A message that fails 40 receives goes to a dead-letter queue; the main queue
+keeps messages 4 days, the DLQ 14.
+
+### The worker: a scheduled script, not a daemon
+
+Nothing listens on the queue. `ops pull` is an ordinary CLI command, and the
+thing that runs it is the same scheduled script that does the periodic check —
+`scripts\check-and-publish.ps1` under Windows Task Scheduler in the current
+setup (`scripts/check-and-publish.sh` for cron/WSL; `SCHEDULING.md` has the
+registration). Weekdays, every 15 minutes, from 01:55 to about 18:15 Mountain,
+which covers 04:00–20:00 Eastern.
+
+Each run does four things in this order, and the order is the point:
+
+```
+ops pull          apply what the dashboard queued   ← the queue is drained here
+holdings cover    give any uncovered position a starting alert
+alert check       poll quotes, fire alerts, append to the revisit queue
+dashboard --publish --skip-unchanged                ← results go back out here
+```
+
+`ops pull` runs **first** so the same run's `alert check` evaluates the changes
+just applied, and `holdings cover` sits between them so a lot added from the
+page gets its starting alert in the same cycle rather than the next one. If
+`ops pull` fails the script logs it and carries on with the check — failed ops
+stay queued — whereas a failing `alert check` stops the run. With no
+`OPS_QUEUE_URL` in `.env` the command prints "Ops disabled" and exits 0, so the
+whole feature is opt-in and the script is unchanged without it.
+
+It drains until the queue is empty rather than taking a fixed batch; `--max` is
+an opt-in valve for manual runs. Overrunning Task Scheduler's ten-minute kill is
+safe for exactly the reason a crash is — whatever was applied is already logged
+and deleted, and the next run finishes the rest.
+
+Note that `ops pull` has **no market-hours gate**. `alert check` exits without
+spending a quote when the market is closed, but a queued edit still lands at the
+next scheduled run whether or not the market is open. What the schedule does
+mean is that edits made after the window closes sit until the next morning.
+
+### Closing the loop
+
+The run that applies an op is also the run that publishes, so the answer travels
+back to the browser in the next `dashboard.json`:
+
+```
+browser  ──POST──►  Lambda ──►  SQS  ──►  ops pull ──►  applied to alerts.json
+   ▲                                          │              (result → ops.log.jsonl)
+   │                                          ▼
+   └──────── GET dashboard.json ◄──── dashboard --publish  (opResults)
+```
+
+The page keeps its own list of what it sent, in `localStorage`, so a reload
+doesn't lose track of what's waiting. Each pending row is matched against
+`opResults` by op id and resolves into applied or rejected, with the rejection's
+reason shown. Unlike the price- and clock-derived fields,
+`opResults` is deliberately **kept in** the publish fingerprint: a new result
+must be able to force a publish, or a quiet run would swallow it and the page
+would never learn its edit landed.
+
+Two details stop that from leaving rows stuck forever:
+
+- **A watermark.** A clean drain records when it started, published as
+  `opsProcessedThrough`. Everything queued before that has been applied, so the
+  page retires older pending rows even when their results have aged out of the
+  published list (`opResults` is capped, and a burst can exceed the cap).
+- **A measured cadence.** `ops pull` records its own drain history and publishes
+  the median gap as `opsIntervalMinutes`, which is how the page counts down to
+  "applies in ~12 min" and, past a grace factor, warns that checks have stopped.
+  The Windows script does better when it can: it reads its own
+  `(Get-ScheduledTaskInfo).NextRunTime` and passes it as `--next-check`, so the
+  page can say "next check 1:55 AM" — already accounting for the nightly gap
+  rather than promising 15 minutes at 6pm. The cron path passes none and lives
+  on the measured cadence alone.
 
 ### Encryption and access control
 
