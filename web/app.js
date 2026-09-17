@@ -452,7 +452,7 @@
     }
     const remaining = Math.round(interval - elapsed);
     if (remaining > 0) return h("div", { class: "note", text: `Applies in ~${remaining} min.` });
-    if (elapsed < interval * OPS_OVERDUE_FACTOR) return h("div", { class: "note", text: "Applies at the next check, due now." });
+    if (!checkIsOverdue()) return h("div", { class: "note", text: "Applies at the next check, due now." });
     return h("div", {
       class: "note warn",
       text: `⚠ No check since ${when(last)} (${ago(last)}), and they run about every ${interval} min. The scheduled task may be outside its daily window or stopped — queued changes keep waiting until it runs.`,
@@ -1220,8 +1220,43 @@
   function renderUpdated() {
     if (!current) return;
     const el = $("updated");
-    el.textContent = `Updated ${ago(current.generatedAt)}`;
-    el.title = new Date(current.generatedAt).toLocaleString();
+    // The next check belongs here, not only on a pending change: "when does
+    // this refresh?" is asked whether or not anything is queued, and the age
+    // alone can't answer it - a quiet run publishes nothing, so a document an
+    // hour old is normal rather than a sign the checker stopped.
+    const next = nextCheckText();
+    el.textContent = `Updated ${ago(current.generatedAt)}${next === null ? "" : ` · ${next}`}`;
+    el.classList.toggle("stale", next !== null && checkIsOverdue());
+    el.title = `Document built ${new Date(current.generatedAt).toLocaleString()}`;
+  }
+
+  /**
+   * "next check 1:55 AM" for the header, or null when nothing published says.
+   * Same two sources, in the same order, as the note on a pending change:
+   * the scheduler's own next-run time while it is still ahead of us, then the
+   * cadence `ops pull` measured for itself.
+   */
+  function nextCheckText() {
+    const next = current?.opsNextCheckAt ?? null;
+    if (next !== null && new Date(next).getTime() > Date.now()) {
+      return `next check ${when(next)}`;
+    }
+    const last = current?.opsProcessedThrough ?? null;
+    const interval = current?.opsIntervalMinutes ?? null;
+    if (last === null || interval === null) return null;
+    const remaining = Math.round(interval - (Date.now() - new Date(last).getTime()) / 60_000);
+    if (remaining > 0) return `next check in ~${remaining} min`;
+    return checkIsOverdue() ? `no check since ${when(last)}` : "next check due now";
+  }
+
+  /** Past the cadence by enough that the run is late rather than merely due. */
+  function checkIsOverdue() {
+    const next = current?.opsNextCheckAt ?? null;
+    if (next !== null && new Date(next).getTime() > Date.now()) return false;
+    const last = current?.opsProcessedThrough ?? null;
+    const interval = current?.opsIntervalMinutes ?? null;
+    if (last === null || interval === null) return false;
+    return (Date.now() - new Date(last).getTime()) / 60_000 >= interval * OPS_OVERDUE_FACTOR;
   }
 
   function render(d) {

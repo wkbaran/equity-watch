@@ -73,6 +73,8 @@
   .note { color: var(--muted); font-size: 0.78rem; }
   /* A queued change that is past due: still the note's size, but not ignorable. */
   .note.warn { color: var(--yellow); }
+  /* The header's clock line when a check is overdue, same signal as .note.warn. */
+  #updated.stale { color: var(--yellow); }
 
   .site-header {
     background: var(--surface); border-bottom: 1px solid var(--border);

@@ -300,6 +300,41 @@ test.describe("when a pending change lands", () => {
   });
 });
 
+// The header answers "when does this refresh?" whether or not anything is
+// queued. It only appeared on a pending change at first, so a drained queue
+// left the page showing nothing but "Updated 14 min ago".
+test.describe("the header's next check", () => {
+  const updated = (page: Page) => page.locator("#updated");
+
+  test("names the scheduled time with nothing pending at all", async ({ page }) => {
+    await page.request.get("/__cadence?minutesAgo=6&interval=15&nextInMin=9");
+    await page.goto("/#/");
+    await expect(updated(page)).toContainText("next check");
+    await expect(updated(page)).not.toHaveClass(/stale/);
+    expect(await page.evaluate(() => localStorage.getItem("equity-watch.pendingOps"))).toBeNull();
+  });
+
+  test("falls back to the measured cadence", async ({ page }) => {
+    await page.request.get("/__cadence?minutesAgo=6&interval=15");
+    await page.goto("/#/");
+    await expect(updated(page)).toContainText("next check in ~9 min");
+  });
+
+  test("marks the header when no check has run for well past the cadence", async ({ page }) => {
+    await page.request.get("/__cadence?minutesAgo=106&interval=15");
+    await page.goto("/#/");
+    await expect(updated(page)).toContainText("no check since");
+    await expect(updated(page)).toHaveClass(/stale/);
+  });
+
+  test("says only the age when nothing published a schedule", async ({ page }) => {
+    await page.request.get("/__cadence?minutesAgo=6&interval=none");
+    await page.goto("/#/");
+    // The fixture builds its document per request, so the age is always "just now".
+    await expect(updated(page)).toHaveText("Updated just now");
+  });
+});
+
 test.describe("results", () => {
   test("pending ops survive a reload and resolve from opResults", async ({ page }) => {
     await storeToken(page);

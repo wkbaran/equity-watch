@@ -310,6 +310,13 @@ Things that look simplifiable and aren't:
     case that prompted it (2026-09-16): nine ops sat queued all evening because
     the window had closed, and the page said only "pending". `OPS_OVERDUE_FACTOR`
     in `web/app.js` is the grace before a late run is called stopped.
+  - **The header carries it too, not just a pending change.** `renderUpdated`
+    appends "next check 1:55 AM" beside the document's age. The first cut put
+    it only on pending rows, which meant a drained queue left the page showing
+    nothing but "Updated 14 min ago" — and the age alone can't answer "when
+    does this refresh?", since a quiet run publishes nothing and an hour-old
+    document is normal. `nextCheckText`/`checkIsOverdue` are the one place the
+    two sources and the staleness rule live; the pending note calls them too.
   - `opsIntervalMinutes` and `opsNextCheckAt` are in `VOLATILE_KEYS` alongside
     `opsProcessedThrough`: all three advance with the clock every run, so
     fingerprinting any of them would publish every run.
