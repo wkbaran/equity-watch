@@ -97,6 +97,15 @@
       : `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${time}`;
   }
 
+  /** "at 9:00 AM" today, "on Sep 17 at 9:00 AM" otherwise. */
+  function atWhen(iso) {
+    const d = new Date(iso);
+    const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return d.toDateString() === new Date().toDateString()
+      ? `at ${time}`
+      : `on ${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} at ${time}`;
+  }
+
   const full = (iso) =>
     new Date(iso).toLocaleString(undefined, {
       weekday: "short",
@@ -255,7 +264,7 @@
   }
 
   let opsToken = storageGet(OPS_TOKEN_KEY);
-  // { id, type, symbol, alertId, summary, queuedAt }, kept so a reload doesn't lose what's waiting.
+  // { id, type, symbol, alertId, revisitId?, summary, queuedAt }, kept so a reload doesn't lose what's waiting.
   let pendingOps = (() => {
     try {
       const v = JSON.parse(storageGet(PENDING_KEY) ?? "[]");
@@ -312,7 +321,7 @@
     setTimeout(() => el.remove(), ok ? 15_000 : 60_000);
   }
 
-  async function submitOp(op, { symbol, alertId = null, summary }) {
+  async function submitOp(op, { symbol, alertId = null, revisitId = null, summary }) {
     const body = { ...op, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
     let resp;
     try {
@@ -340,7 +349,7 @@
       notice(`Couldn't queue ${summary}: ${reason}.`, false);
       return false;
     }
-    pendingOps.push({ id: body.id, type: body.type, symbol, alertId, summary, queuedAt: body.createdAt });
+    pendingOps.push({ id: body.id, type: body.type, symbol, alertId, revisitId, summary, queuedAt: body.createdAt });
     savePending();
     notice(`Queued: ${summary}. It applies at the next scheduled check.`, true);
     rerenderOps();
@@ -381,8 +390,11 @@
   // merely due: at a 15 min cadence a run that slips a few minutes is normal.
   const OPS_OVERDUE_FACTOR = 2;
 
-  const pendingFor = (alertId) => pendingOps.filter((p) => p.alertId === alertId);
+  // Changes to the alert itself. A pending dismiss names the alert too, but
+  // leaves it untouched, so it must not read as "edit pending" on the alert.
+  const pendingFor = (alertId) => pendingOps.filter((p) => p.alertId === alertId && p.type.startsWith("alert."));
   const pendingTag = (alertId) => (pendingFor(alertId).length ? h("span", { class: "tag pending", text: "edit pending" }) : null);
+  const dismissPending = (revisitId) => pendingOps.some((p) => p.type === "revisit.dismiss" && p.revisitId === revisitId);
 
   function renderPending() {
     renderPendingList($("ops-pending"), pendingOps.filter((p) => !isHoldingsOp(p)));
@@ -631,7 +643,7 @@
   const detailCache = new Map(); // symbol -> { sig, el }
   let lotAddFormEl = null;
 
-  const isHoldingsOp = (p) => !p.type.startsWith("alert.");
+  const isHoldingsOp = (p) => !p.type.startsWith("alert.") && !p.type.startsWith("revisit.");
   const canEditHoldings = () => canEdit() && vaultData !== null;
   const localToday = () => new Date().toLocaleDateString("en-CA");
   const fromBase64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
@@ -1038,7 +1050,8 @@
               // A queued edit from the details panel closes this entry, but not
               // until the next check runs; say so rather than leave the row
               // looking like nothing happened.
-              pendingTag(r.alertId)
+              pendingTag(r.alertId),
+              dismissPending(r.id) ? h("span", { class: "tag pending", text: "dismiss pending" }) : null
             ),
             h(
               "div",
@@ -1055,12 +1068,31 @@
               { class: "actions" },
               h("a", { href: triggerHash(r.id), text: "Details" }),
               h("a", { href: r.chartUrl, target: CHART_TARGET, text: "Chart" }),
-              r.suggestedLevel !== null ? copyButton(`Copy apply → ${r.suggestedLevel}`, `${CLI} alert revisit apply ${r.id}`) : null
+              r.suggestedLevel !== null ? copyButton(`Copy apply → ${r.suggestedLevel}`, `${CLI} alert revisit apply ${r.id}`) : null,
+              dismissButton(r)
             )
           )
         )
       )
     );
+  }
+
+  /**
+   * Takes this one fire off the queue and nothing else. It lives on the queue
+   * row rather than in the trigger panel so what it removes is plain: the row
+   * it sits on. The alert keeps its level and keeps watching, and its next
+   * fire comes back here as a new entry.
+   */
+  function dismissButton(r) {
+    if (!canEdit() || dismissPending(r.id)) return null;
+    const btn = confirmButton("Dismiss", () =>
+      submitOp(
+        { type: "revisit.dismiss", target: { revisitId: r.id, alertId: r.alertId }, params: {} },
+        { symbol: r.symbol, alertId: r.alertId, revisitId: r.id, summary: `${r.symbol}: dismiss the ${when(r.triggeredAt)} fire${r.levelAtTrigger === null ? "" : ` at ${r.levelAtTrigger}`} from the queue` }
+      )
+    );
+    btn.title = "Remove this fire from the queue. The alert is not changed: it keeps its level, keeps watching, and its next fire comes back here.";
+    return btn;
   }
 
   // A div rather than an <a>: the ticker inside is its own link, and links can't nest.
@@ -1471,7 +1503,7 @@
 
     const rows = [];
     rows.push(kv("When", full(t.triggeredAt), " ", muted(`(${ago(t.triggeredAt)})`), t.session && SESSION_LABEL[t.session] ? ` · ${SESSION_LABEL[t.session]}` : ""));
-    rows.push(kv("Status", t.status, t.resolvedAt ? muted(` · ${full(t.resolvedAt)}`) : ""));
+    rows.push(kv("Status", ...triggerStatus(t)));
 
     if (t.condition) {
       rows.push(
@@ -1570,6 +1602,22 @@
   }
 
   /**
+   * What became of a trigger, in words: "Changed to 200.6 at 10:25 AM (was
+   * 195.3)". A bare "applied" didn't say whether the level moved or where to,
+   * and that is the first thing asked of a trigger that no longer offers an
+   * edit form.
+   */
+  function triggerStatus(t) {
+    if (t.status === "open") return ["Open"];
+    const at = t.resolvedAt ? ` ${atWhen(t.resolvedAt)}` : "";
+    if (t.status === "dismissed") return [`Dismissed${at}`];
+    if (t.appliedTo !== null && t.appliedTo !== undefined) {
+      return [`Changed to ${t.appliedTo}${at}`, t.appliedFrom !== null && t.appliedFrom !== undefined ? muted(` (was ${t.appliedFrom})`) : ""];
+    }
+    return [`Acted on${at}, level unchanged`];
+  }
+
+  /**
    * Re-level the alert this trigger came from, without leaving the panel. The
    * edit carries the entry's id, so applying it also closes the entry: acting
    * on a trigger is what the queue is asking for, and a queue row left open
@@ -1579,7 +1627,12 @@
    * so this waits on that fetch (applyRoute starts it for a trigger drawer).
    */
   function triggerEditSection(t) {
-    if (!canEdit() || t.status !== "open" || !t.alertExists) return null;
+    if (!canEdit() || !t.alertExists) return null;
+    // Closed by an earlier edit or a dismiss. An edit from here would try to
+    // close it again and be rejected, so send the user to the alert itself.
+    if (t.status !== "open") {
+      return h("p", { class: "note" }, "This trigger is closed. To change the alert now, ", h("a", { href: alertHash(t.alertId), text: "edit it here" }), ".");
+    }
     if (!alertsDoc) return h("p", { class: "note", text: "Loading the alert…" });
     const a = alertsDoc.alerts.find((x) => x.id === t.alertId);
     // Cancelled or on an ignored symbol: alerts.json only carries live ones.

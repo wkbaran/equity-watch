@@ -54,6 +54,9 @@ function resultFor(op: QueuedOp): OpResult {
   if (op.type === "alert.edit") {
     return { id: op.id, type: op.type, symbol: null, alertId: op.target?.alertId ?? null, ok: false, message: "Not edited: the alert changed since the page loaded.", appliedAt };
   }
+  if (op.type === "revisit.dismiss") {
+    return { id: op.id, type: op.type, symbol: "AA", alertId: op.target?.alertId ?? null, ok: true, message: `Dismissed revisit ${op.target?.revisitId} (AA) from the queue.`, appliedAt };
+  }
   // Holdings results carry no sizes or prices, like the real ones.
   const symbol = String(op.params.symbol ?? op.target?.symbol ?? "AA");
   return { id: op.id, type: op.type, symbol, alertId: null, ok: true, message: `Applied to ${symbol}.`, appliedAt };

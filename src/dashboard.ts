@@ -120,6 +120,9 @@ export interface TriggerRow extends CrossingDetails {
   session: Session | null;
   status: RevisitEntry["status"];
   resolvedAt: string | null;
+  /** The level before and after the edit that closed it, when that moved it. */
+  appliedFrom: number | null;
+  appliedTo: number | null;
   priority: number | null;
   heldPosition: boolean;
   chartUrl: string;
@@ -440,6 +443,8 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
         session: e.session ?? null,
         status: e.status,
         resolvedAt: e.resolvedAt,
+        appliedFrom: e.appliedFrom ?? null,
+        appliedTo: e.appliedTo ?? null,
         priority: e.priority,
         heldPosition: heldSymbols.has(e.symbol.toUpperCase()),
         chartUrl: chartUrl(e.symbol),

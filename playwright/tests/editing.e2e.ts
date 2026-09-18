@@ -438,3 +438,48 @@ test.describe("phone width", () => {
     expect(box!.x + box!.width).toBeLessThanOrEqual(400);
   });
 });
+
+// The queue row's Dismiss takes that one fire off the queue. It lives on the
+// row, not the trigger panel, so what it removes is the thing it sits on.
+test.describe("dismissing from the revisit queue", () => {
+  const aaRow = (page: Page) => page.locator("#queue .queue-row", { hasText: "crossed above 55" });
+
+  test("is not offered while locked", async ({ page }) => {
+    await page.goto("/#/queue");
+    await expect(aaRow(page)).toBeVisible();
+    await expect(aaRow(page).getByRole("button", { name: "Dismiss" })).toHaveCount(0);
+  });
+
+  test("takes a second click, queues a dismiss of that entry, and marks the row pending", async ({ page }) => {
+    await storeToken(page);
+    await page.goto("/#/queue");
+    const button = aaRow(page).getByRole("button", { name: "Dismiss" });
+    await expect(button).toHaveAttribute("title", /alert is not changed/);
+    await button.click();
+    expect(await queuedOps(page)).toEqual([]);
+    await aaRow(page).getByRole("button", { name: "Click again to confirm" }).click();
+
+    await expect(aaRow(page).locator(".tag.pending")).toHaveText("dismiss pending");
+    await expect(aaRow(page).getByRole("button", { name: "Dismiss" })).toHaveCount(0);
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "revisit.dismiss", target: { revisitId: "rv0000a2", alertId: STATIC.id }, params: {} });
+
+    // The alert itself isn't being edited, so it must not say so.
+    await openAlerts(page);
+    await expect(page.locator("#alerts-table .tag.pending")).toHaveCount(0);
+    await expect(page.locator("#alerts-table")).toContainText("price crosses above 55");
+    await expect(page.locator("#ops-pending")).toContainText(/AA: dismiss the .+ fire at 55 from the queue/);
+  });
+
+  test("resolves from the published result", async ({ page }) => {
+    await storeToken(page);
+    await page.goto("/#/queue");
+    await aaRow(page).getByRole("button", { name: "Dismiss" }).click();
+    await aaRow(page).getByRole("button", { name: "Click again to confirm" }).click();
+    await expect(aaRow(page).locator(".tag.pending")).toHaveText("dismiss pending");
+    await page.request.get("/__release");
+    await poll(page);
+    await expect(page.locator("#toasts")).toContainText("Dismissed revisit rv0000a2");
+    await expect(aaRow(page).locator(".tag.pending")).toHaveCount(0);
+  });
+});

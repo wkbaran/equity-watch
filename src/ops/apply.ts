@@ -1,6 +1,7 @@
 /**
- * Applies a change queued from the browser dashboard: add or edit an alert, or
- * add, edit, or remove a holdings lot, position, or stop.
+ * Applies a change queued from the browser dashboard: add or edit an alert,
+ * dismiss a revisit-queue entry, or add, edit, or remove a holdings lot,
+ * position, or stop.
  *
  * The page can't write alerts.json or holdings.json, which live on the machine
  * running `alert check`. It queues an op instead (see cloudformation.yaml,
@@ -26,7 +27,7 @@ export const DEFAULT_OP_LOG = "ops.log.jsonl";
 export const DEFAULT_HOLDINGS_FILE = "holdings.json";
 export const DEFAULT_REVISITS_FILE = "revisits.json";
 
-export const OP_TYPES = ["alert.add", "alert.edit", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.remove"] as const;
+export const OP_TYPES = ["alert.add", "alert.edit", "revisit.dismiss", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.remove"] as const;
 export type OpType = (typeof OP_TYPES)[number];
 
 /**
@@ -118,7 +119,7 @@ export interface ApplyContext {
   alertsFile: string;
   /** Default holdings.json. */
   holdingsFile?: string;
-  /** Default revisits.json. Only an edit sent from a trigger's details panel reads it. */
+  /** Default revisits.json. Read by a dismiss, and by an edit sent from a trigger's details panel. */
   revisitsFile?: string;
   opLogFile: string;
   market: MarketData;
@@ -147,7 +148,9 @@ export async function applyOp(op: Op, ctx: ApplyContext): Promise<ApplyOutcome> 
       ? await applyAdd(op, ctx)
       : op.type === "alert.edit"
         ? await applyEdit(op, ctx)
-        : applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
+        : op.type === "revisit.dismiss"
+          ? applyDismiss(op, ctx)
+          : applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
   const result: OpResult = { id: op.id, type: op.type, ...outcome, appliedAt: (ctx.now?.() ?? new Date()).toISOString() };
   appendOpResult(ctx.opLogFile, result);
   return { result, duplicate: false };
@@ -242,5 +245,38 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
     alertId,
     ok: true,
     message: `Edited ${alert.kind} alert ${alertId}: was "${describeAlertCondition(result.before)}", now "${describeAlertCondition(result.edited)}".${replaced}${closed}`,
+  };
+}
+
+/**
+ * Closes one revisit-queue entry without touching its alert, as
+ * `alert revisit dismiss` does. The alert keeps its level and keeps watching,
+ * and its next fire is a new entry. `target.alertId`, when sent, must match: a
+ * queue row names both, and a mismatch means the page is looking at something
+ * other than what is on disk.
+ */
+function applyDismiss(op: Op, ctx: ApplyContext): Outcome {
+  const revisitId = stringField(op.target, "revisitId");
+  if (revisitId === null || revisitId === "") {
+    return reject(null, null, "A dismiss needs target.revisitId.");
+  }
+  const alertId = stringField(op.target, "alertId");
+  const revisitsFile = ctx.revisitsFile ?? DEFAULT_REVISITS_FILE;
+  const entry = loadRevisits(revisitsFile).find((e) => e.id === revisitId);
+  if (entry === undefined) {
+    return reject(null, alertId, `No revisit entry with id ${revisitId}.`);
+  }
+  if (alertId !== null && alertId !== "" && entry.alertId !== alertId) {
+    return reject(entry.symbol, alertId, `Revisit ${revisitId} belongs to alert ${entry.alertId}, not ${alertId}.`);
+  }
+  if (entry.status !== "open") {
+    return reject(entry.symbol, entry.alertId, `Revisit ${revisitId} is already ${entry.status}.`);
+  }
+  resolveRevisit(revisitsFile, revisitId, "dismissed");
+  return {
+    symbol: entry.symbol,
+    alertId: entry.alertId,
+    ok: true,
+    message: `Dismissed revisit ${revisitId} (${entry.symbol}) from the queue. Alert ${entry.alertId} is unchanged and still watching.`,
   };
 }

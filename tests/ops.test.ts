@@ -295,6 +295,40 @@ describe("applyOp", () => {
     expect((loadAlerts(alertsFile)[0] as StaticAlert).level).toBe(100);
   });
 
+  const dismiss = (target: Record<string, unknown>, id = "op-dism-0001"): Op => {
+    const r = parseOp({ id, type: "revisit.dismiss", target, params: {} });
+    if (!r.ok) throw new Error(r.error);
+    return r.op;
+  };
+
+  // The queue row's Dismiss: closes that one entry, and the alert stays as it was.
+  it("dismisses a revisit entry without touching its alert", async () => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    seedRevisit();
+    const alertsBefore = loadAlerts(alertsFile);
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}) };
+    const { result } = await applyOp(dismiss({ revisitId: "rv000001", alertId: "s1abcdef" }), ctx);
+    expect(result).toMatchObject({ ok: true, type: "revisit.dismiss", symbol: "TEST", alertId: "s1abcdef" });
+    expect(result.message).toBe("Dismissed revisit rv000001 (TEST) from the queue. Alert s1abcdef is unchanged and still watching.");
+    expect(loadRevisits(revisitsFile)[0]).toMatchObject({ status: "dismissed", appliedFrom: null, appliedTo: null });
+    expect(loadRevisits(revisitsFile)[0].resolvedAt).not.toBeNull();
+    expect(loadAlerts(alertsFile)).toEqual(alertsBefore);
+  });
+
+  it.each([
+    [{ alertId: "s1abcdef" }, (): void => void seedRevisit(), "needs target.revisitId"],
+    [{ revisitId: "rv-gone1" }, (): void => void seedRevisit(), "No revisit entry with id rv-gone1"],
+    [{ revisitId: "rv000001", alertId: "s1abcdef" }, (): void => void seedRevisit({ alertId: "other123" }), "belongs to alert other123"],
+    [{ revisitId: "rv000001" }, (): void => void seedRevisit({ status: "applied" }), "is already applied"],
+  ])("rejects dismissing %j", async (target, seed, message) => {
+    seed();
+    const before = loadRevisits(revisitsFile);
+    const { result } = await applyOp(dismiss(target), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}) });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain(message);
+    expect(loadRevisits(revisitsFile)).toEqual(before);
+  });
+
   it("leaves the queue alone when an edit names no revisit", async () => {
     saveAlerts(alertsFile, [makeStatic()]);
     seedRevisit();

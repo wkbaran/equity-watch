@@ -248,7 +248,7 @@ Resources:
             if (!isObject(op) || typeof op.id !== "string" || !ID.test(op.id)) return reply(400, { error: "Bad op id" });
             // Op type -> the target key it must name. Keep in step with OP_TYPES in src/ops/apply.ts.
             const TARGET_KEY = {
-              "alert.add": null, "alert.edit": "alertId",
+              "alert.add": null, "alert.edit": "alertId", "revisit.dismiss": "revisitId",
               "lot.add": null, "lot.edit": "lotId", "lot.remove": "lotId", "position.remove": "symbol",
               "stop.add": null, "stop.remove": "stopId",
             };

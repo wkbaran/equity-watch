@@ -152,3 +152,23 @@ test("the alert drawer carries the same held tag, position and story", async ({ 
   await expect(kv(page, "Position")).toContainText("15 shares · basis 41.33");
   await expect(story(page).locator(".headline")).toContainText("AA has fired 2 times");
 });
+
+// ZS, 2026-09-18: a trigger closed by an earlier edit offers no edit form, and
+// "applied" alone said neither what changed nor where to edit instead.
+test("a closed trigger says what it was changed to and links to the alert", async ({ page }) => {
+  await storeToken(page);
+  await page.goto("/#/trigger/rv0000a1");
+  await expect(kv(page, "Status")).toHaveText(/^Changed to 55 on .+ at .+ \(was 43\)$/);
+  await expect(page.locator("#drawer-body form")).toHaveCount(0);
+  const link = page.locator("#drawer-body .note").getByRole("link", { name: "edit it here" });
+  await expect(link).toHaveAttribute("href", `#/alert/${STATIC.id}`);
+  await link.click();
+  await expect(page.locator("#drawer-body form button[type=submit]", { hasText: "Queue edit" })).toBeVisible();
+});
+
+test("an open trigger's status says so and keeps its edit form", async ({ page }) => {
+  await storeToken(page);
+  await page.goto("/#/trigger/rv0000a2");
+  await expect(kv(page, "Status")).toHaveText("Open");
+  await expect(page.locator("#drawer-body form button[type=submit]", { hasText: "Queue edit" })).toBeVisible();
+});

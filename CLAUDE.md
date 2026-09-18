@@ -331,12 +331,16 @@ Things that look simplifiable and aren't:
   - `opsIntervalMinutes` and `opsNextCheckAt` are in `VOLATILE_KEYS` alongside
     `opsProcessedThrough`: all three advance with the clock every run, so
     fingerprinting any of them would publish every run.
-- **The page has no dismiss.** The "Copy dismiss" buttons are gone (2026-09-16);
-  editing the alert from the panel is how an entry is closed from the browser.
-  `alert revisit dismiss` still exists for closing one without touching the
-  alert. The queue row keeps showing until the next check applies the op, so it
-  carries `pendingTag` — and `rerenderOps` has to re-render the queue for that
-  tag to appear without waiting for a poll.
+- **Dismiss is on the queue row, never the trigger panel.** The "Copy dismiss"
+  buttons went on 2026-09-16; a queued `revisit.dismiss` op replaced them on
+  2026-09-18. The user asked for it on the revisit queue specifically, so it
+  reads as removing that one row: the alert is untouched and its next fire comes
+  back as a new entry. Two pending tags, kept apart on purpose: `pendingTag`
+  ("edit pending") counts only `alert.*` ops, because a pending dismiss names
+  the alert too but doesn't change it; `dismissPending` matches by
+  `revisitId`. `rerenderOps` re-renders the queue so either tag appears without
+  waiting for a poll. A new op type also needs the Lambda's `TARGET_KEY` in
+  `cloudformation.yaml` and a stack deploy, or the page gets "Unknown op type".
 - **Both drawers fetch `alerts.json`.** The trigger drawer needs the alert's
   *current* level and direction for the edit form, and `TriggerRow` carries
   neither (it records what fired, not what is set now). `RevisitRow.alertId`
