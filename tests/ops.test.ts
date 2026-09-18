@@ -329,14 +329,34 @@ describe("applyOp", () => {
     expect(loadRevisits(revisitsFile)).toEqual(before);
   });
 
-  it("leaves the queue alone when an edit names no revisit", async () => {
+  // An edit made anywhere is the decision the alert's open fires were waiting
+  // on, so they all close, not just one named by a trigger panel.
+  it("closes every open entry for the alert, even when the edit names none", async () => {
     saveAlerts(alertsFile, [makeStatic()]);
-    seedRevisit();
-    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }) };
+    const base = newRevisitEntry(makeStatic(), 101, "2026-09-14T15:00:00.000Z", "regular");
+    saveRevisits(revisitsFile, [
+      { ...base, id: "rv000001" },
+      { ...base, id: "rv000002", triggeredAt: "2026-09-15T14:00:00.000Z" },
+      { ...base, id: "rv000003", status: "dismissed" },
+      { ...base, id: "rv000004", alertId: "other123" },
+    ]);
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }), now: NOW };
     const { result } = await applyOp(edit("s1abcdef", "price crosses above 100", { level: 110 }), ctx);
     expect(result.ok).toBe(true);
+    expect(result.message).toContain("Revisit rv000001, rv000002 marked applied.");
+    const byId = new Map(loadRevisits(revisitsFile).map((e) => [e.id, e]));
+    for (const id of ["rv000001", "rv000002"]) {
+      expect(byId.get(id)).toMatchObject({ status: "applied", appliedFrom: 100, appliedTo: 110, resolvedAt: "2026-09-15T15:00:00.000Z" });
+    }
+    expect(byId.get("rv000003")).toMatchObject({ status: "dismissed", appliedTo: null });
+    expect(byId.get("rv000004")!.status).toBe("open");
+  });
+
+  it("says nothing about the queue when the alert has no open entries", async () => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    const { result } = await applyOp(edit("s1abcdef", "price crosses above 100", { level: 110 }), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }) });
+    expect(result.ok).toBe(true);
     expect(result.message).not.toContain("Revisit");
-    expect(loadRevisits(revisitsFile)[0].status).toBe("open");
   });
 
   it("rejects an edit when the alert changed since the page loaded", async () => {

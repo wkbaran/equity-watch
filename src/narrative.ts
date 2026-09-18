@@ -330,12 +330,18 @@ export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: N
     });
   }
 
+  // One edit closes every open entry for its alert (closeRevisitsForEdit), so
+  // several entries can carry the same move. It happened once; say it once.
+  const movesTold = new Set<string>();
   for (const entry of entries) {
     lines.push({ at: entry.triggeredAt, text: `${shortDate(entry.triggeredAt)}: ${triggerHeadline(entry, ctx)}.` });
     if (entry.status === "applied" && entry.appliedFrom != null && entry.appliedTo != null) {
+      const key = `${entry.alertId}|${entry.resolvedAt}|${entry.appliedFrom}|${entry.appliedTo}`;
+      if (movesTold.has(key)) continue;
+      movesTold.add(key);
       lines.push({
         at: entry.resolvedAt ?? entry.triggeredAt,
-        text: `${shortDate(entry.resolvedAt ?? entry.triggeredAt)}: you raised the level ${entry.appliedFrom} to ${entry.appliedTo}.`,
+        text: `${shortDate(entry.resolvedAt ?? entry.triggeredAt)}: you ${entry.appliedTo > entry.appliedFrom ? "raised" : "lowered"} the level ${entry.appliedFrom} to ${entry.appliedTo}.`,
       });
     } else if (entry.status === "dismissed") {
       lines.push({

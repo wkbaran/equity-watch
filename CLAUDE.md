@@ -270,15 +270,18 @@ Things that look simplifiable and aren't:
   still queued, because a later edit may target an alert an earlier add creates.
 - **Edits target by id only.** `findAlert` also accepts a ticker. Don't pass an
   op's target through it, or an edit can land on a different alert on that symbol.
-- **An edit may also close a revisit entry.** The trigger details panel edits
-  the alert behind the fire and sends `target.revisitId` alongside `alertId`;
-  `applyEdit` then marks that entry `applied` (with `appliedFrom`/`appliedTo`
-  when the level moved), exactly as `alert revisit apply` does. The entry is
-  checked **before** the edit — it must exist, belong to that alert, and still
-  be open — so a stale panel is one rejection rather than an alert moved with
-  its queue entry left open. That is why `ApplyContext` carries a
-  `revisitsFile`; both `ops pull` and `ops apply` pass `--revisits-file`
-  through, and it defaults to `revisits.json` when omitted.
+- **Every edit closes the alert's open revisit entries**, wherever it is made:
+  `alert edit`, the alert's panel, or a trigger's panel (the user's rule,
+  2026-09-18; before that only the trigger panel closed its one entry).
+  `closeRevisitsForEdit` marks them `applied`, not `dismissed`, with
+  `appliedFrom`/`appliedTo` from `levelMove` when the level moved, as
+  `alert revisit apply` records. One edit can therefore stamp the same move on
+  several entries; `tickerStory` tells it once. A trigger panel's edit still
+  sends `target.revisitId`, and that entry is checked **before** the edit (it
+  must exist, belong to that alert, and still be open), so a stale panel is one
+  rejection rather than an alert moved on a fire already dealt with. That is why
+  `ApplyContext` carries a `revisitsFile`; both `ops pull` and `ops apply` pass
+  `--revisits-file` through, defaulting to `revisits.json`.
 - **Nothing can push to the machine, so there is no "apply now" button.** The
   page is static on S3/CloudFront and the Lambda can only write to SQS; the
   drain happens when the Windows task next runs `ops pull`. A button would need

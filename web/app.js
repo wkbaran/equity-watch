@@ -547,7 +547,12 @@
     if (editForm?.alertId !== a.id || editForm.condition !== a.condition || editForm.revisitId !== revisitId) {
       editForm = { alertId: a.id, condition: a.condition, revisitId, el: buildEditForm(a, revisitId) };
     }
-    return [...pending, editForm.el];
+    // Any edit takes the alert's open fires off the queue (closeRevisitsForEdit
+    // in the worker), wherever it is made. Say so before it happens.
+    const open = (current?.revisitQueue ?? []).filter((r) => r.alertId === a.id).length;
+    const closes =
+      open === 0 ? null : h("p", { class: "note", text: `Saving an edit also takes ${open === 1 ? "this alert's open fire" : `this alert's ${open} open fires`} off the revisit queue.` });
+    return [...pending, ...(closes ? [closes] : []), editForm.el];
   }
 
   function buildEditForm(a, revisitId = null) {

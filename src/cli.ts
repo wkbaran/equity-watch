@@ -39,6 +39,7 @@ import {
   type RevisitEntry,
 } from "./alerts/revisit.js";
 import {
+  closeRevisitsForEdit,
   listRevisits,
   loadRevisits,
   migrateDirectionStores,
@@ -63,7 +64,7 @@ import { localDateString } from "./timezone.js";
 import { isEntryPoint } from "./entrypoint.js";
 import { publishSite } from "./web/publish.js";
 import { buildAlertRows } from "./web/alertsPage.js";
-import { applyOp, DEFAULT_OP_LOG, loadOpLog, parseOp, recentOpResults } from "./ops/apply.js";
+import { applyOp, DEFAULT_OP_LOG, levelMove, loadOpLog, parseOp, recentOpResults } from "./ops/apply.js";
 import { pullOps, sqsOpsQueue } from "./ops/pull.js";
 import { drainIntervalMinutes, recordDrain, type OpsPullState } from "./ops/schedule.js";
 import { parseAddInput, parseAlertEdit } from "./ops/validate.js";
@@ -941,6 +942,11 @@ async function cmdAlertEdit(id: string, opts: AlertEditOpts): Promise<void> {
   }
   if (edit.ma !== undefined) {
     console.log("The next check records where price sits against the new average; it can fire from the check after that.");
+  }
+  // Editing the alert is the decision its open queue entries were waiting on.
+  const closed = closeRevisitsForEdit(opts.revisitsFile, a.id, levelMove(result.before!, a));
+  if (closed.length > 0) {
+    console.log(`Revisit ${closed.join(", ")} marked applied.`);
   }
 }
 

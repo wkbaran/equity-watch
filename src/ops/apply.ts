@@ -18,8 +18,9 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { describeAlertCondition } from "../alerts/describe.js";
 import { addAlert, editAlert, type MarketData } from "../alerts/engine.js";
-import { loadRevisits, resolveRevisit } from "../alerts/revisitStore.js";
+import { closeRevisitsForEdit, loadRevisits, resolveRevisit } from "../alerts/revisitStore.js";
 import { loadAlerts } from "../alerts/store.js";
+import type { Alert } from "../alerts/models.js";
 import { applyHoldingsOp } from "./holdings.js";
 import { addFieldsFromJson, editFieldsFromJson, parseAddInput, parseAlertEdit, stringField } from "./validate.js";
 
@@ -198,10 +199,10 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
   if (now !== expected) {
     return reject(alert.symbol, alertId, `Not edited: the alert changed since the page loaded. It is now "${now}".`);
   }
-  // An edit sent from a trigger's details panel also closes that trigger's
-  // queue entry: re-levelling from the panel *is* the decision the entry was
-  // waiting on. Checked before the edit so a stale panel is one rejection and
-  // no half-done change, rather than an alert moved with the entry still open.
+  // Any edit closes the alert's open queue entries (closeRevisitsForEdit). One
+  // sent from a trigger's details panel also names its entry, which is checked
+  // before the edit so a stale panel is one rejection and no half-done change,
+  // rather than an alert moved on the strength of a fire already dealt with.
   const revisitId = stringField(op.target, "revisitId");
   const revisitsFile = ctx.revisitsFile ?? DEFAULT_REVISITS_FILE;
   if (revisitId !== null && revisitId !== "") {
@@ -231,15 +232,8 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
   const replaced = result.replaced
     ? ` Cancelled alert ${result.replaced.id} (${describeAlertCondition(result.replaced)}): the new level is closer to price on the same side.`
     : "";
-  let closed = "";
-  if (revisitId !== null && revisitId !== "") {
-    // Same pair `alert revisit apply` records, so the ticker story can say
-    // what the level moved from and to. Both null for a non-level edit.
-    const from = result.before.kind === "static" ? result.before.level : null;
-    const to = result.edited.kind === "static" ? result.edited.level : null;
-    resolveRevisit(revisitsFile, revisitId, "applied", { from: from === to ? null : from, to: from === to ? null : to });
-    closed = ` Revisit ${revisitId} marked applied.`;
-  }
+  const closedIds = closeRevisitsForEdit(revisitsFile, alertId, levelMove(result.before, result.edited), ctx.now?.() ?? new Date());
+  const closed = closedIds.length === 0 ? "" : ` Revisit ${closedIds.join(", ")} marked applied.`;
   return {
     symbol: alert.symbol,
     alertId,
@@ -279,4 +273,16 @@ function applyDismiss(op: Op, ctx: ApplyContext): Outcome {
     ok: true,
     message: `Dismissed revisit ${revisitId} (${entry.symbol}) from the queue. Alert ${entry.alertId} is unchanged and still watching.`,
   };
+}
+
+/**
+ * The level pair an edit records on the entries it closes, the same pair
+ * `alert revisit apply` writes, so the page and ticker story can say what
+ * moved. Both null when the level didn't (a direction change, a trailing or
+ * moving-average alert).
+ */
+export function levelMove(before: Alert, after: Alert): { from: number | null; to: number | null } {
+  const from = before.kind === "static" ? before.level : null;
+  const to = after.kind === "static" ? after.level : null;
+  return from === to ? { from: null, to: null } : { from, to };
 }

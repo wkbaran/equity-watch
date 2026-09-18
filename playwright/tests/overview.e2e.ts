@@ -172,3 +172,11 @@ test("an open trigger's status says so and keeps its edit form", async ({ page }
   await expect(kv(page, "Status")).toHaveText("Open");
   await expect(page.locator("#drawer-body form button[type=submit]", { hasText: "Queue edit" })).toBeVisible();
 });
+
+// Any edit closes the alert's open fires, so the alert's own panel says so
+// before you save, not just the trigger panel.
+test("the alert's edit form says saving takes its open fire off the queue", async ({ page }) => {
+  await storeToken(page);
+  await page.goto(`/#/alert/${STATIC.id}`);
+  await expect(page.locator("#drawer-body .note", { hasText: "revisit queue" })).toHaveText("Saving an edit also takes this alert's open fire off the revisit queue.");
+});

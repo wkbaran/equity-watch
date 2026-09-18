@@ -312,6 +312,21 @@ describe("tickerStory", () => {
     expect(story.lines.some((l) => l.text.includes("you raised the level 82.1 to 84.2"))).toBe(true);
   });
 
+  // One edit closes every open entry for its alert, so two can carry one move.
+  it("tells one edit once, and says lowered when it went down", () => {
+    const moved = { status: "applied" as const, appliedFrom: 50, appliedTo: 45, resolvedAt: "2026-09-18T15:00:00Z" };
+    const story = tickerStory(
+      "ZZ",
+      [
+        entry({ id: "1", symbol: "ZZ", triggeredAt: "2026-09-16T14:00:00Z", ...moved }),
+        entry({ id: "2", symbol: "ZZ", triggeredAt: "2026-09-17T14:00:00Z", ...moved }),
+      ],
+      NONE
+    );
+    expect(story.lines.filter((l) => l.text.includes("the level 50 to 45"))).toHaveLength(1);
+    expect(story.lines.some((l) => l.text.includes("you lowered the level 50 to 45"))).toBe(true);
+  });
+
   it("records a dismissal as a decision, not an absence", () => {
     const story = tickerStory(
       "GO",

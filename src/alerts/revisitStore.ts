@@ -140,3 +140,36 @@ export function resolveRevisit(
   saveRevisits(path, entries);
   return entry;
 }
+
+/**
+ * Closes every open entry for one alert after that alert was edited, from
+ * anywhere: the CLI, the alert's own panel, or a trigger's panel. Editing the
+ * alert is the decision an open fire was waiting on, so the queue shouldn't
+ * keep asking (the user's rule, 2026-09-18). Marked "applied", not
+ * "dismissed": something was done, and `moved` lets the page and the ticker
+ * story say what. Returns the ids closed, oldest first.
+ */
+export function closeRevisitsForEdit(
+  path: string,
+  alertId: string,
+  moved: { from: number | null; to: number | null },
+  now: Date = new Date()
+): string[] {
+  if (!existsSync(path)) {
+    return [];
+  }
+  const entries = loadRevisits(path);
+  const closed: string[] = [];
+  for (const entry of entries) {
+    if (entry.alertId !== alertId || entry.status !== "open") continue;
+    entry.status = "applied";
+    entry.resolvedAt = now.toISOString();
+    entry.appliedFrom = moved.from;
+    entry.appliedTo = moved.to;
+    closed.push(entry.id);
+  }
+  if (closed.length > 0) {
+    saveRevisits(path, entries);
+  }
+  return closed;
+}
