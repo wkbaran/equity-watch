@@ -540,12 +540,10 @@ cross-origin widget — no postMessage API, so the panel can only choose what
 `src` to load; it never hears about symbol, timeframe, or indicator changes
 made inside it.
 
-`symbol`, `interval`, `colorTheme` (not `theme` — both parse, but only
-`colorTheme` was confirmed live alongside a working `studies` entry),
-`autosize`, `hide_side_toolbar`, and `allow_symbol_change` all work reliably
-in that hash JSON (verified with Playwright against the live page,
-screenshotting the actual rendered iframe, not just checking the `src` we
-built). **`studies_overrides` does not.** Every config that included it
+`symbol`, `interval`, `autosize`, `hide_side_toolbar`, and
+`allow_symbol_change` all work reliably in that hash JSON (verified with
+Playwright against the live page, screenshotting the actual rendered iframe,
+not just checking the `src` we built). **`studies_overrides` does not.** Every config that included it
 rendered as if the hash were empty entirely — light theme, no indicators,
 none of the other settings applied either — and on one run the *same* config
 without any override-shaped key failed the same way once too. That
@@ -566,6 +564,26 @@ If another indicator needs preloading, that's the fastest way to get its
 real id and confirm its actual default inputs — searching TradingView's own
 docs/tutorials for `tv-basicstudies` names turns up stale or wrong answers.
 
+**The theme goes out under both `theme` and `colorTheme`, and must stay that
+way.** `colorTheme` alone was verified rendering dark when the panel landed,
+then silently stopped being honored (reported 2026-09-17: charts opened light
+while `symbol`, `interval`, the ribbon, and the hidden side toolbar all still
+applied — so the hash was still being read and only that one key was being
+dropped). `colorTheme` is the key TradingView's *other* embed widgets take
+(ticker tape, mini chart, symbol overview); `theme` is the advanced chart's
+own, which is likely why `colorTheme` only ever worked here incidentally.
+Both parse, so `chartEmbedUrl` sends both and lets whichever the endpoint
+currently honors win. Don't collapse them back to one key to tidy up.
+
+Note what that episode says about the whole endpoint: a key that a
+screenshot proved working can stop working later with no warning and no
+error, while every other key keeps applying. Treat "verified live" here as
+true on the day it was checked, not as a standing guarantee — and when a
+setting goes wrong, first establish whether the *whole* hash is being ignored
+(the `studies_overrides` failure above: light theme **and** no indicators
+**and** no other settings) or just one key, because those have opposite
+fixes.
+
 Verifying this kind of thing needs an actual browser: `node --check` and
 `curl` can confirm markup exists and endpoints return 200, but they can't
 tell you a `hidden` attribute isn't visually hidden, that a config key
@@ -575,3 +593,10 @@ document builders; `npm run test:ui` runs the suite) — it's already wired up
 and can screenshot into cross-origin iframe content, and capture the
 WebSocket frames such a page sends, neither of which our own page's JS can
 ever read.
+
+One catch: a Claude Code **web/cloud** session can't do that verification at
+all — the agent proxy denies `*.tradingview.com` (and the published site),
+so the iframe never loads there and only the `src` we build can be checked.
+The theme fix above was made from a symptom report under exactly that
+limitation. Anything about what the widget actually *renders* has to be
+checked from a machine with real network access.

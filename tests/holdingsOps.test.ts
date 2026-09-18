@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MarketData } from "../src/alerts/engine.js";
 import { buildDashboard } from "../src/dashboard.js";
-import { editLot, removeLot, removePosition } from "../src/holdings/engine.js";
+import { editLot, removeLot, removePosition, replaceStop } from "../src/holdings/engine.js";
 import type { HoldingsStore } from "../src/holdings/models.js";
 import { loadHoldingsStore, saveHoldingsStore } from "../src/holdings/store.js";
 import { applyOp, parseOp, type OpResult } from "../src/ops/apply.js";
@@ -88,6 +88,14 @@ describe("holdings validation", () => {
     expect(parseStopInput({ symbol: "aapl", stopPrice: "140" })).toEqual({ ok: true, value: { symbol: "AAPL", stopPrice: 140, count: null } });
     expect(parseStopInput({ symbol: "AAPL", stopPrice: 0 })).toEqual({ ok: false, error: "Stop price must be a positive number." });
   });
+
+  it("accepts an optional stop on a lot, and rejects shares covered without a price", () => {
+    expect(parseLotInput({ symbol: "X", count: 1, basisPerShare: 1, stopPrice: "140", stopCount: "5" })).toEqual({
+      ok: true,
+      value: { symbol: "X", count: 1, basisPerShare: 1, stopPrice: 140, stopCount: 5 },
+    });
+    expect(parseLotInput({ symbol: "X", count: 1, basisPerShare: 1, stopCount: 5 })).toEqual({ ok: false, error: "A stop needs a price." });
+  });
 });
 
 describe("holdings engine", () => {
@@ -109,6 +117,13 @@ describe("holdings engine", () => {
     expect(s.alertState).toEqual([]);
   });
 
+  it("replaceStop drops every existing stop on the symbol before adding the new one", () => {
+    const added = replaceStop(holdingsFile, { symbol: "AAPL", stopPrice: 155, count: 3 });
+    const stops = loadHoldingsStore(holdingsFile).stops;
+    expect(stops.filter((s) => s.symbol === "AAPL")).toEqual([added]);
+    expect(stops.filter((s) => s.symbol === "MSFT")).toHaveLength(1); // untouched
+  });
+
   it("removes a whole position", () => {
     const removed = removePosition(holdingsFile, "AAPL");
     expect(removed.lots.map((l) => l.id)).toEqual(["lotaapl1", "lotaapl2"]);
@@ -122,6 +137,21 @@ describe("holdings ops", () => {
     const r = await apply({ type: "lot.add", params: { symbol: "nvda", count: 4, basisPerShare: 120.5, purchaseDate: "2026-09-12", account: "margin" } });
     expect(r).toMatchObject({ ok: true, symbol: "NVDA", alertId: null, message: "Added a lot of NVDA." });
     expect(loadHoldingsStore(holdingsFile).lots.at(-1)).toMatchObject({ symbol: "NVDA", count: 4, basisPerShare: 120.5, purchaseDate: "2026-09-12", account: "margin" });
+  });
+
+  it("a lot added with a stop for a new position just adds the stop", async () => {
+    const r = await apply({ type: "lot.add", params: { symbol: "nvda", count: 4, basisPerShare: 120.5, stopPrice: 100 } });
+    expect(r).toMatchObject({ ok: true, symbol: "NVDA", message: "Added a lot of NVDA and set its stop." });
+    expect(loadHoldingsStore(holdingsFile).stops.filter((s) => s.symbol === "NVDA")).toMatchObject([{ stopPrice: 100, count: null }]);
+  });
+
+  it("a lot added with a stop on an existing position replaces its stop instead of adding alongside", async () => {
+    const r = await apply({ type: "lot.add", params: { symbol: "aapl", count: 2, basisPerShare: 200, stopPrice: 160, stopCount: 12 } });
+    expect(r).toMatchObject({ ok: true, message: "Added a lot of AAPL and set its stop." });
+    const aaplStops = loadHoldingsStore(holdingsFile).stops.filter((s) => s.symbol === "AAPL");
+    expect(aaplStops).toMatchObject([{ stopPrice: 160, count: 12 }]);
+    // The MSFT stop is untouched.
+    expect(loadHoldingsStore(holdingsFile).stops.some((s) => s.symbol === "MSFT")).toBe(true);
   });
 
   it("edits a lot that still looks the way the page showed it", async () => {

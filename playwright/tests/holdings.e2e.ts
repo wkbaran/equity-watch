@@ -105,6 +105,38 @@ test("adds a lot", async ({ page }) => {
   expect(op).toMatchObject({ type: "lot.add", params: { symbol: "MSFT", count: 3, basisPerShare: 410.5, purchaseDate: "2026-09-10", account: "roth" } });
 });
 
+test("adding a lot with a stop for a new position just sends the stop", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  const form = page.locator("#lot-add form");
+  await form.locator("input[type=text]").first().fill("nvda");
+  await form.locator("input[type=number]").nth(0).fill("2");
+  await form.locator("input[type=number]").nth(1).fill("120");
+  await form.locator("input[type=number]").nth(2).fill("100");
+  await form.locator("button[type=submit]").click();
+
+  await expect(page.locator("#holdings-pending .pending-row")).toContainText("add 2 NVDA @ 120, stop 100");
+  const [op] = await queuedOps(page);
+  expect(op).toMatchObject({ type: "lot.add", params: { symbol: "NVDA", count: 2, basisPerShare: 120, stopPrice: 100 } });
+  expect(op.params).not.toHaveProperty("stopCount");
+});
+
+test("adding a lot with a stop on an existing position says it replaces the old stop", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  const form = page.locator("#lot-add form");
+  await form.locator("input[type=text]").first().fill("AA");
+  await form.locator("input[type=number]").nth(0).fill("5");
+  await form.locator("input[type=number]").nth(1).fill("42");
+  await form.locator("input[type=number]").nth(2).fill("36");
+  await form.locator("input[type=number]").nth(3).fill("20");
+  await form.locator("button[type=submit]").click();
+
+  await expect(page.locator("#holdings-pending .pending-row")).toContainText("replacing its stop with 36");
+  const [op] = await queuedOps(page);
+  expect(op).toMatchObject({ type: "lot.add", params: { symbol: "AA", count: 5, basisPerShare: 42, stopPrice: 36, stopCount: 20 } });
+});
+
 test("edits a lot, sending only what changed and the lot as shown", async ({ page }) => {
   await storeToken(page);
   await openHoldings(page);

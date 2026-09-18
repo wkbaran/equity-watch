@@ -848,6 +848,8 @@
     const basis = numberInput(null, { placeholder: "per share" });
     const date = h("input", { type: "date", value: localToday() });
     const account = h("input", { type: "text", list: "account-options", placeholder: "optional", maxlength: "40" });
+    const stopPrice = numberInput(null, { placeholder: "optional" });
+    const stopCovered = numberInput(null, { placeholder: "all" });
     const error = h("span", { class: "form-error" });
     const button = h("button", { type: "submit", text: "Add lot" });
     lotAddFormEl = h(
@@ -864,15 +866,31 @@
           if (n === null) return (error.textContent = "Enter shares above 0.");
           if (b === null) return (error.textContent = "Enter a basis per share above 0.");
           if (!date.value) return (error.textContent = "Enter the purchase date.");
+          const sp = stopPrice.value.trim() === "" ? undefined : positive(stopPrice.value);
+          if (sp === null) return (error.textContent = "Stop price must be above 0, or empty for none.");
+          const sc = stopCovered.value.trim() === "" ? undefined : positive(stopCovered.value);
+          if (sc === null) return (error.textContent = "Shares covered must be above 0, or empty for all.");
           const acct = account.value.trim();
-          const params = { symbol: sym, count: n, basisPerShare: b, purchaseDate: date.value, ...(acct ? { account: acct } : {}) };
+          const params = {
+            symbol: sym,
+            count: n,
+            basisPerShare: b,
+            purchaseDate: date.value,
+            ...(acct ? { account: acct } : {}),
+            ...(sp !== undefined ? { stopPrice: sp } : {}),
+            ...(sc !== undefined ? { stopCount: sc } : {}),
+          };
+          const alreadyHeld = vaultData?.lots.some((l) => l.symbol === sym) ?? false;
+          const stopNote = sp === undefined ? "" : alreadyHeld ? `, replacing its stop with ${sp}` : `, stop ${sp}`;
           button.disabled = true;
-          const queued = await submitOp({ type: "lot.add", params }, { symbol: sym, summary: `add ${n} ${sym} @ ${b}` });
+          const queued = await submitOp({ type: "lot.add", params }, { symbol: sym, summary: `add ${n} ${sym} @ ${b}${stopNote}` });
           button.disabled = false;
           if (queued) {
             symbol.value = "";
             shares.value = "";
             basis.value = "";
+            stopPrice.value = "";
+            stopCovered.value = "";
           }
         },
       },
@@ -882,10 +900,15 @@
       field("Basis / share", basis),
       field("Purchased", date),
       field("Account", account),
+      field("Stop price", stopPrice),
+      field("Stop shares covered", stopCovered),
       button,
       error,
       h("datalist", { id: "account-options" }),
-      h("div", { class: "note", text: "Applied at the next scheduled check. Basis stays blended across a symbol's lots." })
+      h("div", {
+        class: "note",
+        text: "Applied at the next scheduled check. Basis stays blended across a symbol's lots. A stop set here replaces any existing stop on this symbol.",
+      })
     );
     slot.replaceChildren(lotAddFormEl);
     refreshAccountList();
@@ -1825,8 +1848,15 @@
   // frame it sends) sidesteps that entirely: it plots four SMAs, and its own
   // out-of-the-box default lengths are exactly 20/50/100/200, so no override
   // is needed to get them - confirmed by screenshotting the live rendered
-  // chart, not just the URL. `colorTheme` (not `theme`) is the key verified
-  // working in that same screenshot; don't swap it back without re-checking.
+  // chart, not just the URL.
+  //
+  // The theme goes out under BOTH `theme` and `colorTheme`. `colorTheme` alone
+  // worked when this landed, then stopped (2026-09-17: charts opened light
+  // while symbol, interval, the ribbon and the hidden side toolbar all still
+  // applied - so the hash was still being read, and only that one key was
+  // being dropped). `colorTheme` is the key TradingView's *other* widgets take;
+  // `theme` is the advanced chart's own. Both parse, so send both and let
+  // whichever the endpoint currently honors win. Don't "tidy" this back to one.
   let chartSymbol = null;
   let chartHref = null;
   function chartEmbedUrl(href) {
@@ -1841,6 +1871,7 @@
       symbol,
       interval: "D",
       timezone: "America/New_York",
+      theme: colorTheme,
       colorTheme,
       style: "1",
       autosize: true,

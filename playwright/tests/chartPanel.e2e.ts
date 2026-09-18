@@ -44,6 +44,8 @@ test("a symbol link opens the shared chart panel, not a new tab", async ({ page 
   // verified unreliable on the live page, so never sent.
   expect(settings.studies).toEqual(["STD;MA%Ribbon"]);
   expect(settings.studies_overrides).toBeUndefined();
+  // Both theme keys go out: colorTheme alone silently stopped being honored.
+  expect(settings.theme).toBe("dark");
   expect(settings.colorTheme).toBe("dark");
 });
 
@@ -102,5 +104,6 @@ test("toggling the site theme reloads an open chart with the matching theme", as
   await page.keyboard.press("Enter");
   const src = await page.locator("#chart-frame").getAttribute("src");
   const settings = JSON.parse(decodeURIComponent(new URL(src!).hash.slice(1)));
+  expect(settings.theme).toBe("light");
   expect(settings.colorTheme).toBe("light");
 });
