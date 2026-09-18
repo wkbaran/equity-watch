@@ -344,6 +344,19 @@ Things that look simplifiable and aren't:
   `revisitId`. `rerenderOps` re-renders the queue so either tag appears without
   waiting for a poll. A new op type also needs the Lambda's `TARGET_KEY` in
   `cloudformation.yaml` and a stack deploy, or the page gets "Unknown op type".
+- **The alert panel's Remove is a queued `alert.remove`**, not a copied CLI
+  command (2026-09-18). It carries `expect.condition` like an edit and deletes
+  by id only (never `findAlert`), so a stale panel can't delete what an alert
+  has since become. Its pending tag reads "remove pending".
+- **The edit form is price + volume for static and volume alerts alike**
+  (2026-09-18). An empty level means volume-only. `editAlert` converts in place,
+  keeping id and history: a level on a volume alert makes it static with the
+  volume as its AND condition; `level: null` (`clearLevel`, `--clear-level`)
+  makes a static alert with volume a volume alert. The volume alert's panel
+  therefore sends `direction` with any new level, since it has none to keep.
+  `AlertRow.volume` carries the condition so the form can prefill it; the
+  condition text can't be parsed back. Moving averages have no volume
+  condition and still aren't editable from the page.
 - **Both drawers fetch `alerts.json`.** The trigger drawer needs the alert's
   *current* level and direction for the edit form, and `TriggerRow` carries
   neither (it records what fired, not what is set now). `RevisitRow.alertId`

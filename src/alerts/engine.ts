@@ -13,6 +13,7 @@ import {
   type MaTrigger,
   type PriceAlert,
   type StaticAlert,
+  type VolumeAlert,
   type VolumeCondition,
   type VolumePeriodUnit,
 } from "./models.js";
@@ -541,8 +542,12 @@ export async function addAlert(
 
 /** What `editAlert` may change. Omitted fields are left as they are. */
 export interface AlertEdit {
-  /** Static only. */
-  level?: number;
+  /**
+   * Static, or a volume alert gaining a price level, which makes it a static
+   * alert with its volume as the AND condition. Null drops a static alert's
+   * level, which leaves a volume alert and so needs a volume condition.
+   */
+  level?: number | null;
   /** Static: up, down, or either. Moving-average cross: up or down. */
   direction?: AlertDirection;
   /** Trailing only. */
@@ -567,8 +572,8 @@ export interface EditAlertResult {
 }
 
 const EDITABLE_KINDS: Record<keyof AlertEdit, { label: string; kinds: Alert["kind"][] }> = {
-  level: { label: "level", kinds: ["static"] },
-  direction: { label: "direction", kinds: ["static", "ma"] },
+  level: { label: "level", kinds: ["static", "volume"] },
+  direction: { label: "direction", kinds: ["static", "ma", "volume"] },
   trail: { label: "trail", kinds: ["trailing"] },
   volume: { label: "volume condition", kinds: ["static", "trailing", "volume"] },
   ma: { label: "moving average", kinds: ["ma"] },
@@ -578,6 +583,11 @@ const EDITABLE_KINDS: Record<keyof AlertEdit, { label: string; kinds: Alert["kin
 
 /**
  * Changes an alert in place, keeping its id, watch start, and trigger history.
+ *
+ * Price and volume are one form on the page, whatever the alert's kind, so an
+ * edit may move an alert between static and volume-only: a level added to a
+ * volume alert makes it a static alert whose volume is the AND condition, and
+ * a static alert's level dropped leaves its volume condition standing alone.
  * `triggerSnapshot` and the revisit entries already record what it looked like
  * when it fired, so an edit doesn't rewrite that.
  *
@@ -593,7 +603,7 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
   if (found.alert === null) {
     return reject(found.error);
   }
-  const alert = found.alert;
+  let alert = found.alert;
   if (alert.status !== "live") {
     return reject(`Alert ${alert.id} is ${alert.status}. Add a new alert instead.`);
   }
@@ -610,6 +620,34 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
   }
   const before = structuredClone(alert);
   let replaced: Alert | null = null;
+
+  if (alert.kind === "volume") {
+    if (edit.level === null) {
+      return reject("A volume alert has no price level to remove.");
+    }
+    if (edit.level === undefined) {
+      if (edit.direction !== undefined) {
+        return reject("A volume alert has no direction. Give it a level too, and the direction applies to that.");
+      }
+    } else {
+      // Becomes a static alert. The level, side, and crossing baseline are set
+      // below exactly as for any moved level; its volume becomes the AND
+      // condition unless this edit replaces or clears that too.
+      const { kind: _kind, volume, ...base } = alert;
+      const promoted: StaticAlert = {
+        ...base,
+        kind: "static",
+        side: "above",
+        direction: DEFAULT_ALERT_DIRECTION,
+        level: edit.level,
+        lastKnownSide: "above",
+        volumeCondition: volume,
+        mutedUntil: null,
+      };
+      alerts[alerts.indexOf(alert)] = promoted;
+      alert = promoted;
+    }
+  }
 
   if (alert.kind === "ma") {
     const trigger = alert.trigger;
@@ -666,11 +704,26 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
     alert.trailValue = edit.trail.value;
   }
 
+  if (alert.kind === "static" && edit.level === null) {
+    // Becomes a volume alert: its volume condition, after this edit's own
+    // change to it, is all that is left to watch.
+    if (edit.direction !== undefined) {
+      return reject("A direction needs a level. Keep the level, or drop the direction change.");
+    }
+    const { kind: _kind, side: _side, direction: _direction, level: _level, lastKnownSide: _lastKnownSide, volumeCondition, ...base } = alert;
+    if (volumeCondition === undefined) {
+      return reject("Without a level or a volume condition the alert would watch nothing. Remove it instead.");
+    }
+    const demoted: VolumeAlert = { ...base, kind: "volume", volume: volumeCondition, mutedUntil: null };
+    alerts[alerts.indexOf(alert)] = demoted;
+    alert = demoted;
+  }
+
   if (alert.kind === "static") {
     if (edit.direction !== undefined) {
       alert.direction = edit.direction;
     }
-    if (edit.level !== undefined) {
+    if (edit.level !== undefined && edit.level !== null) {
       const quote = (await market.getQuotes([alert.symbol])).get(alert.symbol);
       if (quote === undefined) {
         return reject(`No quote available for ${alert.symbol}.`);

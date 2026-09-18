@@ -1,5 +1,5 @@
 /**
- * Applies a change queued from the browser dashboard: add or edit an alert,
+ * Applies a change queued from the browser dashboard: add, edit, or remove an alert,
  * dismiss a revisit-queue entry, or add, edit, or remove a holdings lot,
  * position, or stop.
  *
@@ -19,7 +19,7 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { describeAlertCondition } from "../alerts/describe.js";
 import { addAlert, editAlert, type MarketData } from "../alerts/engine.js";
 import { closeRevisitsForEdit, loadRevisits, resolveRevisit } from "../alerts/revisitStore.js";
-import { loadAlerts } from "../alerts/store.js";
+import { loadAlerts, saveAlerts } from "../alerts/store.js";
 import type { Alert } from "../alerts/models.js";
 import { applyHoldingsOp } from "./holdings.js";
 import { addFieldsFromJson, editFieldsFromJson, parseAddInput, parseAlertEdit, stringField } from "./validate.js";
@@ -28,7 +28,7 @@ export const DEFAULT_OP_LOG = "ops.log.jsonl";
 export const DEFAULT_HOLDINGS_FILE = "holdings.json";
 export const DEFAULT_REVISITS_FILE = "revisits.json";
 
-export const OP_TYPES = ["alert.add", "alert.edit", "revisit.dismiss", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.remove"] as const;
+export const OP_TYPES = ["alert.add", "alert.edit", "alert.remove", "revisit.dismiss", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.remove"] as const;
 export type OpType = (typeof OP_TYPES)[number];
 
 /**
@@ -149,9 +149,11 @@ export async function applyOp(op: Op, ctx: ApplyContext): Promise<ApplyOutcome> 
       ? await applyAdd(op, ctx)
       : op.type === "alert.edit"
         ? await applyEdit(op, ctx)
-        : op.type === "revisit.dismiss"
-          ? applyDismiss(op, ctx)
-          : applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
+        : op.type === "alert.remove"
+          ? applyRemove(op, ctx)
+          : op.type === "revisit.dismiss"
+            ? applyDismiss(op, ctx)
+            : applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
   const result: OpResult = { id: op.id, type: op.type, ...outcome, appliedAt: (ctx.now?.() ?? new Date()).toISOString() };
   appendOpResult(ctx.opLogFile, result);
   return { result, duplicate: false };
@@ -240,6 +242,34 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
     ok: true,
     message: `Edited ${alert.kind} alert ${alertId}: was "${describeAlertCondition(result.before)}", now "${describeAlertCondition(result.edited)}".${replaced}${closed}`,
   };
+}
+
+/**
+ * Deletes an alert, as `alert remove` does. Guarded like an edit: by id only,
+ * never through findAlert's ticker lookup, and only while the alert still
+ * reads as the page showed it, so a stale panel can't delete an alert that has
+ * since been re-levelled into something else.
+ */
+function applyRemove(op: Op, ctx: ApplyContext): Outcome {
+  const alertId = stringField(op.target, "alertId");
+  if (alertId === null || alertId === "") {
+    return reject(null, null, "A remove needs target.alertId.");
+  }
+  const expected = stringField(op.expect, "condition");
+  if (expected === null) {
+    return reject(null, alertId, "A remove needs expect.condition.");
+  }
+  const alerts = loadAlerts(ctx.alertsFile);
+  const alert = alerts.find((a) => a.id === alertId);
+  if (alert === undefined) {
+    return reject(null, alertId, `No alert with id ${alertId}. It may already have been removed.`);
+  }
+  const now = describeAlertCondition(alert);
+  if (now !== expected) {
+    return reject(alert.symbol, alertId, `Not removed: the alert changed since the page loaded. It is now "${now}".`);
+  }
+  saveAlerts(ctx.alertsFile, alerts.filter((a) => a.id !== alertId));
+  return { symbol: alert.symbol, alertId, ok: true, message: `Removed ${alert.kind} alert ${alertId} (${alert.symbol}: ${now}).` };
 }
 
 /**

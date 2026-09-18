@@ -39,6 +39,8 @@ export interface RawAddFields {
 
 export interface RawEditFields {
   level?: Scalar;
+  /** Drop a static alert's level, leaving its volume condition as a volume alert. */
+  clearLevel?: boolean;
   direction?: string;
   trailPercent?: Scalar;
   trailAmount?: Scalar;
@@ -241,7 +243,12 @@ export function parseAlertEdit(raw: RawEditFields): Parsed<AlertEdit> {
 
 function alertEdit(raw: RawEditFields): AlertEdit {
   const edit: AlertEdit = {};
-  if (raw.level !== undefined) {
+  if (raw.clearLevel === true) {
+    if (raw.level !== undefined) {
+      fail("--clear-level can't be combined with --level.");
+    }
+    edit.level = null;
+  } else if (raw.level !== undefined) {
     edit.level = positive("--level", raw.level);
   }
   if (raw.direction !== undefined) {
@@ -281,7 +288,7 @@ function alertEdit(raw: RawEditFields): AlertEdit {
 }
 
 const ADD_KEYS = ["symbol", "level", "near", "trailPercent", "trailAmount", "volumeAtLeast", "volumeRatio", "volumePeriod", "ma", "touch", "direction", "from"] as const;
-const EDIT_KEYS = ["level", "direction", "trailPercent", "trailAmount", "volumeAtLeast", "volumeRatio", "volumePeriod", "clearVolume", "ma", "touch", "from"] as const;
+const EDIT_KEYS = ["level", "clearLevel", "direction", "trailPercent", "trailAmount", "volumeAtLeast", "volumeRatio", "volumePeriod", "clearVolume", "ma", "touch", "from"] as const;
 
 /**
  * Narrows untrusted JSON params (from the queue) to known scalar fields. An

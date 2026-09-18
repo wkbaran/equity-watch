@@ -5,7 +5,7 @@
  * the local server and the specs, so it must stay free of side effects.
  */
 
-import type { MaAlert, StaticAlert, TrailingAlert } from "../src/alerts/models.js";
+import type { MaAlert, StaticAlert, TrailingAlert, VolumeAlert } from "../src/alerts/models.js";
 import { scoreRevisit, type RevisitEntry } from "../src/alerts/revisit.js";
 import type { HoldingsStore } from "../src/holdings/models.js";
 
@@ -30,7 +30,7 @@ function base(id: string, symbol: string, price: number) {
   };
 }
 
-export const PRICES: Record<string, number> = { AA: 46.34, MSFT: 420, TSLA: 242, SPY: 575 };
+export const PRICES: Record<string, number> = { AA: 46.34, MSFT: 420, TSLA: 242, SPY: 575, NVDA: 180 };
 
 export const STATIC: StaticAlert = {
   ...base("st000001", "AA", PRICES.AA),
@@ -80,7 +80,13 @@ export const MOVING_AVERAGE: MaAlert = {
   lastApproachedFrom: null,
 };
 
-export const FIXTURE_ALERTS = [STATIC, STATIC_WITH_VOLUME, TRAILING, MOVING_AVERAGE];
+export const VOLUME_ONLY: VolumeAlert = {
+  ...base("vo000001", "NVDA", PRICES.NVDA),
+  kind: "volume",
+  volume: { threshold: 5_000_000, mode: "period", periodValue: 30, periodUnit: "m" },
+};
+
+export const FIXTURE_ALERTS = [STATIC, STATIC_WITH_VOLUME, TRAILING, MOVING_AVERAGE, VOLUME_ONLY];
 
 /** Published only inside vault.json, sealed with OPS_TOKEN. */
 export const HOLDINGS: HoldingsStore = {

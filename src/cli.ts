@@ -881,6 +881,7 @@ function cmdAlertRemove(id: string, opts: AlertCommonOpts): void {
 
 interface AlertEditOpts extends AlertCommonOpts {
   level?: string;
+  clearLevel?: boolean;
   direction?: string;
   trailPercent?: string;
   trailAmount?: string;
@@ -924,7 +925,7 @@ async function cmdAlertEdit(id: string, opts: AlertEditOpts): Promise<void> {
   }
 
   // Only a moved level needs a live quote.
-  const market = edit.level !== undefined ? buildMarketData(opts) : OFFLINE_MARKET;
+  const market = edit.level !== undefined && edit.level !== null ? buildMarketData(opts) : OFFLINE_MARKET;
   const result = await editAlert(opts.alertsFile, id, edit, market);
   if (result.rejectedReason) {
     console.error(`Not edited: ${result.rejectedReason}`);
@@ -2152,7 +2153,8 @@ function buildProgram(): Command {
         "A bare [level] is shorthand for --level: 'alert edit MELI 1960'. " +
         "Only a moved --level needs a live quote; to change an alert's kind, remove it and add a new one"
     )
-    .option("--level <price>", "Static: move the level (side and crossing baseline are re-seeded against the live price)")
+    .option("--level <price>", "Static: move the level (side and crossing baseline are re-seeded against the live price). Volume: add one, making it a static alert with its volume as the AND condition")
+    .option("--clear-level", "Static with a volume condition: drop the level, leaving a volume-only alert")
     .option("--direction <dir>", "Static: up|down|either. Moving-average cross: up|down")
     .option("--trail-percent <n>", "Trailing: trail distance as a percent")
     .option("--trail-amount <n>", "Trailing: trail distance as a dollar amount")

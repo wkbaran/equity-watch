@@ -9,7 +9,7 @@ import { loadRevisits, saveRevisits } from "../src/alerts/revisitStore.js";
 import { loadAlerts, saveAlerts } from "../src/alerts/store.js";
 import { applyOp, loadOpLog, parseOp, recentOpResults, type Op, type OpResult } from "../src/ops/apply.js";
 import { pullOps, type OpsQueue, type QueueMessage } from "../src/ops/pull.js";
-import { addFieldsFromJson, parseAddInput, parseAlertEdit } from "../src/ops/validate.js";
+import { addFieldsFromJson, editFieldsFromJson, parseAddInput, parseAlertEdit } from "../src/ops/validate.js";
 import type { Quote } from "../src/providers/schwab.js";
 
 function fakeMarket(prices: Record<string, number>): MarketData & { quoteCalls: number } {
@@ -112,6 +112,12 @@ describe("parseAlertEdit", () => {
     expect(r).toEqual({ ok: true, value: { level: 93, direction: "either", volume: null } });
   });
 
+  it("turns clearLevel into a null level, from the CLI or the page's JSON", () => {
+    expect(parseAlertEdit({ clearLevel: true, volumeRatio: 2 })).toEqual({ ok: true, value: { level: null, volume: { ratio: 2, mode: "today" } } });
+    const json = editFieldsFromJson({ clearLevel: true });
+    expect(json.ok && parseAlertEdit(json.value)).toEqual({ ok: true, value: { level: null } });
+  });
+
   it("returns an empty edit rather than rejecting it", () => {
     expect(parseAlertEdit({})).toEqual({ ok: true, value: {} });
   });
@@ -120,6 +126,7 @@ describe("parseAlertEdit", () => {
     [{ level: -1 }, 'Invalid --level "-1"'],
     [{ trailPercent: 1, trailAmount: 1 }, "not both"],
     [{ clearVolume: true, volumeRatio: 2 }, "--clear-volume can't be combined"],
+    [{ clearLevel: true, level: 5 }, "--clear-level can't be combined with --level"],
     [{ from: "sideways" }, 'Invalid --from "sideways"'],
   ])("rejects %j", (raw, message) => {
     const r = parseAlertEdit(raw);
@@ -149,7 +156,7 @@ describe("parseOp", () => {
     [null, "JSON object"],
     [{ type: "alert.add", params: {} }, "needs an id"],
     [{ id: "short", type: "alert.add", params: {} }, "needs an id"],
-    [{ id: "0b8c9f1e-1111", type: "alert.remove", params: {} }, 'Unknown op type "alert.remove"'],
+    [{ id: "0b8c9f1e-1111", type: "alert.delete", params: {} }, 'Unknown op type "alert.delete"'],
   ])("rejects %j", (body, message) => {
     const r = parseOp(body);
     expect(r.ok).toBe(false);
@@ -293,6 +300,34 @@ describe("applyOp", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toContain(message);
     expect((loadAlerts(alertsFile)[0] as StaticAlert).level).toBe(100);
+  });
+
+  const remove = (alertId: string, condition: string | undefined, id = "op-remv-0001"): Op => {
+    const r = parseOp({ id, type: "alert.remove", target: { alertId }, expect: condition === undefined ? undefined : { condition }, params: {} });
+    if (!r.ok) throw new Error(r.error);
+    return r.op;
+  };
+
+  it("removes an alert that still reads as the page showed it", async () => {
+    saveAlerts(alertsFile, [makeStatic(), makeStatic({ id: "keep1234" })]);
+    const { result } = await applyOp(remove("s1abcdef", "price crosses above 100"), { alertsFile, opLogFile, market: fakeMarket({}) });
+    expect(result).toMatchObject({ ok: true, type: "alert.remove", symbol: "TEST", alertId: "s1abcdef" });
+    expect(result.message).toBe("Removed static alert s1abcdef (TEST: price crosses above 100).");
+    expect(loadAlerts(alertsFile).map((a) => a.id)).toEqual(["keep1234"]);
+  });
+
+  it.each([
+    ["s1abcdef", undefined, "needs expect.condition"],
+    ["gone0000", "price crosses above 100", "No alert with id gone0000"],
+    ["s1abcdef", "price crosses above 95", 'the alert changed since the page loaded. It is now "price crosses above 100"'],
+    // By id only: a ticker must never resolve to some alert on that symbol.
+    ["TEST", "price crosses above 100", "No alert with id TEST"],
+  ])("refuses to remove %s expecting %s", async (alertId, condition, message) => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    const { result } = await applyOp(remove(alertId, condition), { alertsFile, opLogFile, market: fakeMarket({}) });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain(message);
+    expect(loadAlerts(alertsFile)).toHaveLength(1);
   });
 
   const dismiss = (target: Record<string, unknown>, id = "op-dism-0001"): Op => {

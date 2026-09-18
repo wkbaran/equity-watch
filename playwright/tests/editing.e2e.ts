@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { FIXTURE_REVISITS, MOVING_AVERAGE, OPS_TOKEN, STATIC, TRAILING } from "../fixtures.js";
+import { FIXTURE_REVISITS, MOVING_AVERAGE, OPS_TOKEN, STATIC, STATIC_WITH_VOLUME, TRAILING, VOLUME_ONLY } from "../fixtures.js";
 
 // poll() runs on visibilitychange while the page is visible; it's the only
 // hook into the page's IIFE, and saves waiting a minute for the interval.
@@ -120,9 +120,9 @@ test.describe("edit", () => {
     await storeToken(page);
     await page.goto(`/#/alert/${STATIC.id}`);
     const form = page.locator("#drawer-body form");
-    const level = form.locator("input[type=number]");
+    const level = form.getByLabel("Level");
     await expect(level).toHaveValue(String(STATIC.level));
-    await expect(form.locator("select")).toHaveValue(STATIC.direction);
+    await expect(form.getByLabel("Fires on")).toHaveValue(STATIC.direction);
 
     await form.locator("button[type=submit]").click();
     await expect(form.locator(".form-error")).toHaveText("Nothing changed.");
@@ -147,8 +147,8 @@ test.describe("edit", () => {
     await storeToken(page);
     await page.goto(`/#/alert/${TRAILING.id}`);
     const form = page.locator("#drawer-body form");
-    await form.locator("select").selectOption("amount");
-    await form.locator("input[type=number]").fill("7.5");
+    await form.getByLabel("Trail by").selectOption("amount");
+    await form.getByLabel("Distance").fill("7.5");
     await form.locator("button[type=submit]").click();
     await expect(page.locator("#drawer-body")).toContainText("edit TSLA trail $7.5");
     const [op] = await queuedOps(page);
@@ -168,9 +168,9 @@ test.describe("edit", () => {
     await expect(form.locator(".form-title")).toHaveText("Edit this alert");
     await expect(form.locator(".note")).toContainText("drops this entry from the revisit queue");
     // The alert's own settings, read from alerts.json rather than the trigger row.
-    await expect(form.locator("input[type=number]")).toHaveValue(String(STATIC.level));
+    await expect(form.getByLabel("Level")).toHaveValue(String(STATIC.level));
 
-    await form.locator("input[type=number]").fill("61");
+    await form.getByLabel("Level").fill("61");
     await form.locator("button[type=submit]").click();
     await expect(page.locator("#toasts")).toContainText("edit AA level 55 → 61 and close its queue entry");
 
@@ -295,7 +295,7 @@ test.describe("when a pending change lands", () => {
     await page.request.get("/__cadence?minutesAgo=6&interval=15");
     await page.goto("/#/trigger/rv0000a2");
     const form = page.locator("#drawer-body form");
-    await form.locator("input[type=number]").fill("61");
+    await form.getByLabel("Level").fill("61");
     await form.locator("button[type=submit]").click();
     await expect(page.locator("#drawer-body .tag.pending")).toHaveCount(1);
     await expect(page.locator("#drawer-body .note", { hasText: "Applies at" })).toHaveText(/^Applies at the next check, .+ \(in 9 min\)\.$/);
@@ -367,7 +367,7 @@ test.describe("results", () => {
 
     await page.goto(`/#/alert/${STATIC.id}`);
     const edit = page.locator("#drawer-body form");
-    await edit.locator("input[type=number]").fill("56");
+    await edit.getByLabel("Level").fill("56");
     await edit.locator("button[type=submit]").click();
     await expect(page.locator("#drawer-body .tag.pending")).toHaveCount(1);
 
@@ -481,5 +481,86 @@ test.describe("dismissing from the revisit queue", () => {
     await poll(page);
     await expect(page.locator("#toasts")).toContainText("Dismissed revisit rv0000a2");
     await expect(aaRow(page).locator(".tag.pending")).toHaveCount(0);
+  });
+});
+
+// The alert panel's Remove replaced a "Copy remove" button that copied the CLI command.
+test.describe("removing an alert from its panel", () => {
+  const actions = (page: Page) => page.locator("#drawer-body .actions");
+
+  test("offers nothing to copy, and no Remove while locked", async ({ page }) => {
+    await page.goto(`/#/alert/${STATIC.id}`);
+    await expect(actions(page).getByRole("link", { name: "Chart" })).toBeVisible();
+    await expect(actions(page).getByRole("button")).toHaveCount(0);
+  });
+
+  test("takes a second click, queues a guarded remove, and marks the alert pending", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${STATIC.id}`);
+    await actions(page).getByRole("button", { name: "Remove" }).click();
+    expect(await queuedOps(page)).toEqual([]);
+    await actions(page).getByRole("button", { name: "Click again to confirm" }).click();
+
+    await expect(actions(page).getByRole("button", { name: "Remove" })).toHaveCount(0);
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.remove", target: { alertId: STATIC.id }, expect: { condition: "price crosses above 55" }, params: {} });
+
+    await openAlerts(page);
+    await expect(page.locator("#alerts-table .tag.pending")).toHaveText("remove pending");
+  });
+});
+
+// One form for price and volume whatever the alert is now: volume can be added
+// to a price alert, and a level to a volume alert.
+test.describe("price and volume in one edit form", () => {
+  test("a price alert gains a volume condition", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${STATIC.id}`);
+    const form = page.locator("#drawer-body form");
+    await expect(form.getByRole("combobox", { name: /^Volume/ })).toHaveValue("none");
+    await form.getByRole("combobox", { name: /^Volume/ }).selectOption("ratio");
+    await form.getByLabel("Volume at least").fill("1.5");
+    await form.getByLabel("Over").fill("2h");
+    await form.locator("button[type=submit]").click();
+    await expect(page.locator("#drawer-body")).toContainText("edit AA volume ≥ 1.5x normal over 2h");
+    const [op] = await queuedOps(page);
+    expect(op.params).toEqual({ volumeRatio: 1.5, volumePeriod: "2h" });
+  });
+
+  test("a volume alert shows its volume and gains a level, stating its direction", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${VOLUME_ONLY.id}`);
+    const form = page.locator("#drawer-body form");
+    await expect(form.getByLabel("Level")).toHaveValue("");
+    await expect(form.getByRole("combobox", { name: /^Volume/ })).toHaveValue("shares");
+    await expect(form.getByLabel("Volume at least")).toHaveValue("5000000");
+    await expect(form.getByLabel("Over")).toHaveValue("30m");
+
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText("Nothing changed.");
+
+    await form.getByLabel("Level").fill("200");
+    await form.locator("button[type=submit]").click();
+    await expect(page.locator("#drawer-body")).toContainText("edit NVDA add level 200, crosses up");
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.edit", target: { alertId: VOLUME_ONLY.id }, params: { level: 200, direction: "up" } });
+    expect(Object.keys(op.params).sort()).toEqual(["direction", "level"]);
+  });
+
+  test("emptying a price alert's level leaves a volume alert, and emptying both is refused", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${STATIC_WITH_VOLUME.id}`);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Level").fill("");
+    await form.getByRole("combobox", { name: /^Volume/ }).selectOption("none");
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText("Set a level, a volume condition, or both.");
+    expect(await queuedOps(page)).toEqual([]);
+
+    await form.getByRole("combobox", { name: /^Volume/ }).selectOption("ratio");
+    await form.locator("button[type=submit]").click();
+    await expect(page.locator("#drawer-body")).toContainText("edit MSFT drop level 400");
+    const [op] = await queuedOps(page);
+    expect(op.params).toEqual({ clearLevel: true });
   });
 });

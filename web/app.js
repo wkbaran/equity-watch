@@ -393,7 +393,11 @@
   // Changes to the alert itself. A pending dismiss names the alert too, but
   // leaves it untouched, so it must not read as "edit pending" on the alert.
   const pendingFor = (alertId) => pendingOps.filter((p) => p.alertId === alertId && p.type.startsWith("alert."));
-  const pendingTag = (alertId) => (pendingFor(alertId).length ? h("span", { class: "tag pending", text: "edit pending" }) : null);
+  const pendingTag = (alertId) => {
+    const queued = pendingFor(alertId);
+    if (queued.length === 0) return null;
+    return h("span", { class: "tag pending", text: queued.some((p) => p.type === "alert.remove") ? "remove pending" : "edit pending" });
+  };
   const dismissPending = (revisitId) => pendingOps.some((p) => p.type === "revisit.dismiss" && p.revisitId === revisitId);
 
   function renderPending() {
@@ -540,7 +544,7 @@
     // The drawer is where a revisit-queue edit is made, so it is where "when
     // does this land?" gets asked first.
     if (queued.length > 0) pending.push(opsScheduleNote());
-    if (a.kind !== "static" && a.kind !== "trailing") {
+    if (a.kind !== "static" && a.kind !== "trailing" && a.kind !== "volume") {
       return [...pending, h("p", { class: "note", text: "This kind can't be edited from the page yet. Use alert edit in the CLI." })];
     }
     // Reuse the form while the alert is unchanged; rebuild it once an edit has landed.
@@ -555,41 +559,106 @@
     return [...pending, ...(closes ? [closes] : []), editForm.el];
   }
 
+  const VOLUME_WINDOW_RE = /^\d+(\.\d+)?[smhd]$/;
+  const sameVolume = (x, y) =>
+    (x?.threshold ?? null) === (y?.threshold ?? null) &&
+    (x?.ratio ?? null) === (y?.ratio ?? null) &&
+    (x?.mode === "period" ? `${x.periodValue}${x.periodUnit}` : "") === (y?.mode === "period" ? `${y.periodValue}${y.periodUnit}` : "");
+  const volumeConditionText = (v) =>
+    `${v.ratio !== undefined ? `≥ ${v.ratio}x normal` : `≥ ${v.threshold.toLocaleString()} shares`} ${v.mode === "period" ? `over ${v.periodValue}${v.periodUnit}` : "today"}`;
+
+  /**
+   * One form for price and volume whatever the alert is now (the user's call,
+   * 2026-09-18): a static or volume alert shows both a level and a volume
+   * condition, so volume can be added to a price alert and a price level to a
+   * volume alert. Leaving the level empty makes a volume-only alert; the
+   * worker (editAlert) does the conversion, keeping the id and history. A
+   * trailing alert shows its trail in place of the level.
+   */
   function buildEditForm(a, revisitId = null) {
     const error = h("span", { class: "form-error" });
     const button = h("button", { type: "submit", text: "Queue edit" });
     const fields = [];
-    let collect;
-    if (a.kind === "static") {
-      const level = numberInput(a.level);
-      const direction = directionSelect(a.direction);
-      fields.push(field("Level", level), field("Fires on", direction));
-      collect = () => {
-        const lvl = positive(level.value);
-        if (lvl === null) return { error: "Enter a level above 0." };
-        const params = {};
-        const changes = [];
-        if (lvl !== a.level) {
+    const hasLevel = a.kind === "static" || a.kind === "volume";
+
+    const level = numberInput(a.kind === "static" ? a.level : null, { placeholder: a.kind === "volume" ? "none" : "" });
+    const direction = directionSelect(a.direction);
+    const trailType = h("select", {}, h("option", { value: "percent", text: "Percent" }), h("option", { value: "amount", text: "Dollars" }));
+    const trailValue = numberInput(null, { placeholder: "unchanged" });
+    if (hasLevel) fields.push(field("Level", level), field("Fires on", direction));
+    else fields.push(field("Trail by", trailType), field("Distance", trailValue));
+
+    const old = a.volume ?? null;
+    const volumeKind = h(
+      "select",
+      {},
+      h("option", { value: "none", text: "No volume condition" }),
+      h("option", { value: "ratio", text: "× normal volume" }),
+      h("option", { value: "shares", text: "Shares" })
+    );
+    volumeKind.value = old === null ? "none" : old.ratio !== undefined ? "ratio" : "shares";
+    const volumeAmount = numberInput(old === null ? null : (old.ratio ?? old.threshold), { placeholder: "e.g. 1.5" });
+    const volumeWindow = h("input", {
+      type: "text",
+      class: "volume-window",
+      placeholder: "today, or 30m, 2h, 1d",
+      autocomplete: "off",
+      spellcheck: "false",
+      value: old?.mode === "period" ? `${old.periodValue}${old.periodUnit}` : "",
+    });
+    fields.push(field("Volume", volumeKind), field("Volume at least", volumeAmount), field("Over", volumeWindow));
+
+    const collect = () => {
+      const params = {};
+      const changes = [];
+
+      let volume = null;
+      if (volumeKind.value !== "none") {
+        const amount = positive(volumeAmount.value);
+        if (amount === null) return { error: "Enter a volume above 0, or choose no volume condition." };
+        const win = volumeWindow.value.trim().toLowerCase();
+        if (win !== "" && win !== "today" && !VOLUME_WINDOW_RE.test(win)) return { error: 'Volume window: leave empty for today, or e.g. "30m", "2h", "1d".' };
+        const period = win === "" || win === "today" ? null : { periodValue: Number(win.slice(0, -1)), periodUnit: win.slice(-1) };
+        volume = { ...(volumeKind.value === "ratio" ? { ratio: amount } : { threshold: amount }), ...(period ? { mode: "period", ...period } : { mode: "today" }) };
+      }
+
+      if (hasLevel) {
+        const raw = level.value.trim();
+        const lvl = raw === "" ? null : positive(raw);
+        if (raw !== "" && lvl === null) return { error: "Enter a level above 0, or leave it empty for a volume-only alert." };
+        if (lvl === null && volume === null) return { error: "Set a level, a volume condition, or both." };
+        const was = a.kind === "static" ? a.level : null;
+        if (lvl === null && was !== null) {
+          params.clearLevel = true;
+          changes.push(`drop level ${was}`);
+        } else if (lvl !== null && lvl !== was) {
           params.level = lvl;
-          changes.push(`level ${a.level} → ${lvl}`);
+          changes.push(was === null ? `add level ${lvl}` : `level ${was} → ${lvl}`);
         }
-        if (direction.value !== a.direction) {
+        // A volume alert gaining a level states its direction outright: it
+        // has none yet, so "unchanged" would mean the worker's default.
+        if (lvl !== null && (a.kind === "volume" || direction.value !== a.direction)) {
           params.direction = direction.value;
-          changes.push(`${DIRECTION_LABEL[a.direction].toLowerCase()} → ${DIRECTION_LABEL[direction.value].toLowerCase()}`);
+          changes.push(a.kind === "volume" ? DIRECTION_LABEL[direction.value].toLowerCase() : `${DIRECTION_LABEL[a.direction].toLowerCase()} → ${DIRECTION_LABEL[direction.value].toLowerCase()}`);
         }
-        return { params, changes };
-      };
-    } else {
-      const type = h("select", {}, h("option", { value: "percent", text: "Percent" }), h("option", { value: "amount", text: "Dollars" }));
-      const value = numberInput(null, { placeholder: "e.g. 3" });
-      fields.push(field("Trail by", type), field("Distance", value));
-      collect = () => {
-        const v = positive(value.value);
-        if (v === null) return { error: "Enter a trail distance above 0." };
-        const params = type.value === "percent" ? { trailPercent: v } : { trailAmount: v };
-        return { params, changes: [`trail ${type.value === "percent" ? `${v}%` : `$${v}`}`] };
-      };
-    }
+      } else if (trailValue.value.trim() !== "") {
+        const v = positive(trailValue.value);
+        if (v === null) return { error: "Enter a trail distance above 0, or leave it empty." };
+        Object.assign(params, trailType.value === "percent" ? { trailPercent: v } : { trailAmount: v });
+        changes.push(`trail ${trailType.value === "percent" ? `${v}%` : `$${v}`}`);
+      }
+
+      if (volume === null && old !== null) {
+        params.clearVolume = true;
+        changes.push("drop volume");
+      } else if (volume !== null && !sameVolume(volume, old)) {
+        if (volume.ratio !== undefined) params.volumeRatio = volume.ratio;
+        else params.volumeAtLeast = volume.threshold;
+        if (volume.mode === "period") params.volumePeriod = `${volume.periodValue}${volume.periodUnit}`;
+        changes.push(`volume ${volumeConditionText(volume)}`);
+      }
+      return { params, changes };
+    };
     return h(
       "form",
       {
@@ -1693,11 +1762,26 @@
         "div",
         { class: "actions", style: "margin-top:1.25rem" },
         h("a", { href: a.chartUrl, target: CHART_TARGET, text: "Chart" }),
-        copyButton("Copy remove", `${CLI} alert remove ${a.id}`)
+        removeAlertButton(a)
       ),
       // A wrapper, because replaceChildren renders a null argument as the text "null".
       h("div", {}, editSection(a)),
     ];
+  }
+
+  /**
+   * Queues a delete of this alert. `expect.condition` is the same guard an
+   * edit carries, so a panel left open while the alert was re-levelled can't
+   * delete what it has become. Hidden once a remove is pending.
+   */
+  function removeAlertButton(a) {
+    if (!canEdit() || pendingFor(a.id).some((p) => p.type === "alert.remove")) return null;
+    return confirmButton("Remove", () =>
+      submitOp(
+        { type: "alert.remove", target: { alertId: a.id }, expect: { condition: a.condition }, params: {} },
+        { symbol: a.symbol, alertId: a.id, summary: `${a.symbol}: remove alert "${a.condition}"` }
+      )
+    );
   }
 
   function renderDrawer(d) {

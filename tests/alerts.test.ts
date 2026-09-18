@@ -822,6 +822,60 @@ describe("editAlert", () => {
     expect(cleared.rejectedReason).toMatch(/can't lose its volume condition/);
   });
 
+  // Price and volume are one form on the page, so an edit can move an alert
+  // between static and volume-only, keeping its id and history.
+  it("gives a volume alert a level, making it static with its volume as the AND condition", async () => {
+    saveAlerts(path, [makeVolume({ volume: { ratio: 2, mode: "today" }, triggerCount: 3, mutedUntil: "2099-01-01T00:00:00.000Z" })]);
+    const result = await editAlert(path, "v1", { level: 120, direction: "either" }, fakeMarket({ prices: { TEST: 110 } }));
+    expect(result.rejectedReason).toBeNull();
+    expect(result.before?.kind).toBe("volume");
+    expect(loadAlerts(path)).toEqual([
+      expect.objectContaining({
+        id: "v1",
+        kind: "static",
+        level: 120,
+        side: "above",
+        lastKnownSide: "below",
+        direction: "either",
+        volumeCondition: { ratio: 2, mode: "today" },
+        triggerCount: 3,
+        mutedUntil: null,
+      }),
+    ]);
+    expect(loadAlerts(path)[0]).not.toHaveProperty("volume");
+  });
+
+  it("can swap a volume alert's volume for a plain price level in one edit", async () => {
+    saveAlerts(path, [makeVolume()]);
+    await editAlert(path, "v1", { level: 90, volume: null }, fakeMarket({ prices: { TEST: 110 } }));
+    const [stored] = loadAlerts(path) as StaticAlert[];
+    expect(stored).toMatchObject({ kind: "static", level: 90, side: "below", direction: "up" });
+    expect(stored.volumeCondition).toBeUndefined();
+  });
+
+  it("drops a static alert's level, leaving its volume condition as a volume alert", async () => {
+    saveAlerts(path, [makeStatic({ volumeCondition: { threshold: 1_000_000, mode: "today" }, triggerCount: 2 })]);
+    const result = await editAlert(path, "s1", { level: null, volume: { ratio: 3, mode: "today" } }, offline);
+    expect(result.rejectedReason).toBeNull();
+    expect(loadAlerts(path)).toEqual([expect.objectContaining({ id: "s1", kind: "volume", volume: { ratio: 3, mode: "today" }, triggerCount: 2 })]);
+    expect(loadAlerts(path)[0]).not.toHaveProperty("level");
+  });
+
+  it.each([
+    ["a static alert with no volume losing its level", () => makeStatic(), { level: null }, /would watch nothing/],
+    ["a static alert losing both", () => makeStatic({ volumeCondition: { ratio: 2, mode: "today" } }), { level: null, volume: null }, /would watch nothing/],
+    ["a direction on a dropped level", () => makeStatic({ volumeCondition: { ratio: 2, mode: "today" } }), { level: null, direction: "down" as const }, /direction needs a level/],
+    ["a volume alert given only a direction", () => makeVolume(), { direction: "down" as const }, /no direction. Give it a level/],
+    ["a volume alert losing a level it doesn't have", () => makeVolume(), { level: null }, /no price level to remove/],
+  ])("rejects %s and saves nothing", async (_name, make, edit, reason) => {
+    const alert = make();
+    saveAlerts(path, [alert]);
+    const before = loadAlerts(path);
+    const result = await editAlert(path, alert.id, edit, offline);
+    expect(result.rejectedReason).toMatch(reason);
+    expect(loadAlerts(path)).toEqual(before);
+  });
+
   it("rejects unknown and cancelled alerts, and empty edits", async () => {
     saveAlerts(path, [makeStatic({ status: "cancelled" }), makeStatic({ id: "s2" })]);
     expect((await editAlert(path, "nope", { direction: "up" }, offline)).rejectedReason).toMatch(/No alert with id nope/);
