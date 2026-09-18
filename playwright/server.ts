@@ -43,7 +43,7 @@ let suppressResults = false;
  * has to sit in the past: an op queued before it is one a drain already
  * covered, and the page retires it on sight.
  */
-const DEFAULT_CADENCE = { minutesAgo: 6, interval: 15 as number | null, nextInMin: null as number | null };
+const DEFAULT_CADENCE = { minutesAgo: 6, interval: 15 as number | null, nextInMin: null as number | null, maxStale: null as number | null };
 let cadence = { ...DEFAULT_CADENCE };
 
 function resultFor(op: QueuedOp): OpResult {
@@ -69,6 +69,7 @@ function documents() {
       processedThrough: released ? new Date().toISOString() : new Date(Date.now() - cadence.minutesAgo * 60_000).toISOString(),
       intervalMinutes: cadence.interval,
       nextCheckAt: cadence.nextInMin === null ? null : new Date(Date.now() + cadence.nextInMin * 60_000).toISOString(),
+      maxStaleMinutes: cadence.maxStale,
     }),
     "alerts.json": { generatedAt: dashboard.generatedAt, alerts: buildAlertRows(FIXTURE_ALERTS, quotes, new Set(), new Map(), heldSymbols) },
     "vault.json": sealVault(vaultContents(dashboard.holdings, HOLDINGS), OPS_TOKEN),
@@ -101,10 +102,12 @@ createServer(async (req, res) => {
   if (path === "__cadence") {
     const interval = url.searchParams.get("interval");
     const next = url.searchParams.get("nextInMin");
+    const maxStale = url.searchParams.get("maxStale");
     cadence = {
       minutesAgo: Number(url.searchParams.get("minutesAgo") ?? 0),
       interval: interval === "none" ? null : Number(interval ?? DEFAULT_CADENCE.interval),
       nextInMin: next === null ? null : Number(next),
+      maxStale: maxStale === null ? null : Number(maxStale),
     };
     return send(200, cadence);
   }

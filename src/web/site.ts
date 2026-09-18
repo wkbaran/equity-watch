@@ -77,9 +77,16 @@ export interface OpsPublishState {
    * a past value as "the check didn't run" would cry wolf.
    */
   nextCheckAt: string | null;
+  /**
+   * How old an unchanged document may get before a run republishes it
+   * (--max-stale-minutes), or null when every run publishes. The page adds it
+   * to its overdue threshold: without it, a healthy quiet stretch reads as
+   * "no check since" for the whole time the publisher is choosing to skip.
+   */
+  maxStaleMinutes: number | null;
 }
 
-export const NO_OPS: OpsPublishState = { results: [], processedThrough: null, intervalMinutes: null, nextCheckAt: null };
+export const NO_OPS: OpsPublishState = { results: [], processedThrough: null, intervalMinutes: null, nextCheckAt: null, maxStaleMinutes: null };
 
 export type SiteDocument = Dashboard & {
   site: SiteOptions;
@@ -87,6 +94,7 @@ export type SiteDocument = Dashboard & {
   opsProcessedThrough: string | null;
   opsIntervalMinutes: number | null;
   opsNextCheckAt: string | null;
+  opsMaxStaleMinutes: number | null;
 };
 
 /**
@@ -105,6 +113,7 @@ export function siteDocument(dashboard: Dashboard, options: SiteOptions, ops: Op
     opsProcessedThrough: ops.processedThrough,
     opsIntervalMinutes: ops.intervalMinutes,
     opsNextCheckAt: ops.nextCheckAt,
+    opsMaxStaleMinutes: ops.maxStaleMinutes,
   };
 }
 
@@ -195,12 +204,26 @@ export interface PublishState {
   publishedAt: string;
 }
 
-/** Publish when something happened, or when prices on the page have gone stale. */
+/**
+ * Scheduled runs start on a fixed grid but publish a few seconds in, and not
+ * always the same few. Compared exactly, a document published 11:25:07 is
+ * 29.97 minutes old at the 11:55:05 check, so a 30-minute limit waits a whole
+ * extra interval (2026-09-18: the page said "no check since" meanwhile).
+ */
+const STALE_SLACK_MINUTES = 1;
+
+/**
+ * Publish when something happened, when prices on the page have gone stale, or
+ * when the next run is further off than the page may go without news. That
+ * last is the end of the task's daily window: a quiet final run would
+ * otherwise leave the page expecting a check every 15 minutes all night.
+ */
 export function shouldPublish(
   state: PublishState | null,
   fingerprint: string,
   now: Date,
-  maxStaleMinutes: number
+  maxStaleMinutes: number,
+  nextCheckAt: string | null = null
 ): { publish: boolean; reason: string } {
   if (state === null) {
     return { publish: true, reason: "first publish" };
@@ -209,8 +232,14 @@ export function shouldPublish(
     return { publish: true, reason: "dashboard changed" };
   }
   const ageMin = (now.getTime() - new Date(state.publishedAt).getTime()) / 60_000;
-  if (ageMin >= maxStaleMinutes) {
+  if (ageMin >= maxStaleMinutes - STALE_SLACK_MINUTES) {
     return { publish: true, reason: `prices ${Math.round(ageMin)} min old` };
+  }
+  if (nextCheckAt !== null) {
+    const gapMin = (new Date(nextCheckAt).getTime() - now.getTime()) / 60_000;
+    if (gapMin > maxStaleMinutes) {
+      return { publish: true, reason: `next check not for ${Math.round(gapMin)} min` };
+    }
   }
   return { publish: false, reason: `unchanged, last published ${Math.round(ageMin)} min ago` };
 }

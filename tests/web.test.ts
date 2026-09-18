@@ -24,6 +24,21 @@ describe("shouldPublish", () => {
     expect(shouldPublish(state, "abc", NOW, 30).publish).toBe(false);
     expect(shouldPublish(state, "abc", NOW, 10).publish).toBe(true);
   });
+
+  // Runs start on a grid but publish seconds in: 11:25:07 is 29.97 min before
+  // an 11:55:05 check, and missing it by seconds cost a whole extra interval.
+  it("treats a document a few seconds short of the limit as stale", () => {
+    const at = { fingerprint: "abc", publishedAt: "2026-09-12T11:30:07.000Z" };
+    expect(shouldPublish(at, "abc", new Date("2026-09-12T12:00:05.000Z"), 30).publish).toBe(true);
+    expect(shouldPublish(at, "abc", new Date("2026-09-12T11:55:05.000Z"), 30).publish).toBe(false);
+  });
+
+  // The window's last run: skipping it would leave the page expecting a check
+  // every 15 minutes all night.
+  it("publishes when the next check is further off than the page may go stale", () => {
+    expect(shouldPublish(state, "abc", NOW, 30, "2026-09-12T19:45:00.000Z")).toEqual({ publish: true, reason: "next check not for 465 min" });
+    expect(shouldPublish(state, "abc", NOW, 30, "2026-09-12T12:15:00.000Z").publish).toBe(false);
+  });
 });
 
 describe("planSync", () => {

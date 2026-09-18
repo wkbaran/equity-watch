@@ -422,36 +422,27 @@
   /**
    * When the queued changes are expected to apply.
    *
-   * Two sources, in order. `opsNextCheckAt` is the scheduler's own next-run
-   * time, passed in by scripts/check-and-publish.ps1, so it already accounts
-   * for the daily window: at 18:10 it is tomorrow's 01:55, not 18:25. It is
-   * only trusted while it is still in the future, because a quiet run
-   * publishes nothing (--skip-unchanged) and it can legitimately go stale by
-   * up to --max-stale-minutes with the task running fine.
-   *
-   * Otherwise the cadence `ops pull` measured for itself (src/ops/schedule.ts),
-   * counting down and then warning. Saying "applies in ~0 min" forever would
-   * be a lie: the run is late, or the task is outside its window or stopped.
+   * projectedNextCheck says when: the scheduler's own next-run time
+   * (`opsNextCheckAt`, passed in by scripts/check-and-publish.ps1, so at 18:10
+   * it is tomorrow's 01:55, not 18:25), stepped forward by the measured
+   * cadence once a quiet run has let it pass. Past the overdue allowance it
+   * warns instead. Saying "applies at 11:40" forever would be a lie: the run
+   * is late, or the task is outside its window or stopped.
    *
    * Market hours deliberately play no part. `ops pull` has no hours gate, so a
    * queued edit lands at the next check whether or not the market is open.
    */
   function opsScheduleNote() {
-    const next = current?.opsNextCheckAt ?? null;
-    if (next !== null && new Date(next).getTime() > Date.now()) {
-      return h("div", { class: "note", text: `Applies at the next check, ${when(next)} (${until(next)}).` });
-    }
+    const next = projectedNextCheck();
+    if (next !== null) return h("div", { class: "note", text: `Applies at the next check, ${when(next)} (${until(next)}).` });
     const last = current?.opsProcessedThrough ?? null;
     if (last === null) return h("div", { class: "note", text: "Applied by the next scheduled check." });
     const interval = current?.opsIntervalMinutes ?? null;
-    const elapsed = (Date.now() - new Date(last).getTime()) / 60_000;
     if (interval === null) {
       // Too few drains recorded to name a cadence; the watermark still says
       // whether anything is running at all.
       return h("div", { class: "note", text: `Applied by the next scheduled check. Last check ${ago(last)}.` });
     }
-    const remaining = Math.round(interval - elapsed);
-    if (remaining > 0) return h("div", { class: "note", text: `Applies in ~${remaining} min.` });
     if (!checkIsOverdue()) return h("div", { class: "note", text: "Applies at the next check, due now." });
     return h("div", {
       class: "note warn",
@@ -1232,31 +1223,60 @@
 
   /**
    * "next check 1:55 AM" for the header, or null when nothing published says.
-   * Same two sources, in the same order, as the note on a pending change:
-   * the scheduler's own next-run time while it is still ahead of us, then the
-   * cadence `ops pull` measured for itself.
+   * Same source as the note on a pending change: projectedNextCheck, then the
+   * age of the last drain when even that can't be projected.
    */
   function nextCheckText() {
-    const next = current?.opsNextCheckAt ?? null;
-    if (next !== null && new Date(next).getTime() > Date.now()) {
-      return `next check ${when(next)}`;
-    }
+    const next = projectedNextCheck();
+    if (next !== null) return `next check ${when(next)}`;
     const last = current?.opsProcessedThrough ?? null;
-    const interval = current?.opsIntervalMinutes ?? null;
-    if (last === null || interval === null) return null;
-    const remaining = Math.round(interval - (Date.now() - new Date(last).getTime()) / 60_000);
-    if (remaining > 0) return `next check in ~${remaining} min`;
+    if (last === null || (current?.opsIntervalMinutes ?? null) === null) return null;
     return checkIsOverdue() ? `no check since ${when(last)}` : "next check due now";
   }
 
-  /** Past the cadence by enough that the run is late rather than merely due. */
+  /**
+   * When the next check should run, as an ISO string, or null when that can't
+   * be said honestly (nothing published a schedule, or the run is late).
+   *
+   * The scheduler's own `opsNextCheckAt` while it is still ahead; with none,
+   * one cadence after the last drain. When the publisher skips quiet runs
+   * (`opsMaxStaleMinutes`), a time that has passed usually means a run
+   * happened and published nothing, so step it forward by the cadence - the
+   * task repeats on a fixed grid, and the run ending its daily window always
+   * publishes (shouldPublish), so stepping never crosses into the night. It
+   * stops once checkIsOverdue says the quiet has outlasted the skip window.
+   * When every run publishes, a passed time really is a late run, so nothing
+   * is stepped.
+   */
+  function projectedNextCheck() {
+    const now = Date.now();
+    const next = current?.opsNextCheckAt ?? null;
+    if (next !== null && new Date(next).getTime() > now) return next;
+    const interval = current?.opsIntervalMinutes ?? null;
+    const last = current?.opsProcessedThrough ?? null;
+    if (interval === null || interval <= 0 || last === null) return null;
+    const step = interval * 60_000;
+    const base = next !== null ? new Date(next).getTime() : new Date(last).getTime() + step;
+    if (base > now) return new Date(base).toISOString();
+    if ((current?.opsMaxStaleMinutes ?? null) === null || checkIsOverdue()) return null;
+    return new Date(base + Math.ceil((now - base) / step) * step).toISOString();
+  }
+
+  /**
+   * Late rather than merely due. The allowance is the publisher's skip window
+   * (`opsMaxStaleMinutes`) plus OPS_OVERDUE_FACTOR intervals: a quiet run
+   * publishes nothing, so a document up to that old is what a healthy task
+   * looks like. Without the skip window the page called a running task
+   * stopped every time it went half an hour without news (2026-09-18).
+   */
   function checkIsOverdue() {
     const next = current?.opsNextCheckAt ?? null;
     if (next !== null && new Date(next).getTime() > Date.now()) return false;
     const last = current?.opsProcessedThrough ?? null;
     const interval = current?.opsIntervalMinutes ?? null;
     if (last === null || interval === null) return false;
-    return (Date.now() - new Date(last).getTime()) / 60_000 >= interval * OPS_OVERDUE_FACTOR;
+    const allowance = (current?.opsMaxStaleMinutes ?? 0) + interval * OPS_OVERDUE_FACTOR;
+    return (Date.now() - new Date(last).getTime()) / 60_000 >= allowance;
   }
 
   function render(d) {

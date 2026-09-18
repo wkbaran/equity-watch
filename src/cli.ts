@@ -1802,6 +1802,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     processedThrough: opsPullState?.processedThrough ?? null,
     intervalMinutes: drainIntervalMinutes(opsPullState),
     nextCheckAt: parseNextCheck(opts.nextCheck),
+    maxStaleMinutes: opts.publish && opts.skipUnchanged ? opts.maxStaleMinutes : null,
   };
   // Chart links need each symbol's exchange; a bare symbol can open a foreign listing.
   const exchanges = exchangesFromProfiles(listCachedProfiles(opts.profileCacheDir));
@@ -1838,7 +1839,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
       buildAlertRows(alerts, new Map(), ignored, exchanges, heldSymbols),
       vaultToken === null ? null : vaultContents(quoteless.holdings, holdings)
     );
-    const decision = shouldPublish(loadPublishState(), fingerprint, new Date(), opts.maxStaleMinutes);
+    const decision = shouldPublish(loadPublishState(), fingerprint, new Date(), opts.maxStaleMinutes, ops.nextCheckAt);
     if (!decision.publish) {
       console.log(`Skipped publish: ${decision.reason}.`);
       return;

@@ -242,12 +242,14 @@ test.describe("when a pending change lands", () => {
   });
 
   // A quiet run publishes nothing, so this field goes stale while the task is
-  // running fine. Falling back is what stops that becoming a false alarm.
-  test("falls back to the measured cadence once the published next-check has passed", async ({ page }) => {
+  // running fine. Stepping it along the cadence is what stops that becoming a
+  // false alarm.
+  test("steps a passed next-check along the cadence while quiet runs skip publishing", async ({ page }) => {
     await storeToken(page);
-    await page.request.get("/__cadence?minutesAgo=6&interval=15&nextInMin=-20");
+    // 2026-09-18: published 11:25 saying 11:40, looked at 12:07 -> 12:10.
+    await page.request.get("/__cadence?minutesAgo=42&interval=15&nextInMin=-27&maxStale=30");
     await queueOne(page);
-    await expect(page.locator("#ops-pending .note")).toHaveText("Applies in ~9 min.");
+    await expect(page.locator("#ops-pending .note")).toHaveText(/^Applies at the next check, .+ \(in 3 min\)\.$/);
     await expect(page.locator("#ops-pending .note.warn")).toHaveCount(0);
   });
 
@@ -255,7 +257,7 @@ test.describe("when a pending change lands", () => {
     await storeToken(page);
     await page.request.get("/__cadence?minutesAgo=6&interval=15");
     await queueOne(page);
-    await expect(page.locator("#ops-pending .note")).toHaveText("Applies in ~9 min.");
+    await expect(page.locator("#ops-pending .note")).toHaveText(/^Applies at the next check, .+ \(in 9 min\)\.$/);
     await expect(page.locator("#ops-pending .note.warn")).toHaveCount(0);
   });
 
@@ -296,7 +298,7 @@ test.describe("when a pending change lands", () => {
     await form.locator("input[type=number]").fill("61");
     await form.locator("button[type=submit]").click();
     await expect(page.locator("#drawer-body .tag.pending")).toHaveCount(1);
-    await expect(page.locator("#drawer-body .note", { hasText: "Applies in ~" })).toHaveText("Applies in ~9 min.");
+    await expect(page.locator("#drawer-body .note", { hasText: "Applies at" })).toHaveText(/^Applies at the next check, .+ \(in 9 min\)\.$/);
   });
 });
 
@@ -317,7 +319,25 @@ test.describe("the header's next check", () => {
   test("falls back to the measured cadence", async ({ page }) => {
     await page.request.get("/__cadence?minutesAgo=6&interval=15");
     await page.goto("/#/");
-    await expect(updated(page)).toContainText("next check in ~9 min");
+    await expect(updated(page)).toContainText("next check");
+    await expect(updated(page)).not.toHaveClass(/stale/);
+  });
+
+  // What prompted the skip-window allowance: 42 minutes with no publish is a
+  // healthy task that had nothing new, not a stopped one.
+  test("does not call a quiet stretch inside the publisher's skip window stopped", async ({ page }) => {
+    await page.request.get("/__cadence?minutesAgo=42&interval=15&nextInMin=-27&maxStale=30");
+    await page.goto("/#/");
+    await expect(updated(page)).toContainText("next check");
+    await expect(updated(page)).not.toContainText("no check since");
+    await expect(updated(page)).not.toHaveClass(/stale/);
+  });
+
+  test("still calls it stopped past the skip window", async ({ page }) => {
+    await page.request.get("/__cadence?minutesAgo=65&interval=15&nextInMin=-50&maxStale=30");
+    await page.goto("/#/");
+    await expect(updated(page)).toContainText("no check since");
+    await expect(updated(page)).toHaveClass(/stale/);
   });
 
   test("marks the header when no check has run for well past the cadence", async ({ page }) => {

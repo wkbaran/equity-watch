@@ -317,6 +317,17 @@ Things that look simplifiable and aren't:
     does this refresh?", since a quiet run publishes nothing and an hour-old
     document is normal. `nextCheckText`/`checkIsOverdue` are the one place the
     two sources and the staleness rule live; the pending note calls them too.
+  - **A quiet stretch is not a stopped task.** With `--skip-unchanged` a
+    healthy document can be up to `--max-stale-minutes` old, so the overdue
+    allowance is that skip window (`opsMaxStaleMinutes`) plus
+    `OPS_OVERDUE_FACTOR` intervals. The first version used only the intervals
+    (30 min at a 30-min skip window) and said "no check since 11:25" while
+    every run was succeeding (2026-09-18). A passed `opsNextCheckAt` is
+    stepped forward on the cadence (`projectedNextCheck`), which is only safe
+    because `shouldPublish` always publishes the run whose next check is
+    further off than the skip window, i.e. the one that closes the daily
+    window. `shouldPublish` also allows a minute of slack: runs publish a few
+    seconds in, so a strict `>= 30` saw 29.97 and waited another interval.
   - `opsIntervalMinutes` and `opsNextCheckAt` are in `VOLATILE_KEYS` alongside
     `opsProcessedThrough`: all three advance with the clock every run, so
     fingerprinting any of them would publish every run.

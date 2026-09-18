@@ -188,12 +188,13 @@ describe("siteDocument", () => {
   // publish on every run.
   it("carries the ops watermark and cadence without letting them move the fingerprint", () => {
     const off = { holdings: false };
-    const at4 = { results: [], processedThrough: "2026-09-16T04:00:00.000Z", intervalMinutes: 15, nextCheckAt: "2026-09-16T04:15:00.000Z" };
+    const at4 = { results: [], processedThrough: "2026-09-16T04:00:00.000Z", intervalMinutes: 15, nextCheckAt: "2026-09-16T04:15:00.000Z", maxStaleMinutes: 30 };
     const doc = siteDocument(held(), off, at4);
     expect(doc.opsProcessedThrough).toBe("2026-09-16T04:00:00.000Z");
     expect(doc.opsIntervalMinutes).toBe(15);
     expect(doc.opsNextCheckAt).toBe("2026-09-16T04:15:00.000Z");
-    const at5 = { results: [], processedThrough: "2026-09-16T05:00:00.000Z", intervalMinutes: 16, nextCheckAt: "2026-09-16T05:15:00.000Z" };
+    expect(doc.opsMaxStaleMinutes).toBe(30);
+    const at5 = { results: [], processedThrough: "2026-09-16T05:00:00.000Z", intervalMinutes: 16, nextCheckAt: "2026-09-16T05:15:00.000Z", maxStaleMinutes: 30 };
     expect(dashboardFingerprint(doc)).toBe(dashboardFingerprint(siteDocument(held(), off, at5)));
     expect(siteDocument(held(), off).opsProcessedThrough).toBeNull();
     expect(siteDocument(held(), off).opsIntervalMinutes).toBeNull();
