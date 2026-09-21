@@ -24,12 +24,12 @@ point intraday. It doesn't tell you whether:
 - the breakout held over the following days instead of failing.
 
 This tool pulls daily OHLCV bars around each alert (from Schwab's market
-data API — see `SETUP.md`) and checks all four before calling something a
+data API — see `docs/SETUP.md`) and checks all four before calling something a
 confirmed breakout.
 
 ## Quick start
 
-See `SETUP.md` for registering a Schwab developer app and the one-time
+See `docs/SETUP.md` for registering a Schwab developer app and the one-time
 OAuth login. Then:
 
 ```bash
@@ -147,7 +147,7 @@ Same flags for everything under the hood: `--baseline-days`,
 `--recent-high-tolerance`, `--no-cache`, `--cache-dir`, `--history-dir`,
 `--app-key`/`--app-secret`/`--token-path` (or the
 `SCHWAB_APP_KEY`/`SCHWAB_APP_SECRET` in a `.env` file or as env vars — see
-SETUP.md). Any of these, if passed, override everything else below for
+docs/SETUP.md). Any of these, if passed, override everything else below for
 that entire run.
 
 While iterating, `npm run cli -- analyze ...` (via `tsx`) skips the build
@@ -510,7 +510,7 @@ price+volume combination, and no ticker-collision guard, and pointing it at
 either current export silently produced zero alerts.
 
 `alert check` polls Schwab's `/marketdata/v1/quotes` endpoint (already
-covered by the Market Data Production access from SETUP.md — no streaming
+covered by the Market Data Production access from docs/SETUP.md — no streaming
 API needed) and prints triggered alerts with a TradingView chart link to
 pull up. Notifications go through a pluggable `Notifier`
 (`src/alerts/notify.ts`) — only a console notifier exists today.
@@ -740,7 +740,7 @@ To turn both back on:
 **Theme.** Dark by default, using the uniquetrades-congress palette (Catppuccin).
 The header toggle remembers a light preference per browser.
 
-**Publishing.** `cloudformation.yaml` creates a private S3 bucket, a
+**Publishing.** `infra/cloudformation.yaml` creates a private S3 bucket, a
 CloudFront distribution served at **https://watch.billbaran.us** (certificate and
 DNS record in the public `billbaran.us` Route 53 zone), and a publish-only IAM
 user. The first deploy waits on DNS validation of the certificate, which usually
@@ -750,7 +750,7 @@ then copy the outputs into `.env` (`S3_BUCKET`, `AWS_REGION`,
 
 ```bash
 aws cloudformation deploy --region us-east-1 --stack-name equity-watch-dashboard \
-  --template-file cloudformation.yaml --capabilities CAPABILITY_NAMED_IAM \
+  --template-file infra/cloudformation.yaml --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides BucketName=equity-watch-billbaran
 aws cloudformation describe-stacks --region us-east-1 --stack-name equity-watch-dashboard --query 'Stacks[0].Outputs'
 ```
@@ -761,7 +761,7 @@ older than `--max-stale-minutes` (default 30). It decides *before* fetching
 quotes, so a quiet run costs no API calls. Last-publish state lives in
 `.cache/web_publish.json`. `scripts/check-and-publish.sh` pairs it with
 `alert check`. On Windows, schedule `scripts\check-and-publish.ps1` with Task
-Scheduler instead; `SCHEDULING.md` has the setup and the reasoning. For cron
+Scheduler instead; `docs/SCHEDULING.md` has the setup and the reasoning. For cron
 under WSL:
 
 ```
@@ -935,7 +935,7 @@ The page POSTs to `api/ops`, same-origin through the same CloudFront
 distribution (so no CORS), with `Authorization: Bearer <token>`. That path
 routes to a Lambda Function URL instead of S3.
 
-The Lambda (inline in `cloudformation.yaml`, so it can't import from `src/`)
+The Lambda (inline in `infra/cloudformation.yaml`, so it can't import from `src/`)
 checks **only the token and the envelope**: POST only, body ≤ 16 KB, valid JSON,
 an op id of 8–64 `[A-Za-z0-9-]`, a known op type, the target key that type
 requires, and `params`/`expect` as objects. The token comparison hashes both
@@ -976,7 +976,7 @@ keeps messages 4 days, the DLQ 14.
 Nothing listens on the queue. `ops pull` is an ordinary CLI command, and the
 thing that runs it is the same scheduled script that does the periodic check —
 `scripts\check-and-publish.ps1` under Windows Task Scheduler in the current
-setup (`scripts/check-and-publish.sh` for cron/WSL; `SCHEDULING.md` has the
+setup (`scripts/check-and-publish.sh` for cron/WSL; `docs/SCHEDULING.md` has the
 registration). Weekdays, every 15 minutes, from 01:55 to about 18:15 Mountain,
 which covers 04:00–20:00 Eastern.
 
@@ -1111,7 +1111,7 @@ out over the alternatives: Alpha Vantage has the same data shape (sector,
 industry, description in one call) but only 25 requests/day free, vs. FMP's
 250/day; SEC EDGAR is free with no key and no real limit, but only exposes
 an SIC code (an older, coarser classification than the GICS sectors most
-heatmaps use) and no description text at all. See `SETUP.md` for signing up
+heatmaps use) and no description text at all. See `docs/SETUP.md` for signing up
 and setting `FMP_API_KEY`.
 
 ```bash

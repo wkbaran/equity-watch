@@ -4,7 +4,7 @@
  * position, or stop.
  *
  * The page can't write alerts.json or holdings.json, which live on the machine
- * running `alert check`. It queues an op instead (see cloudformation.yaml,
+ * running `alert check`. It queues an op instead (see infra/cloudformation.yaml,
  * OpsQueue), and `ops pull` applies it here through the same engine functions
  * and validation (src/ops/validate.ts) the CLI uses.
  *

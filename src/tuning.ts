@@ -35,7 +35,7 @@ export interface TuningConfig {
 export interface WebConfig {
   /**
    * Publish the holdings table (share counts, basis, market value) to the site.
-   * Default false: the site has no login unless cloudformation.yaml is deployed
+   * Default false: the site has no login unless infra/cloudformation.yaml is deployed
    * with EnableBasicAuth=true, and dashboard.json is readable by anyone with
    * the URL. Turn both on together. Headlines may still say a name is held
    * either way; that alone isn't treated as sensitive.

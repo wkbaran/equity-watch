@@ -178,7 +178,7 @@ function resolveMaxRequestsPerMinute(): number {
 
 const MISSING_SCHWAB_CREDENTIALS =
   "Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET in a .env file (or env vars) " +
-  "or pass --app-key/--app-secret. See SETUP.md.";
+  "or pass --app-key/--app-secret. See docs/SETUP.md.";
 
 /**
  * Schwab app credentials from flags or the environment, or null when either is

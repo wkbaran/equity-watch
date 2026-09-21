@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Windows-native counterpart to scripts/check-and-publish.sh, meant for Task
-  Scheduler. SCHEDULING.md covers setup, including registering the task.
+  Scheduler. docs/SCHEDULING.md covers setup, including registering the task.
 
   - Runs from the repository root, whatever directory Task Scheduler starts in.
   - Appends to logs\check-YYYY-MM-DD.log (local date); deletes logs older than

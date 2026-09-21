@@ -1,5 +1,5 @@
 /**
- * Sync the static site to S3, fronted by CloudFront (see cloudformation.yaml).
+ * Sync the static site to S3, fronted by CloudFront (see infra/cloudformation.yaml).
  *
  * Adapted from uniquetrades-congress's publisher, with one deliberate
  * difference: no CloudFront invalidation. That site publishes weekly; this one
@@ -60,7 +60,7 @@ export interface PublishOptions {
 export async function publishSite(opts: PublishOptions): Promise<SyncPlan> {
   const bucket = opts.bucket ?? process.env.S3_BUCKET;
   if (!bucket) {
-    throw new Error("S3 bucket is required. Set S3_BUCKET in .env (see cloudformation.yaml outputs).");
+    throw new Error("S3 bucket is required. Set S3_BUCKET in .env (see infra/cloudformation.yaml outputs).");
   }
   const region = opts.region ?? process.env.AWS_REGION ?? "us-east-1";
   const prefix = opts.prefix ?? process.env.S3_PREFIX ?? "";

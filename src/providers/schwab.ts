@@ -3,7 +3,7 @@
  *
  * Schwab's individual developer API uses a standard OAuth2 authorization-code
  * flow with a short-lived (30 min) access token and a longer-lived (7 day)
- * refresh token. See SETUP.md for how to register an app and get an App Key
+ * refresh token. See docs/SETUP.md for how to register an app and get an App Key
  * / App Secret.
  *
  * This talks directly to the REST API with `fetch` rather than pulling in a

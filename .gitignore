@@ -24,10 +24,16 @@ history/
 .env
 schwab_tokens.json
 
-# Browser-automation artifacts (screenshots, console logs, page snapshots)
+# Browser-automation artifacts (screenshots, console logs, page snapshots).
+# Both test-results paths are real: playwright.config.ts resolves outputDir
+# against its own directory, but a run started elsewhere lands it at the root.
 .playwright-mcp/
 /playwright/test-results/
+/test-results/
 /playwright-report/
+
+# Editor backups
+*~
 
 # Built browser dashboard and cron logs
 /site/

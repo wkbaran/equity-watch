@@ -216,7 +216,7 @@ brings it down to a few seconds. Start with cron.
 - Add alert: symbol + level, or symbol + trail %, in a small form above the queue.
 - Confirm destructive ops (remove, bulk remove) with a second click, not a modal.
 
-## Infrastructure additions (`cloudformation.yaml`)
+## Infrastructure additions (`infra/cloudformation.yaml`)
 
 - `OpsQueue`: `AWS::SQS::Queue`, FIFO, content-based dedup off (the op id is the
   dedup id), 4-day retention, plus a dead-letter queue after 5 receives.

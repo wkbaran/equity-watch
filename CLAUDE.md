@@ -3,6 +3,26 @@
 Common mistakes and surprises. Add to this whenever something in the
 project catches you off guard.
 
+## Where things live, and what must stay in the root
+
+Tidied 2026-09-21: `SETUP.md`, `SCHEDULING.md` and `USER_CHANGE_EVENTS_PLAN.md`
+moved to `docs/`, and `cloudformation.yaml` to `infra/`. If you move anything
+else, note that `tests/lambdaContract.test.ts` reads the template by path and
+`README.md`'s deploy command names it by path too.
+
+Three things in the root are **not** clutter and must not be moved:
+
+- **`analysis.config.json`** is the default `--config` path in `src/cli.ts`,
+  it is committed, and `docs/SCHEDULING.md` tells you a fresh clone already
+  has it. Moving it breaks the scheduled task and every existing install.
+- **The gitignored state files** — `alerts.json`, `revisits.json`,
+  `holdings.json`, `ops.log.jsonl`, `webull_*.csv`, `tradingview-*.csv` — are
+  the CLI's default paths. The scheduled task runs with the repo as its
+  working directory and passes no `--*-file` flags.
+- **`web/` stays outside `src/`** for the reason in the dashboard section:
+  `tsc` doesn't copy non-TS files, and `../../web/` resolves correctly from
+  both `src/web/site.ts` (tsx) and `dist/web/site.js`.
+
 ## There are THREE different TradingView CSV schemas, and they are not interchangeable
 
 `src/parse.ts` (`parseAlerts`) understands exactly one of them. The other
@@ -427,7 +447,7 @@ Things that look simplifiable and aren't:
   the alert too but doesn't change it; `dismissPending` matches by
   `revisitId`. `rerenderOps` re-renders the queue so either tag appears without
   waiting for a poll. A new op type also needs the Lambda's `TARGET_KEY` in
-  `cloudformation.yaml` and a stack deploy, or the page gets "Unknown op type".
+  `infra/cloudformation.yaml` and a stack deploy, or the page gets "Unknown op type".
 - **The alert panel's Remove is a queued `alert.remove`**, not a copied CLI
   command (2026-09-18). It carries `expect.condition` like an edit and deletes
   by id only (never `findAlert`), so a stale panel can't delete what an alert
@@ -476,7 +496,7 @@ Things that look simplifiable and aren't:
 - **Validation lives in `src/ops/validate.ts`** and the CLI uses it too. Don't
   add a check to `cmdAlertAdd`/`cmdAlertEdit` only, or the page will accept what
   the CLI refuses.
-- **The Lambda's handler is inline in `cloudformation.yaml`** and checks shape and
+- **The Lambda's handler is inline in `infra/cloudformation.yaml`** and checks shape and
   token only. It can't import from `src/`. All semantic checks happen in the worker.
 - **`opResults` is not in `VOLATILE_KEYS`** on purpose: a new result must publish,
   or the page never learns its edit landed.
@@ -767,7 +787,7 @@ yourself about to write a second one, these are the reasons not to:
 - **`sideOf` / `otherSide`** live in `alerts/reversion.ts` rather than
   `narrative.ts`, so the CLI can use them without depending on the narrative
   module.
-- **`tests/lambdaContract.test.ts`** reads `cloudformation.yaml` and asserts its
+- **`tests/lambdaContract.test.ts`** reads `infra/cloudformation.yaml` and asserts its
   inline `TARGET_KEY` matches `OP_TYPES`. Nothing tied them before, and the
   e2e suite can't: `playwright/server.ts` fakes the Lambda and falls through to
   a generic success, so a new op type missing from the template passes every
