@@ -65,7 +65,7 @@ node dist/cli.js analyze --csv path/to/TradingView_Alerts_Log.csv
 ```
 
 Each run writes a timestamped report to `reports/` and updates a per-ticker
-history under `history/` (see README). See the README for what the output
+history under `history/`. See [ANALYSIS.md](ANALYSIS.md) for what the output
 means and which flags to tune.
 
 ## 5. (Optional) Company sector/profile cache
@@ -76,7 +76,7 @@ doesn't provide at all (checked directly against both its quotes and
 instruments endpoints). This comes from
 [Financial Modeling Prep](https://site.financialmodelingprep.com/) instead,
 a free-tier third-party source (not "official" the way Schwab is — pick a
-provider you're comfortable with; see README for why this one was chosen
+provider you're comfortable with; see [ANALYSIS.md](ANALYSIS.md) for why this one was chosen
 over the alternatives).
 
 1. Sign up at https://site.financialmodelingprep.com/ (free, no payment

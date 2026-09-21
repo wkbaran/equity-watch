@@ -10,6 +10,13 @@ moved to `docs/`, and `cloudformation.yaml` to `infra/`. If you move anything
 else, note that `tests/lambdaContract.test.ts` reads the template by path and
 `README.md`'s deploy command names it by path too.
 
+The README is deliberately a short front door (quick start, worked example, deploy
+command, troubleshooting). Per-feature reference lives in `docs/ALERTS.md`,
+`HOLDINGS.md`, `DASHBOARD.md`, `ANALYSIS.md` and `ARCHITECTURE.md` (split out
+2026-09-21). Put new detail there, not back in the README, and say a thing once:
+the README had let "alerts never disarm" and "no apply-now button" spread to four
+places each.
+
 Three things in the root are **not** clutter and must not be moved:
 
 - **`analysis.config.json`** is the default `--config` path in `src/cli.ts`,
