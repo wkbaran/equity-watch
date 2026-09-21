@@ -182,25 +182,59 @@ async function applyAdd(op: Op, ctx: ApplyContext): Promise<Outcome> {
   return { symbol: a.symbol, alertId: a.id, ok: true, message: `Added ${a.kind} alert ${a.id}: ${describeAlertCondition(a)}.${replaced}` };
 }
 
-async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
+/**
+ * The guard every op that changes an existing alert has to pass, in one place
+ * because it is load-bearing and a second copy is a second thing to forget.
+ *
+ * Two rules it enforces. **By id only** - `findAlert` would also accept a
+ * ticker, and an op aimed at one alert must never land on another that happens
+ * to share its symbol. And **`expect.condition` must still match** what the
+ * page was showing, so an op queued against a level that has since moved is one
+ * clean rejection rather than a change applied to something else.
+ *
+ * Returns the loaded array as well as the alert: `applyRemove` writes the
+ * filtered array straight back, and re-reading the file for it would be a
+ * second read of something that must not change in between.
+ */
+function guardedAlert(
+  op: Op,
+  ctx: ApplyContext,
+  verb: "edit" | "remove"
+): { alerts: Alert[]; alert: Alert; condition: string } | Outcome {
+  const article = verb === "edit" ? "An edit" : "A remove";
   const alertId = stringField(op.target, "alertId");
   if (alertId === null || alertId === "") {
-    return reject(null, null, "An edit needs target.alertId.");
+    return reject(null, null, `${article} needs target.alertId.`);
   }
   const expected = stringField(op.expect, "condition");
   if (expected === null) {
-    return reject(null, alertId, "An edit needs expect.condition.");
+    return reject(null, alertId, `${article} needs expect.condition.`);
   }
-  // By id only. findAlert would also accept a ticker, and an edit aimed at one
-  // alert must never land on another alert that happens to share its symbol.
-  const alert = loadAlerts(ctx.alertsFile).find((a) => a.id === alertId);
+  const alerts = loadAlerts(ctx.alertsFile);
+  const alert = alerts.find((a) => a.id === alertId);
   if (alert === undefined) {
-    return reject(null, alertId, `No alert with id ${alertId}. It may have been removed.`);
+    return reject(null, alertId, `No alert with id ${alertId}. It may ${verb === "remove" ? "already " : ""}have been removed.`);
   }
-  const now = describeAlertCondition(alert);
-  if (now !== expected) {
-    return reject(alert.symbol, alertId, `Not edited: the alert changed since the page loaded. It is now "${now}".`);
+  const condition = describeAlertCondition(alert);
+  if (condition !== expected) {
+    const past = verb === "edit" ? "edited" : "removed";
+    return reject(alert.symbol, alertId, `Not ${past}: the alert changed since the page loaded. It is now "${condition}".`);
   }
+  return { alerts, alert, condition };
+}
+
+/** Narrows guardedAlert's union: an Outcome carries `ok`, the success shape doesn't. */
+function guardFailed(result: ReturnType<typeof guardedAlert>): result is Outcome {
+  return "ok" in result;
+}
+
+async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
+  const guard = guardedAlert(op, ctx, "edit");
+  if (guardFailed(guard)) {
+    return guard;
+  }
+  const { alert, condition: now } = guard;
+  const alertId = alert.id;
   // Any edit closes the alert's open queue entries (closeRevisitsForEdit). One
   // sent from a trigger's details panel also names its entry, which is checked
   // before the edit so a stale panel is one rejection and no half-done change,
@@ -251,23 +285,12 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
  * since been re-levelled into something else.
  */
 function applyRemove(op: Op, ctx: ApplyContext): Outcome {
-  const alertId = stringField(op.target, "alertId");
-  if (alertId === null || alertId === "") {
-    return reject(null, null, "A remove needs target.alertId.");
+  const guard = guardedAlert(op, ctx, "remove");
+  if (guardFailed(guard)) {
+    return guard;
   }
-  const expected = stringField(op.expect, "condition");
-  if (expected === null) {
-    return reject(null, alertId, "A remove needs expect.condition.");
-  }
-  const alerts = loadAlerts(ctx.alertsFile);
-  const alert = alerts.find((a) => a.id === alertId);
-  if (alert === undefined) {
-    return reject(null, alertId, `No alert with id ${alertId}. It may already have been removed.`);
-  }
-  const now = describeAlertCondition(alert);
-  if (now !== expected) {
-    return reject(alert.symbol, alertId, `Not removed: the alert changed since the page loaded. It is now "${now}".`);
-  }
+  const { alerts, alert, condition: now } = guard;
+  const alertId = alert.id;
   saveAlerts(ctx.alertsFile, alerts.filter((a) => a.id !== alertId));
   return { symbol: alert.symbol, alertId, ok: true, message: `Removed ${alert.kind} alert ${alertId} (${alert.symbol}: ${now}).` };
 }

@@ -8,6 +8,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { stringify } from "csv-stringify/sync";
 import type { HoldingsTriggerEvent } from "./engine.js";
+import { tradingViewUrl } from "../tradingview.js";
+import { writeCsv } from "../csv.js";
 
 const OUTPUT_FIELDS = [
   "type",
@@ -20,10 +22,6 @@ const OUTPUT_FIELDS = [
   "chart_url",
 ];
 
-function chartUrl(symbol: string): string {
-  return `https://www.tradingview.com/chart/?symbol=${symbol}`;
-}
-
 export function writeHoldingsAlertReport(triggered: HoldingsTriggerEvent[], outPath: string): void {
   const rows = triggered.map((e) => ({
     type: e.type,
@@ -33,9 +31,7 @@ export function writeHoldingsAlertReport(triggered: HoldingsTriggerEvent[], outP
     days_since_purchase: e.daysSincePurchase !== undefined ? e.daysSincePurchase.toFixed(1) : "",
     band: e.band ?? "",
     stop_prices: e.stops.map((s) => `${s.stopPrice}(${s.count ?? "all"})`).join(";"),
-    chart_url: chartUrl(e.symbol),
+    chart_url: tradingViewUrl(e.symbol, null),
   }));
-  const csvText = stringify(rows, { header: true, columns: OUTPUT_FIELDS });
-  mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, csvText);
+  writeCsv(outPath, rows, OUTPUT_FIELDS);
 }

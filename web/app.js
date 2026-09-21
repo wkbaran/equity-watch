@@ -47,7 +47,7 @@
 
   function loadSeen() {
     try {
-      const raw = localStorage.getItem(SEEN_KEY) ?? localStorage.getItem(LEGACY_SEEN_KEY);
+      const raw = storageGet(SEEN_KEY) ?? storageGet(LEGACY_SEEN_KEY);
       return raw === null ? null : new Set(JSON.parse(raw));
     } catch {
       return null;
@@ -55,11 +55,7 @@
   }
 
   function saveSeen(set) {
-    try {
-      localStorage.setItem(SEEN_KEY, JSON.stringify([...set]));
-    } catch {
-      /* per-tab memory still works */
-    }
+    storageSet(SEEN_KEY, JSON.stringify([...set]));
   }
 
   // ---- formatting -----------------------------------------------------------
@@ -569,6 +565,26 @@
     return raw.trim() !== "" && Number.isFinite(n) && n > 0 ? n : null;
   };
 
+  /** An optional number field: "" means unset, anything else must be positive. */
+  const optionalPositive = (input) => (input.value.trim() === "" ? undefined : positive(input.value));
+
+  // Worded once, because three forms ask for it and should not drift apart.
+  const COVERED_SHARES_ERROR = "Shares covered must be above 0, or empty for all.";
+
+  /**
+   * The three fields every lot needs, checked in one order by both the add form
+   * and the per-lot edit form. Returns the parsed values, or the first thing
+   * wrong with them.
+   */
+  function readLotCore(shares, basis, date) {
+    const count = positive(shares.value);
+    if (count === null) return { error: "Enter shares above 0." };
+    const basisPerShare = positive(basis.value);
+    if (basisPerShare === null) return { error: "Enter a basis per share above 0." };
+    if (!date.value) return { error: "Enter the purchase date." };
+    return { count, basisPerShare, purchaseDate: date.value };
+  }
+
   function renderAddForm() {
     const slot = $("alert-add");
     slot.hidden = !canEdit();
@@ -1038,16 +1054,17 @@
           e.preventDefault();
           error.textContent = "";
           const sym = symbol.value.trim().toUpperCase();
-          const n = positive(shares.value);
-          const b = positive(basis.value);
           if (!sym) return (error.textContent = "Enter a symbol.");
-          if (n === null) return (error.textContent = "Enter shares above 0.");
-          if (b === null) return (error.textContent = "Enter a basis per share above 0.");
-          if (!date.value) return (error.textContent = "Enter the purchase date.");
-          const sp = stopPrice.value.trim() === "" ? undefined : positive(stopPrice.value);
+          const entered = readLotCore(shares, basis, date);
+          if (entered.error) return (error.textContent = entered.error);
+          const n = entered.count;
+          const b = entered.basisPerShare;
+          // The stop is optional here and required in stopsBlock, so the two
+          // wordings differ on purpose.
+          const sp = optionalPositive(stopPrice);
           if (sp === null) return (error.textContent = "Stop price must be above 0, or empty for none.");
-          const sc = stopCovered.value.trim() === "" ? undefined : positive(stopCovered.value);
-          if (sc === null) return (error.textContent = "Shares covered must be above 0, or empty for all.");
+          const sc = optionalPositive(stopCovered);
+          if (sc === null) return (error.textContent = COVERED_SHARES_ERROR);
           const acct = account.value.trim();
           const params = {
             symbol: sym,
@@ -1107,11 +1124,10 @@
         onsubmit: async (e) => {
           e.preventDefault();
           error.textContent = "";
-          const n = positive(count.value);
-          const b = positive(basis.value);
-          if (n === null) return (error.textContent = "Enter shares above 0.");
-          if (b === null) return (error.textContent = "Enter a basis per share above 0.");
-          if (!date.value) return (error.textContent = "Enter the purchase date.");
+          const entered = readLotCore(count, basis, date);
+          if (entered.error) return (error.textContent = entered.error);
+          const n = entered.count;
+          const b = entered.basisPerShare;
           const params = {};
           const changes = [];
           if (n !== lot.count) {
@@ -1213,9 +1229,9 @@
             e.preventDefault();
             error.textContent = "";
             const p = positive(price.value);
-            const c = covered.value.trim() === "" ? undefined : positive(covered.value);
+            const c = optionalPositive(covered);
             if (p === null) return (error.textContent = "Enter a stop price above 0.");
-            if (c === null) return (error.textContent = "Shares covered must be above 0, or empty for all.");
+            if (c === null) return (error.textContent = COVERED_SHARES_ERROR);
             const queued = await submitOp(
               { type: "stop.add", params: { symbol, stopPrice: p, ...(c !== undefined ? { count: c } : {}) } },
               { symbol, summary: `add ${symbol} stop at ${p}${c !== undefined ? ` for ${c} shares` : ""}` }
@@ -1310,16 +1326,30 @@
    * holdingRows() is null and this is simply absent, leaving the `held` tag,
    * which is the one holdings fact a document may carry.
    */
-  function positionNote(symbol) {
+  /**
+   * The held row for a symbol, or null.
+   *
+   * The single place the privacy rule is applied: holdingRows() is null on a
+   * public page, so every caller is absent there rather than each remembering
+   * to check. Never read a position off a TriggerRow or AlertRow - those travel
+   * in dashboard.json, and only `heldPosition` may.
+   */
+  function holdingFor(symbol) {
     if (!symbol) return null;
     const rows = holdingRows();
-    if (rows === null) return null;
-    const r = rows.find((x) => x.symbol === symbol);
+    return rows === null ? null : (rows.find((x) => x.symbol === symbol) ?? null);
+  }
+
+  /** How the position is doing, the part both renderings word identically. */
+  const performanceParts = (r) =>
+    [r.pctFromBasis !== null ? `${pct(r.pctFromBasis)} vs basis` : null, r.marketValue !== null ? `value ${money(r.marketValue)}` : null].filter(Boolean);
+
+  function positionNote(symbol) {
+    const r = holdingFor(symbol);
     if (!r) return null;
     const parts = [
       `Holding ${r.shares} @ ${money(r.basis)}`,
-      r.pctFromBasis !== null ? `${pct(r.pctFromBasis)} vs basis` : null,
-      r.marketValue !== null ? `value ${money(r.marketValue)}` : null,
+      ...performanceParts(r),
       r.stops.length ? `stop ${r.stops.map(money).join(", ")}` : null,
     ].filter(Boolean);
     return h("div", { class: "sub position-note", text: parts.join(" · ") });
@@ -1938,16 +1968,9 @@
    * simply absent, which is the point.
    */
   function positionValue(symbol) {
-    const rows = holdingRows();
-    if (rows === null) return null;
-    const r = rows.find((x) => x.symbol === symbol);
+    const r = holdingFor(symbol);
     if (!r) return null;
-    const parts = [
-      `${r.shares} shares`,
-      `basis ${money(r.basis)}`,
-      r.pctFromBasis !== null ? `${pct(r.pctFromBasis)} vs basis` : null,
-      r.marketValue !== null ? `value ${money(r.marketValue)}` : null,
-    ].filter(Boolean);
+    const parts = [`${r.shares} shares`, `basis ${money(r.basis)}`, ...performanceParts(r)];
     return [
       h("div", { text: parts.join(" · ") }),
       r.stops.length ? h("div", { class: "note", text: `Stop ${r.stops.map(money).join(", ")}` }) : null,

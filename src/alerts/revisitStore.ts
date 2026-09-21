@@ -28,13 +28,6 @@ export function saveRevisits(path: string, entries: RevisitEntry[]): void {
   writeFileSync(path, JSON.stringify(entries, null, 2));
 }
 
-export function appendRevisits(path: string, entries: RevisitEntry[]): void {
-  if (entries.length === 0) {
-    return;
-  }
-  saveRevisits(path, [...loadRevisits(path), ...entries]);
-}
-
 export function listRevisits(path: string, opts: { status?: RevisitStatus | "all" } = {}): RevisitEntry[] {
   const status = opts.status ?? "open";
   const all = loadRevisits(path);

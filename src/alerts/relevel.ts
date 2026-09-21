@@ -14,6 +14,7 @@
 
 import type { AnalysisParams } from "../analysis.js";
 import type { PriceBar } from "../models.js";
+import { round } from "../round.js";
 
 export interface RelevelSuggestion {
   /** Null when no new level is warranted - see `basis` for why. */
@@ -22,10 +23,6 @@ export interface RelevelSuggestion {
   lastClose: number | null;
   /** How far price now sits past the old level, in percent. Negative means it fell back below. */
   pctMovePastLevel: number | null;
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
 }
 
 export function suggestLevel(
@@ -63,7 +60,7 @@ export function suggestLevel(
   // price, so it becomes the new level.
   if (lastClose < recentHigh) {
     return {
-      suggestedLevel: round2(recentHigh),
+      suggestedLevel: round(recentHigh),
       basis: `${params.recentHighLookbackDays}d high`,
       lastClose,
       pctMovePastLevel,
@@ -75,7 +72,7 @@ export function suggestLevel(
   // beta-scaled per symbol upstream (src/tuning.ts), so a volatile name gets a
   // proportionally wider gap rather than a level it would cross on noise.
   return {
-    suggestedLevel: round2(recentHigh * (1 + params.recentHighTolerance)),
+    suggestedLevel: round(recentHigh * (1 + params.recentHighTolerance)),
     basis:
       `${params.recentHighLookbackDays}d high +${(params.recentHighTolerance * 100).toFixed(1)}% ` +
       `(new-high territory, price is above the recent high)`,

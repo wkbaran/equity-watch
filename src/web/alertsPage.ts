@@ -10,6 +10,7 @@
 import { describeAlertCondition } from "../alerts/describe.js";
 import { effectiveTrigger, type Alert, type AlertDirection, type AlertSide, type VolumeCondition } from "../alerts/models.js";
 import type { Quote } from "../providers/schwab.js";
+import { round } from "../round.js";
 import { tradingViewUrl } from "../tradingview.js";
 
 export interface AlertRow {
@@ -55,10 +56,6 @@ export interface AlertRow {
   chartUrl: string;
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
 /** Live alerts that are actually checked (ignored symbols excluded), by symbol. */
 export function buildAlertRows(
   alerts: Alert[],
@@ -73,7 +70,7 @@ export function buildAlertRows(
     .map((a): AlertRow => {
       const price = quotes.get(a.symbol)?.lastPrice ?? null;
       const level = a.kind === "static" ? a.level : null;
-      const movingLevel = a.kind === "trailing" ? round2(effectiveTrigger(a)) : a.kind === "ma" ? a.lastLevel : null;
+      const movingLevel = a.kind === "trailing" ? round(effectiveTrigger(a)) : a.kind === "ma" ? a.lastLevel : null;
       const reference = level ?? movingLevel;
       return {
         id: a.id,
@@ -93,7 +90,7 @@ export function buildAlertRows(
         watchingSince: a.watchingSince,
         watchingSinceApprox: a.watchingSinceApprox,
         price,
-        vsLevelPct: price === null || reference === null || reference === 0 ? null : round2(((price - reference) / reference) * 100),
+        vsLevelPct: price === null || reference === null || reference === 0 ? null : round(((price - reference) / reference) * 100),
         heldPosition: held.has(a.symbol.toUpperCase()),
         chartUrl: tradingViewUrl(a.symbol, exchanges.get(a.symbol)),
       };

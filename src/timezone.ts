@@ -124,14 +124,17 @@ export function nextMarketMidnight(date: Date): Date {
   return zonedTimeToUtc(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0, 0, MARKET_TIME_ZONE);
 }
 
+/** Two-digit, for the human-readable local strings below. */
+export function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
 /** YYYY-MM-DD on the machine's own calendar, for defaults a person means as "today". */
 export function localDateString(date: Date = new Date()): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
 
 /** "YYYY-MM-DD HH:MM" on the machine's own clock, for times a person reads in the terminal. */
 export function localDateTimeString(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${localDateString(date)} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${localDateString(date)} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }

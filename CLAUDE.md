@@ -733,6 +733,56 @@ Round *before* comparing any level against a live price. `100 * 1.1` is
 rounds straight back onto it — producing an alert at exactly the live price,
 which has no side to fire on and `addAlert` rejects.
 
+## Things that exist once, and the reason each one has to
+
+A consolidation pass on 2026-09-21 collapsed several copies. If you find
+yourself about to write a second one, these are the reasons not to:
+
+- **`src/round.ts`** is the only rounding for prices and levels. `symbolView.ts`
+  used `Number(n.toFixed(2))`, which disagrees with `Math.round(n * 100) / 100`
+  on binary edges — and rounding is load-bearing here (see `holdings cover`
+  below: round *before* comparing a level against a live price).
+- **`tradingViewUrl`** is the only chart-link builder. `engine.ts`,
+  `alerts/report.ts` and `holdings/report.ts` each had a private `chartUrl`
+  that skipped the exchange prefix *and* the URL encoding, so `BRK/B` came out
+  broken and `PPL` opened Pakistan Petroleum. They now pass `null` for the
+  exchange, which is the link they always built, only encoded. **Remaining
+  gap:** those three have no profile cache to hand, so they still can't
+  prefix. Fixing that means threading an `exchanges` map through `checkAlerts`
+  and both report writers.
+- **`heldSymbolsOf`** (`src/holdings/models.ts`) decides `heldPosition` for
+  trigger rows, alert rows and `revisit relevel`. The `held` tag must read the
+  same on every view and nothing else ties those three together.
+- **`schwabCredentials` / `schwabAuth` / `schwabProvider`** (`cli.ts`) resolve
+  the app key once. There were five copies and *three* different "missing
+  credentials" messages, so the advice you got depended on which command you
+  ran. Two callers deliberately do not exit: `schwabLoginBlocker` returns null
+  (no Schwab configured is not a failure for removes and dismisses), and
+  `getMarketHoursCached` throws (its caller catches, so `alert check` carries
+  on without a session).
+- **`guardedAlert`** (`src/ops/apply.ts`) is the by-id-only + `expect.condition`
+  check for every op that changes an existing alert. It was copied between
+  `applyEdit` and `applyRemove`; a third guarded op type would have been a
+  third copy, and a fix to one silently not applied to the other.
+- **`sideOf` / `otherSide`** live in `alerts/reversion.ts` rather than
+  `narrative.ts`, so the CLI can use them without depending on the narrative
+  module.
+- **`tests/lambdaContract.test.ts`** reads `cloudformation.yaml` and asserts its
+  inline `TARGET_KEY` matches `OP_TYPES`. Nothing tied them before, and the
+  e2e suite can't: `playwright/server.ts` fakes the Lambda and falls through to
+  a generic success, so a new op type missing from the template passes every
+  test and fails only after a deploy.
+- **`web/app.js`'s `holdingFor`** is the single place the holdings privacy rule
+  is applied on the page: `holdingRows()` is null on a public page, so every
+  caller is absent there rather than each remembering to check.
+
+Two that look like duplication and are not: the stop-price messages in the
+add-lot form ("or empty for none") and in `stopsBlock` ("Enter a stop price
+above 0") differ because the stop is optional in one and required in the
+other; and `describeVolumeCondition` / `volumeConditionText` / `volumeText`
+render a volume three ways because they are a contract string, a change
+summary, and an observation respectively.
+
 ## Real financial data stays out of git
 
 `.gitignore` covers `holdings.json`, `alerts.json`, `revisits.json`, and

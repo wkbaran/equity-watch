@@ -25,7 +25,7 @@
  */
 
 import type { CrossDirection } from "./alerts/models.js";
-import { endedOnFiredSide, entryDirection, reversalOf, tradingDaysAfter } from "./alerts/reversion.js";
+import { endedOnFiredSide, entryDirection, otherSide, reversalOf, sideOf, tradingDaysAfter } from "./alerts/reversion.js";
 import type { RevisitEntry } from "./alerts/revisit.js";
 import { maLabel } from "./indicators/movingAverage.js";
 import { describeSession, type Session } from "./marketHours.js";
@@ -37,15 +37,6 @@ export interface NarrativeContext {
 
 function pct(n: number): string {
   return `${Math.abs(n) < 10 ? Math.abs(n).toFixed(1) : Math.round(Math.abs(n))}%`;
-}
-
-/** "above" for an upward crossing, "below" for a downward one. */
-function sideOf(dir: CrossDirection): string {
-  return dir === "up" ? "above" : "below";
-}
-
-function otherSide(dir: CrossDirection): string {
-  return dir === "up" ? "below" : "above";
 }
 
 /** Trading days after the fire, as words: "the same day", "the next day", "2 days later". */

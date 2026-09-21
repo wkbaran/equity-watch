@@ -26,10 +26,6 @@ export interface Alert {
   direction?: CrossDirection;
 }
 
-export function fullSymbol(alert: Alert): string {
-  return alert.exchange ? `${alert.exchange}:${alert.symbol}` : alert.symbol;
-}
-
 export interface PriceBar {
   date: Date;
   open: number;

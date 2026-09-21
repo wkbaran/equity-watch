@@ -44,6 +44,18 @@ export function emptyHoldingsStore(): HoldingsStore {
   return { lots: [], stops: [], alertState: [] };
 }
 
+/**
+ * Symbols with at least one lot, upper-cased.
+ *
+ * Derived in one place because three callers must agree on it: buildDashboard
+ * sets TriggerRow/RevisitRow.heldPosition from it, buildAlertRows sets
+ * AlertRow.heldPosition, and `revisit relevel` weights held names. The `held`
+ * tag has to read the same on every view, and nothing else ties them together.
+ */
+export function heldSymbolsOf(holdings: HoldingsStore): Set<string> {
+  return new Set(holdings.lots.map((l) => l.symbol.toUpperCase()));
+}
+
 export interface BasisInfo {
   totalCount: number;
   blendedBasis: number;

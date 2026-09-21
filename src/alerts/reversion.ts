@@ -72,6 +72,16 @@ export function watchesDirection(direction: AlertDirection, cross: CrossDirectio
  * direction, or for older entries off the trigger price against the level.
  * Null for kinds with no crossing (volume, moving-average touches).
  */
+/** "above" for an upward crossing, "below" for a downward one. */
+export function sideOf(dir: CrossDirection): string {
+  return dir === "up" ? "above" : "below";
+}
+
+/** The side a crossing came *from*. */
+export function otherSide(dir: CrossDirection): string {
+  return dir === "up" ? "below" : "above";
+}
+
 export function entryDirection(entry: RevisitEntry): CrossDirection | null {
   if (entry.direction !== undefined) return entry.direction;
   if (entry.kind === "volume") return null;

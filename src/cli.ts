@@ -25,7 +25,7 @@ import {
   effectiveTrigger,
   type VolumeCondition,
 } from "./alerts/models.js";
-import { endedOnFiredSide, entryDirection, reversalOf, reversionWindowFor } from "./alerts/reversion.js";
+import { endedOnFiredSide, entryDirection, reversalOf, reversionWindowFor, sideOf } from "./alerts/reversion.js";
 import { DEFAULT_TOUCH_MARGIN_PCT, describeMaAlert, type DailyHistoryResolver } from "./alerts/maEngine.js";
 import { describeAlertCondition, describeVolumeCondition } from "./alerts/describe.js";
 import { liveAlertsFor, normalizeSymbolQuery, renderSymbolAlerts } from "./alerts/symbolView.js";
@@ -50,7 +50,7 @@ import {
 import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.js";
 import { addLot, addStop, checkHoldings } from "./holdings/engine.js";
 import { coverLevel } from "./holdings/cover.js";
-import { computeBasis } from "./holdings/models.js";
+import { computeBasis, heldSymbolsOf } from "./holdings/models.js";
 import { ConsoleHoldingsNotifier } from "./holdings/notify.js";
 import { writeHoldingsAlertReport } from "./holdings/report.js";
 import {
@@ -60,7 +60,7 @@ import {
 } from "./holdings/import.js";
 import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
 import { buildDashboard, renderDashboard } from "./dashboard.js";
-import { localDateString } from "./timezone.js";
+import { localDateString, pad2 } from "./timezone.js";
 import { isEntryPoint } from "./entrypoint.js";
 import { publishSite } from "./web/publish.js";
 import { buildAlertRows } from "./web/alertsPage.js";
@@ -176,18 +176,38 @@ function resolveMaxRequestsPerMinute(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_REQUESTS_PER_MINUTE;
 }
 
-function buildSchwabProvider(opts: CommonOpts & { noCache?: boolean; cacheDir: string }): PriceDataProvider {
+const MISSING_SCHWAB_CREDENTIALS =
+  "Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET in a .env file (or env vars) " +
+  "or pass --app-key/--app-secret. See SETUP.md.";
+
+/**
+ * Schwab app credentials from flags or the environment, or null when either is
+ * unset. Null rather than an exit, because not every caller should die of it:
+ * `schwabLoginBlocker` treats no-Schwab-at-all as "nothing to check", and the
+ * market-hours cache throws so `alert check` can carry on without a session.
+ */
+function schwabCredentials(opts: CommonOpts): { appKey: string; appSecret: string } | null {
   const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
   const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
-  if (!appKey || !appSecret) {
-    console.error(
-      "Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET in a .env file (or env vars) " +
-        "or pass --app-key/--app-secret. See SETUP.md."
-    );
+  return appKey && appSecret ? { appKey, appSecret } : null;
+}
+
+/** The authenticator, or exit 1 with the one message. */
+function schwabAuth(opts: CommonOpts): SchwabAuth {
+  const creds = schwabCredentials(opts);
+  if (creds === null) {
+    console.error(MISSING_SCHWAB_CREDENTIALS);
     process.exit(1);
   }
-  const auth = new SchwabAuth(appKey, appSecret, opts.tokenPath);
-  const provider = new SchwabProvider(auth, resolveMaxRequestsPerMinute());
+  return new SchwabAuth(creds.appKey, creds.appSecret, opts.tokenPath);
+}
+
+function schwabProvider(opts: CommonOpts): SchwabProvider {
+  return new SchwabProvider(schwabAuth(opts), resolveMaxRequestsPerMinute());
+}
+
+function buildSchwabProvider(opts: CommonOpts & { noCache?: boolean; cacheDir: string }): PriceDataProvider {
+  const provider = schwabProvider(opts);
   if (opts.noCache) {
     return provider;
   }
@@ -197,17 +217,7 @@ function buildSchwabProvider(opts: CommonOpts & { noCache?: boolean; cacheDir: s
 const BETA_CACHE_DIR = join(".cache", "beta");
 
 function buildBetaFetcher(opts: CommonOpts & { noCache?: boolean }): (symbol: string) => Promise<number | null> {
-  const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
-  const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
-  if (!appKey || !appSecret) {
-    console.error(
-      "Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET in a .env file (or env vars) " +
-        "or pass --app-key/--app-secret. See SETUP.md."
-    );
-    process.exit(1);
-  }
-  const auth = new SchwabAuth(appKey, appSecret, opts.tokenPath);
-  const provider = new SchwabProvider(auth, resolveMaxRequestsPerMinute());
+  const provider = schwabProvider(opts);
 
   return async (symbol: string) => {
     if (opts.noCache) {
@@ -311,31 +321,17 @@ async function getMarketHoursCached(opts: CommonOpts, date: string): Promise<Mar
       return revived;
     }
   }
-  const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
-  const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
-  if (!appKey || !appSecret) {
-    throw new Error("Missing Schwab credentials.");
+  if (schwabCredentials(opts) === null) {
+    throw new Error(MISSING_SCHWAB_CREDENTIALS);
   }
-  const auth = new SchwabAuth(appKey, appSecret, opts.tokenPath);
-  const provider = new SchwabProvider(auth, resolveMaxRequestsPerMinute());
-  const hours = await provider.getMarketHours(date);
+  const hours = await schwabProvider(opts).getMarketHours(date);
   mkdirSync(HOURS_CACHE_DIR, { recursive: true });
   writeFileSync(file, JSON.stringify(hours));
   return hours;
 }
 
 function buildMarketData(opts: CommonOpts): MarketData {
-  const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
-  const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
-  if (!appKey || !appSecret) {
-    console.error(
-      "Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET in a .env file (or env vars) " +
-        "or pass --app-key/--app-secret. See SETUP.md."
-    );
-    process.exit(1);
-  }
-  const auth = new SchwabAuth(appKey, appSecret, opts.tokenPath);
-  const provider = new SchwabProvider(auth, resolveMaxRequestsPerMinute());
+  const provider = schwabProvider(opts);
   return {
     getQuotes: (symbols) => provider.getQuotes(symbols),
     getIntradayBars: (symbol, daysBack) => provider.getIntradayBars(symbol, daysBack),
@@ -344,13 +340,7 @@ function buildMarketData(opts: CommonOpts): MarketData {
 }
 
 async function cmdSchwabLogin(opts: CommonOpts): Promise<void> {
-  const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
-  const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
-  if (!appKey || !appSecret) {
-    console.error("Missing Schwab credentials. Set SCHWAB_APP_KEY / SCHWAB_APP_SECRET in a .env file (or env vars) or pass --app-key/--app-secret.");
-    process.exit(1);
-  }
-  const auth = new SchwabAuth(appKey, appSecret, opts.tokenPath);
+  const auth = schwabAuth(opts);
   await auth.authorizeInteractive();
   console.log(`Saved Schwab tokens to ${opts.tokenPath}`);
 }
@@ -455,27 +445,17 @@ export async function runAnalyze(
   return verdicts;
 }
 
-function pad2(n: number): string {
-  return String(n).padStart(2, "0");
-}
-
 function timestampSuffix(now: Date): string {
-  return (
-    `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}` +
-    `_${pad2(now.getHours())}-${pad2(now.getMinutes())}-${pad2(now.getSeconds())}`
-  );
+  return `${localDateString(now)}_${pad2(now.getHours())}-${pad2(now.getMinutes())}-${pad2(now.getSeconds())}`;
 }
 
-function defaultReportPath(now: Date): string {
-  return join("reports", `breakout_report_${timestampSuffix(now)}.csv`);
-}
-
-function defaultAlertTriggerReportPath(now: Date): string {
-  return join("reports", `alert_triggers_${timestampSuffix(now)}.csv`);
-}
-
-function defaultHoldingsAlertReportPath(now: Date): string {
-  return join("reports", `holdings_alerts_${timestampSuffix(now)}.csv`);
+/**
+ * Where a report lands when no --out is given. Local time on purpose: these
+ * names are read by a person looking for "the one from this morning", which is
+ * the one case CLAUDE.md's three-time-zones rule assigns to the machine's zone.
+ */
+function defaultReportPath(prefix: string, now: Date, extension = "csv"): string {
+  return join("reports", `${prefix}_${timestampSuffix(now)}.${extension}`);
 }
 
 function writeReport(verdicts: BreakoutVerdict[], outPath: string): void {
@@ -535,7 +515,7 @@ async function cmdAnalyze(opts: AnalyzeOpts): Promise<void> {
   const provider = buildSchwabProvider(opts);
   const getBeta = buildBetaFetcher(opts);
   const verdicts = await runAnalyze(opts, provider, getBeta);
-  const outPath = opts.out ?? defaultReportPath(new Date());
+  const outPath = opts.out ?? defaultReportPath("breakout_report", new Date());
   writeReport(verdicts, outPath);
   printSummary(verdicts, outPath);
   const touched = updateHistory(verdicts, opts.historyDir);
@@ -562,10 +542,6 @@ interface AlertAddOpts extends AlertCommonOpts {
   from?: string;
 }
 
-function formatVolumeCondition(v: VolumeCondition): string {
-  return describeVolumeCondition(v);
-}
-
 interface AlertListOpts extends AlertCommonOpts {
   all?: boolean;
 }
@@ -589,7 +565,7 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
   }
   const a = result.added!;
   if (a.kind === "volume") {
-    console.log(`Added volume alert ${a.id} (${a.symbol}, ${formatVolumeCondition(a.volume)}).`);
+    console.log(`Added volume alert ${a.id} (${a.symbol}, ${describeVolumeCondition(a.volume)}).`);
     return;
   }
   if (a.kind === "ma") {
@@ -600,7 +576,7 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
     return;
   }
   const trigger = effectiveTrigger(a);
-  const andVolume = a.volumeCondition ? ` AND ${formatVolumeCondition(a.volumeCondition)}` : "";
+  const andVolume = a.volumeCondition ? ` AND ${describeVolumeCondition(a.volumeCondition)}` : "";
   const direction = a.kind === "static" ? `, fires on ${a.direction === "either" ? "either crossing" : `${a.direction} crosses`}` : "";
   if (result.replaced) {
     console.log(
@@ -793,7 +769,7 @@ async function cmdAlertSeed(opts: AlertSeedOpts): Promise<void> {
           : suggestion.suggestedLevel !== null
             ? `${baseLevel} → ${level}  (${suggestion.basis})`
             : `${level}  (unchanged — ${suggestion.basis})`;
-      const vol = candidate.volume ? ` AND ${formatVolumeCondition(candidate.volume)}` : "";
+      const vol = candidate.volume ? ` AND ${describeVolumeCondition(candidate.volume)}` : "";
       console.log(`  ${candidate.symbol.padEnd(6)} ${seedDirection(candidate.side).padEnd(6)} ${note}${vol}`);
       created++;
       continue;
@@ -848,7 +824,7 @@ function cmdAlertList(opts: AlertListOpts): void {
   }
   for (const a of alerts) {
     if (a.kind === "volume") {
-      console.log(`${a.id}  volume   ${a.symbol.padEnd(6)}        status=${a.status} ${formatVolumeCondition(a.volume)}`);
+      console.log(`${a.id}  volume   ${a.symbol.padEnd(6)}        status=${a.status} ${describeVolumeCondition(a.volume)}`);
       continue;
     }
     if (a.kind === "ma") {
@@ -861,7 +837,7 @@ function cmdAlertList(opts: AlertListOpts): void {
     }
     const anchor = a.kind === "static" ? a.level : a.near;
     const trail = a.kind === "trailing" ? `${a.trailValue}${a.trailType === "percent" ? "%" : "$"}` : "-";
-    const andVolume = a.volumeCondition ? ` AND ${formatVolumeCondition(a.volumeCondition)}` : "";
+    const andVolume = a.volumeCondition ? ` AND ${describeVolumeCondition(a.volumeCondition)}` : "";
     const direction = a.kind === "static" ? ` direction=${a.direction}` : "";
     console.log(
       `${a.id}  ${a.kind.padEnd(8)} ${a.symbol.padEnd(6)} ${a.side.padEnd(5)} ` +
@@ -896,15 +872,6 @@ interface AlertEditOpts extends AlertCommonOpts {
 }
 
 /** Exits unless `raw` is a positive number. */
-function parsePositiveFlag(flag: string, raw: string): number {
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    console.error(`Invalid ${flag} "${raw}" — expected a positive number.`);
-    process.exit(1);
-  }
-  return n;
-}
-
 /** Stands in when an edit needs no quote, so it works without a Schwab login. */
 const OFFLINE_MARKET: MarketData = {
   getQuotes: () => Promise.reject(new Error("This edit should not need a quote.")),
@@ -1066,16 +1033,12 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
       `All ${checked} remain live; ${revisits.length} entry(ies) queued for revisit.`
   );
   if (triggered.length > 0) {
-    const outPath = defaultAlertTriggerReportPath(new Date());
+    const outPath = defaultReportPath("alert_triggers", new Date());
     writeAlertTriggerReport(triggered, outPath);
     console.log(`Wrote ${triggered.length} triggered alert(s) to ${outPath}`);
     const open = listRevisits(opts.revisitsFile).filter((e) => e.followUpOf === undefined).length;
     console.log(`Queue is now ${open} open — 'alert revisit list' to review.`);
   }
-}
-
-function sideWord(direction: "up" | "down"): string {
-  return direction === "up" ? "above" : "below";
 }
 
 /** One terminal line for a folded crossing. Template-only, like the rest of the CLI's output. */
@@ -1086,12 +1049,12 @@ function describeFollowUpEvent(event: FollowUpEvent): string {
   const what = fired === null ? "fire" : `${fired} fire`;
   if (reversal) {
     return (
-      `  ~ ${entry.symbol} crossed back ${sideWord(followUp.direction)} ${entry.levelAtTrigger} at ${followUp.price}: ` +
+      `  ~ ${entry.symbol} crossed back ${sideOf(followUp.direction)} ${entry.levelAtTrigger} at ${followUp.price}: ` +
       `reversal of the ${what} on ${firedOn} (revisit ${entry.id})`
     );
   }
   return (
-    `  ~ ${entry.symbol} crossed ${sideWord(followUp.direction)} ${entry.levelAtTrigger} again at ${followUp.price}: ` +
+    `  ~ ${entry.symbol} crossed ${sideOf(followUp.direction)} ${entry.levelAtTrigger} again at ${followUp.price}: ` +
     `crossing ${entry.followUps?.length ?? 1} since the ${what} on ${firedOn} (revisit ${entry.id})`
   );
 }
@@ -1105,7 +1068,7 @@ function describeFollowUps(entry: RevisitEntry): string | null {
   const parts = [`${followUps.length} later crossing(s)`];
   const reversal = reversalOf(entry);
   if (reversal !== null) {
-    parts.push(`reversed ${sideWord(reversal.direction)} the level at ${reversal.price} on ${localDateString(new Date(reversal.at))}`);
+    parts.push(`reversed ${sideOf(reversal.direction)} the level at ${reversal.price} on ${localDateString(new Date(reversal.at))}`);
   }
   parts.push(endedOnFiredSide(entry) ? "last crossing left price on the side it fired to" : "last crossing left price back across the level");
   return parts.join("; ");
@@ -1183,7 +1146,7 @@ async function cmdRevisitRelevel(opts: RevisitRelevelOpts): Promise<void> {
   const config: TuningConfig = rawConfig ?? {};
   const hasConfigFile = rawConfig !== null;
 
-  const heldSymbols = new Set(loadHoldingsStore(opts.holdingsFile).lots.map((l) => l.symbol.toUpperCase()));
+  const heldSymbols = heldSymbolsOf(loadHoldingsStore(opts.holdingsFile));
   const now = new Date();
 
   const bySymbol = new Map<string, RevisitEntry[]>();
@@ -1448,7 +1411,7 @@ async function cmdHoldingsCheck(opts: HoldingsCommonOpts & { config: string }): 
       "."
   );
   if (triggered.length > 0) {
-    const outPath = defaultHoldingsAlertReportPath(new Date());
+    const outPath = defaultReportPath("holdings_alerts", new Date());
     writeHoldingsAlertReport(triggered, outPath);
     console.log(`Wrote ${triggered.length} holdings alert(s) to ${outPath}`);
   }
@@ -1746,11 +1709,6 @@ interface DashboardOpts extends AlertCommonOpts {
   nextCheck?: string;
 }
 
-function defaultDashboardPath(now: Date): string {
-  // Local time, like every other report file name here.
-  return join("reports", `dashboard_${timestampSuffix(now)}.json`);
-}
-
 /**
  * Exit code for "the Schwab login expired, re-authorize". Distinct from 1 so
  * scripts/check-and-publish.ps1 can keep going and publish the news instead of
@@ -1831,8 +1789,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     console.log(`${unlisted.size} symbols have no cached exchange, so their chart links are unprefixed. Run: profile fetch --all-known`);
   }
 
-  // The same set buildDashboard derives for its own heldPosition flags.
-  const heldSymbols = new Set(holdings.lots.map((l) => l.symbol.toUpperCase()));
+  const heldSymbols = heldSymbolsOf(holdings);
 
   const build = (quotes: Map<string, Quote>) =>
     buildDashboard({
@@ -1885,7 +1842,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   // A site run can happen every couple of minutes; a timestamped report per
   // run would bury reports/. Only write one there when asked to.
   if (siteDir === undefined || opts.out !== undefined) {
-    const outPath = opts.out ?? defaultDashboardPath(new Date());
+    const outPath = opts.out ?? defaultReportPath("dashboard", new Date(), "json");
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, JSON.stringify(dashboard, null, 2));
     console.log(`Wrote ${outPath}`);
@@ -1982,16 +1939,15 @@ async function cmdOpsApply(opts: OpsApplyOpts): Promise<void> {
  * Returns null when the drain may proceed, or the reason it may not.
  */
 async function schwabLoginBlocker(opts: CommonOpts): Promise<string | null> {
-  const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
-  const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
   // No Schwab set up at all is not a failure here: holdings ops, removes and
   // dismisses never need a quote, and this is the case lazyMarketData exists
   // for. Let the drain run and let any op that does need one fail on its own.
-  if (!appKey || !appSecret) {
+  const creds = schwabCredentials(opts);
+  if (creds === null) {
     return null;
   }
   try {
-    await new SchwabAuth(appKey, appSecret, opts.tokenPath).getAccessToken();
+    await new SchwabAuth(creds.appKey, creds.appSecret, opts.tokenPath).getAccessToken();
     return null;
   } catch (err) {
     if (err instanceof SchwabAuthError && err.expired) {
@@ -2067,6 +2023,21 @@ function buildProgram(): Command {
     .argument("[symbol]", "Show the alerts on one ticker, e.g. 'equity-watch TSLA' (reads alerts.json here)")
     .action((symbol: string | undefined) => cmdShowSymbol(program, symbol));
 
+  // Flags that recur across unrelated command groups, so they can't live in
+  // one with*Common. Written once each: the loose copies had drifted into four
+  // different descriptions of --config and three of --holdings-file.
+  const DEFAULT_CONFIG_PATH = "analysis.config.json";
+  /** Collects a repeatable flag into an array. */
+  const repeatable = (val: string, prev: string[]): string[] => [...prev, val];
+  // Spread into .option(...) rather than applied as a decorator, so each flag
+  // keeps its place in the command's --help rather than jumping to the front.
+  const HOLDINGS_FILE_OPTION = ["--holdings-file <path>", "Path to the holdings JSON store", "holdings.json"] as const;
+  const NO_CACHE_OPTION = ["--no-cache", "Disable the on-disk bar cache"] as const;
+  const CACHE_DIR_OPTION = ["--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars"] as const;
+  /** `--config`, with an optional note about what this command reads from it. */
+  const configOption = (note?: string) =>
+    ["--config <path>", `Per-ticker tuning config${note === undefined ? "" : ` (${note})`}`, DEFAULT_CONFIG_PATH] as const;
+
   const withCommon = (cmd: Command): Command =>
     cmd
       .option("--app-key <key>", "Schwab App Key (or SCHWAB_APP_KEY in env/.env)")
@@ -2085,14 +2056,14 @@ function buildProgram(): Command {
       "Analyze every triggered alert on record in this engine's alerts.json instead of a CSV (default path: alerts.json)"
     )
     .option("--out <path>", "Output CSV path (default: reports/breakout_report_<timestamp>.csv)")
-    .option("--symbol <symbol>", "Only analyze this symbol (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
-    .option("--no-cache", "Disable the on-disk bar cache")
-    .option("--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars")
+    .option("--symbol <symbol>", "Only analyze this symbol (repeatable)", repeatable, [] as string[])
+    .option(...NO_CACHE_OPTION)
+    .option(...CACHE_DIR_OPTION)
     .option("--history-dir <path>", "Directory for per-ticker historical alert/verdict JSON files", "history")
     .option(
       "--config <path>",
       "Per-ticker tuning config (default/overrides/beta-scaling); missing file just uses built-in defaults",
-      "analysis.config.json"
+      DEFAULT_CONFIG_PATH
     )
     .option("--baseline-days <n>", "Overrides analysis.config.json and beta-scaling for this run", (v) => parseInt(v, 10))
     .option("--volume-ratio-threshold <n>", "Overrides analysis.config.json and beta-scaling for this run", (v) => parseFloat(v))
@@ -2158,9 +2129,6 @@ function buildProgram(): Command {
         console.error("Specify the symbol: 'alert add GMED 80.5', or --symbol GMED with other options.");
         process.exit(1);
       }
-      if (level !== undefined) {
-        parsePositiveFlag("level", level);
-      }
       // Schwab keys quotes by upper-case symbol, so "gmed" would find no quote.
       return cmdAlertAdd({ ...opts, symbol: resolved.toUpperCase(), ...(level !== undefined ? { level } : {}) });
     });
@@ -2168,13 +2136,13 @@ function buildProgram(): Command {
   withAlertCommon(program.command("dashboard"))
     .description("One periodic JSON document: the revisit queue, what's close to firing, and holdings")
     .option("--out <path>", "Output JSON path (default: reports/dashboard_<timestamp>.json)")
-    .option("--holdings-file <path>", "Path to the holdings JSON store", "holdings.json")
+    .option(...HOLDINGS_FILE_OPTION)
     .option("--limit <n>", "Max rows in the revisit queue", (v) => parseInt(v, 10))
     .option("--approaching", "Include the list of alerts closest to firing (off by default)")
     .option("--within-pct <n>", "With --approaching: only list alerts within this percent of firing", (v) => parseFloat(v))
     .option("--window-days <n>", "How many days back the trigger count covers", (v) => parseInt(v, 10))
     .option("--quiet", "Write the file without printing the rendered view")
-    .option("--config <path>", "Per-ticker tuning config (supplies ignoreSymbols)", "analysis.config.json")
+    .option(...configOption("supplies ignoreSymbols"))
     .option("--site <dir>", "Also write the static browser dashboard to this directory (skips the reports/ JSON unless --out is given)")
     .option("--publish", "Sync the site to S3 (S3_BUCKET/AWS_* in .env); implies --site site")
     .option(
@@ -2192,10 +2160,10 @@ function buildProgram(): Command {
     .requiredOption("--list <path>", "TradingView alert-list export (Symbol, Description, Status, Last Triggered)")
     .option("--log <path>", "TradingView alert-log export (Symbol, Alert Date, Alert Time, Description)")
     .option("--dry-run", "Print the plan without writing any alerts")
-    .option("--symbol <symbol>", "Only seed this symbol (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
-    .option("--no-cache", "Disable the on-disk bar cache")
-    .option("--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars")
-    .option("--config <path>", "Per-ticker tuning config", "analysis.config.json")
+    .option("--symbol <symbol>", "Only seed this symbol (repeatable)", repeatable, [] as string[])
+    .option(...NO_CACHE_OPTION)
+    .option(...CACHE_DIR_OPTION)
+    .option(...configOption())
     .action((opts: AlertSeedOpts) => cmdAlertSeed(opts));
 
   withAlertCommon(alertCmd.command("list"))
@@ -2208,7 +2176,7 @@ function buildProgram(): Command {
       'One-time: set every static alert to direction "up" and fold the revisit queue\'s repeat crossings ' +
         "onto the fires they followed (backs both files up to .cache/backups/ first; safe to re-run)"
     )
-    .option("--config <path>", "Per-ticker tuning config (holdDays sets each symbol's window)", "analysis.config.json")
+    .option(...configOption("holdDays sets each symbol's window"))
     .action((opts: MigrateDirectionsOpts) => cmdAlertMigrateDirections(opts));
 
   withAlertCommon(alertCmd.command("remove <idOrSymbol>"))
@@ -2254,11 +2222,11 @@ function buildProgram(): Command {
 
   withAlertCommon(revisitCmd.command("relevel"))
     .description("Fetch bars for open entries, propose new levels, and score the queue")
-    .option("--symbol <symbol>", "Only re-level this symbol (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
-    .option("--no-cache", "Disable the on-disk bar cache")
-    .option("--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars")
-    .option("--holdings-file <path>", "Path to the holdings JSON store", "holdings.json")
-    .option("--config <path>", "Per-ticker tuning config", "analysis.config.json")
+    .option("--symbol <symbol>", "Only re-level this symbol (repeatable)", repeatable, [] as string[])
+    .option(...NO_CACHE_OPTION)
+    .option(...CACHE_DIR_OPTION)
+    .option(...HOLDINGS_FILE_OPTION)
+    .option(...configOption())
     .action((opts: RevisitRelevelOpts) => cmdRevisitRelevel(opts));
 
   withAlertCommon(revisitCmd.command("apply <id>"))
@@ -2272,15 +2240,15 @@ function buildProgram(): Command {
   withAlertCommon(alertCmd.command("check"))
     .description("Check all live alerts against live Schwab quotes (run this from cron every ~15 min)")
     .option("--regular-only", "Only poll during the regular session (default also polls pre/post market)")
-    .option("--config <path>", "Per-ticker tuning config (supplies ignoreSymbols)", "analysis.config.json")
+    .option(...configOption("supplies ignoreSymbols"))
     .option("--ignore-hours", "Poll regardless of market hours")
-    .option("--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars")
+    .option(...CACHE_DIR_OPTION)
     .action((opts: AlertCheckOpts) => cmdAlertCheck(opts));
 
   const opsCmd = program.command("ops").description("Alert and holdings changes queued from the browser dashboard");
   const withOpsCommon = (cmd: Command): Command =>
     withAlertCommon(cmd)
-      .option("--holdings-file <path>", "Path to the holdings JSON store", "holdings.json")
+      .option(...HOLDINGS_FILE_OPTION)
       .option("--op-log <path>", "Log of applied op results (makes re-applying an op a no-op)", DEFAULT_OP_LOG);
 
   withOpsCommon(opsCmd.command("pull"))
@@ -2297,12 +2265,12 @@ function buildProgram(): Command {
   const holdingsCmd = program.command("holdings").description("Track holdings (lots, stops) and basis-relative alerts");
 
   const withHoldingsCommon = (cmd: Command): Command =>
-    withCommon(cmd).option("--holdings-file <path>", "Path to the holdings JSON store", "holdings.json");
+    withCommon(cmd).option(...HOLDINGS_FILE_OPTION);
 
   withHoldingsCommon(holdingsCmd.command("cover"))
     .description("Create a starting alert for each held position that has none (10% above basis, or just above price)")
     .option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json")
-    .option("--config <path>", "Per-ticker tuning config (supplies ignoreSymbols)", "analysis.config.json")
+    .option(...configOption("supplies ignoreSymbols"))
     .option("--dry-run", "Print the plan without writing anything")
     .action((opts: HoldingsCoverOpts) => cmdHoldingsCover(opts));
 
@@ -2352,7 +2320,7 @@ function buildProgram(): Command {
 
   withHoldingsCommon(holdingsCmd.command("check"))
     .description("Check holdings for the 10%-above-basis, month-stagnant, and 3%-appreciation alerts")
-    .option("--config <path>", "Per-ticker tuning config (supplies ignoreSymbols)", "analysis.config.json")
+    .option(...configOption("supplies ignoreSymbols"))
     .action((opts: HoldingsCommonOpts & { config: string }) => cmdHoldingsCheck(opts));
 
   const profileCmd = program
@@ -2365,12 +2333,12 @@ function buildProgram(): Command {
 
   withProfileCommon(profileCmd.command("fetch"))
     .description("Populate the profile cache (250 requests/day free-tier budget, tracked across runs)")
-    .option("--symbol <symbol>", "Fetch this symbol (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
-    .option("--csv <path>", "Also include symbols from this TradingView CSV export (repeatable)", (val, prev: string[]) => [...prev, val], [] as string[])
+    .option("--symbol <symbol>", "Fetch this symbol (repeatable)", repeatable, [] as string[])
+    .option("--csv <path>", "Also include symbols from this TradingView CSV export (repeatable)", repeatable, [] as string[])
     .option("--all-known", "Also include every symbol seen in history/, holdings.json, and alerts.json")
     .option("--refresh", "Re-fetch symbols that are already cached")
     .option("--history-dir <path>", "Directory of per-ticker history JSON files", "history")
-    .option("--holdings-file <path>", "Path to the holdings JSON store", "holdings.json")
+    .option(...HOLDINGS_FILE_OPTION)
     .option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json")
     .action((opts: ProfileFetchOpts) => cmdProfileFetch(opts));
 

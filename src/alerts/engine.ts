@@ -33,6 +33,7 @@ import {
 import { requiredVolume } from "./volumeBaseline.js";
 import { MAX_INTRADAY_HISTORY_DAYS, schwabIntradayPeriod } from "../indicators/movingAverage.js";
 import { nextMarketMidnight } from "../timezone.js";
+import { tradingViewUrl } from "../tradingview.js";
 import { findAlert, loadAlerts, saveAlerts } from "./store.js";
 
 export interface MarketData {
@@ -40,10 +41,6 @@ export interface MarketData {
   /** Minute bars for the last `daysBack` trading sessions. */
   getIntradayBars(symbol: string, daysBack: number): Promise<PriceBar[]>;
   getDailyBars(symbol: string, start: Date, end: Date): Promise<PriceBar[]>;
-}
-
-function chartUrl(symbol: string): string {
-  return `https://www.tradingview.com/chart/?symbol=${symbol}`;
 }
 
 const PERIOD_UNIT_MS: Record<VolumePeriodUnit, number> = {
@@ -323,7 +320,7 @@ export async function checkAlerts(
 
     triggered.push(alert);
     for (const notifier of notifiers) {
-      await notifier.notify({ alert, currentPrice, chartUrl: chartUrl(alert.symbol) });
+      await notifier.notify({ alert, currentPrice, chartUrl: tradingViewUrl(alert.symbol, null) });
     }
   }
 
@@ -352,7 +349,7 @@ export async function checkAlerts(
 
       triggered.push(alert);
       for (const notifier of notifiers) {
-        await notifier.notify({ alert, currentPrice: price, chartUrl: chartUrl(alert.symbol) });
+        await notifier.notify({ alert, currentPrice: price, chartUrl: tradingViewUrl(alert.symbol, null) });
       }
     }
   }

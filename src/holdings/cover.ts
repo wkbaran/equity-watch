@@ -22,6 +22,8 @@
  * side to fire on and `addAlert` rejects it outright.
  */
 
+import { round } from "../round.js";
+
 /** Fraction above the reference (the higher of price and basis) used as the starting target. */
 export const COVER_ABOVE_PRICE = 0.1;
 
@@ -31,13 +33,9 @@ export interface CoverLevel {
   pctFromBasis: number;
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
 export function coverLevel(blendedBasis: number, currentPrice: number): CoverLevel {
   return {
-    level: round2(Math.max(currentPrice, blendedBasis) * (1 + COVER_ABOVE_PRICE)),
+    level: round(Math.max(currentPrice, blendedBasis) * (1 + COVER_ABOVE_PRICE)),
     pctFromBasis: blendedBasis > 0 ? ((currentPrice - blendedBasis) / blendedBasis) * 100 : 0,
   };
 }

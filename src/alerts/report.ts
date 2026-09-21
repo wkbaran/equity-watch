@@ -13,6 +13,8 @@ import { dirname } from "node:path";
 import { stringify } from "csv-stringify/sync";
 import type { Alert } from "./models.js";
 import { describeMaAlert } from "./maEngine.js";
+import { tradingViewUrl } from "../tradingview.js";
+import { writeCsv } from "../csv.js";
 
 const OUTPUT_FIELDS = [
   "id",
@@ -32,10 +34,6 @@ const OUTPUT_FIELDS = [
   "triggered_at",
   "chart_url",
 ];
-
-function chartUrl(symbol: string): string {
-  return `https://www.tradingview.com/chart/?symbol=${symbol}`;
-}
 
 function volumeFields(alert: Alert): { volume_mode: string; volume_threshold: number | string; volume_period: string } {
   const condition = alert.kind === "volume" ? alert.volume : alert.kind === "ma" ? undefined : alert.volumeCondition;
@@ -65,9 +63,7 @@ export function writeAlertTriggerReport(triggered: Alert[], outPath: string): vo
     ...volumeFields(a),
     trigger_price: a.lastTriggerPrice,
     triggered_at: a.lastTriggeredAt,
-    chart_url: chartUrl(a.symbol),
+    chart_url: tradingViewUrl(a.symbol, null),
   }));
-  const csvText = stringify(rows, { header: true, columns: OUTPUT_FIELDS });
-  mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, csvText);
+  writeCsv(outPath, rows, OUTPUT_FIELDS);
 }

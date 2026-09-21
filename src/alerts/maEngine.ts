@@ -35,6 +35,7 @@ import {
   schwabIntradayPeriod,
 } from "../indicators/movingAverage.js";
 import type { AlertSide, MaAlert, MaEvent } from "./models.js";
+import { round } from "../round.js";
 
 /** Default touch band. Small enough to mean "at the average" on a daily chart. */
 export const DEFAULT_TOUCH_MARGIN_PCT = 0.25;
@@ -62,10 +63,6 @@ function sideOf(price: number, level: number): AlertSide | null {
   return price > level ? "above" : price < level ? "below" : null;
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
 /**
  * Walk `path` in time order, advancing the alert's state and reporting the
  * first qualifying event. Mutates `alert` (state fields only). The first
@@ -86,7 +83,7 @@ export function evaluateMaAlert(
     if (level === null) {
       continue;
     }
-    alert.lastLevel = round2(level);
+    alert.lastLevel = round(level);
     const band = (level * alert.marginPct) / 100;
     const closeSide = sideOf(p.close, level);
     const touching = p.low <= level + band && p.high >= level - band;
@@ -126,7 +123,7 @@ export function evaluateMaAlert(
         alert.lastFiredBucket = bucket;
         result.event = candidate;
         result.price = p.close;
-        result.level = round2(level);
+        result.level = round(level);
         result.at = p.at;
         result.approachedFrom = before;
       }

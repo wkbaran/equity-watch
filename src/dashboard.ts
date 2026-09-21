@@ -27,7 +27,7 @@ import {
   type RevisitMa,
   type RevisitVolume,
 } from "./alerts/revisit.js";
-import { computeBasis, type HoldingsStore } from "./holdings/models.js";
+import { computeBasis, heldSymbolsOf, type HoldingsStore } from "./holdings/models.js";
 import type { Session } from "./marketHours.js";
 import {
   buildStories,
@@ -39,6 +39,7 @@ import {
   type TickerStory,
 } from "./narrative.js";
 import type { Quote } from "./providers/schwab.js";
+import { round } from "./round.js";
 import { mapExchange, tradingViewUrl } from "./tradingview.js";
 
 export interface DashboardSummary {
@@ -256,11 +257,6 @@ export interface DashboardInputs {
 
 const RECENT_TRIGGER_CAP = 100;
 
-function round(n: number, places = 2): number {
-  const f = 10 ** places;
-  return Math.round(n * f) / f;
-}
-
 /**
  * What has happened to this fire since it landed in the queue.
  *
@@ -333,7 +329,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
   const chartUrl = (symbol: string) => tradingViewUrl(symbol, exchanges.get(symbol));
 
   const live = alerts.filter((a) => a.status === "live" && !isIgnored(a.symbol));
-  const heldSymbols = new Set(holdings.lots.map((l) => l.symbol.toUpperCase()));
+  const heldSymbols = heldSymbolsOf(holdings);
 
   const narrativeCtx: NarrativeContext = { heldSymbols };
   // Every alert, not just the live ones: a queue row needs to say when the

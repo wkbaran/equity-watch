@@ -8,6 +8,7 @@
 
 import { localDateString, localDateTimeString } from "../timezone.js";
 import { describeAlertCondition } from "./describe.js";
+import { round } from "../round.js";
 import { effectiveTrigger, type Alert } from "./models.js";
 import type { RevisitEntry } from "./revisit.js";
 
@@ -21,7 +22,7 @@ export function liveAlertsFor(query: string, alerts: Alert[]): Alert[] {
   return alerts.filter((a) => a.status === "live" && a.symbol.toUpperCase() === symbol);
 }
 
-const round = (n: number): number => Number(n.toFixed(2));
+
 
 function movingLevel(a: Alert): string {
   if (a.kind === "trailing") {
