@@ -689,19 +689,43 @@
       spellcheck: "false",
       value: existing === null ? "" : existing.ratio !== undefined ? String(existing.ratio) : volumeInputValue(existing.threshold),
     });
-    const window = h("input", {
-      type: "text",
-      class: "volume-window",
-      placeholder: "today, or 30m, 2h, 1d",
-      autocomplete: "off",
-      spellcheck: "false",
-      value: existing?.mode === "period" ? `${existing.periodValue}${existing.periodUnit}` : "",
-    });
+    // A select, not a free-text spec: the accepted shape ("30m", "2h") was
+    // only ever stated in a placeholder, and the useful windows are a short
+    // list. Values are the `Nunit` spec the worker takes, so read() is
+    // unchanged and "" still means today.
+    //
+    // Nothing above four days appears in *sub-day* units on purpose. A
+    // sub-day window fetches `ceil(days) + 1` days of 1-minute bars, and
+    // Schwab's periodType=day only accepts 1-5 or 10 - so "120h" asks for 6
+    // and fails on every check (see CLAUDE.md). Day-unit windows don't go
+    // near that: getDailyBars asks for a date range, not a period count,
+    // which is why 10 days is offered as "10d" and not as "240h".
+    const WINDOW_OPTIONS = [
+      ["", "Today"],
+      ["15m", "Last 15 minutes"],
+      ["30m", "Last 30 minutes"],
+      ["1h", "Last hour"],
+      ["2h", "Last 2 hours"],
+      ["4h", "Last 4 hours"],
+      ["1d", "Last day"],
+      ["2d", "Last 2 days"],
+      ["5d", "Last 5 days"],
+      ["10d", "Last 10 days"],
+    ];
+    const current = existing?.mode === "period" ? `${existing.periodValue}${existing.periodUnit}` : "";
+    const windowSelect = h("select", { class: "volume-window" }, ...WINDOW_OPTIONS.map(([value, text]) => h("option", { value, text })));
+    // An alert set from the CLI can hold a window this list doesn't offer
+    // ("45s"). Keep it rather than snapping it to Today, which would be an
+    // edit nobody asked for on a form opened only to read.
+    if (current !== "" && !WINDOW_OPTIONS.some(([value]) => value === current)) {
+      windowSelect.append(h("option", { value: current, text: `Last ${current}` }));
+    }
+    windowSelect.value = current;
     const PLACEHOLDER = { ratio: "e.g. 1.5", shares: "e.g. 2.5M", none: "" };
     const sync = () => {
       amount.placeholder = PLACEHOLDER[kind.value];
       amount.disabled = kind.value === "none";
-      window.disabled = kind.value === "none";
+      windowSelect.disabled = kind.value === "none";
     };
     kind.addEventListener("change", sync);
     sync();
@@ -715,7 +739,9 @@
       if (value === null) {
         return { error: isRatio ? "Enter a multiple above 0, e.g. 1.5." : "Enter a share count above 0, e.g. 2.5M." };
       }
-      const win = window.value.trim().toLowerCase();
+      // Still checked, because a window preserved off an alert reaches here
+      // as an option value the page didn't author.
+      const win = windowSelect.value.trim().toLowerCase();
       if (win !== "" && win !== "today" && !VOLUME_WINDOW_RE.test(win)) {
         return { error: 'Volume window: leave empty for today, or e.g. "30m", "2h", "1d".' };
       }
@@ -728,11 +754,11 @@
     const reset = () => {
       kind.value = "none";
       amount.value = "";
-      window.value = "";
+      windowSelect.value = "";
       sync();
     };
 
-    return { fields: [field("Volume", kind), field("Volume at least", amount), field("Over", window)], read, reset };
+    return { fields: [field("Volume", kind), field("Volume at least", amount), field("Over", windowSelect)], read, reset };
   }
 
   /** An op's volume params, from what buildVolumeFields read. */

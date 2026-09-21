@@ -132,12 +132,39 @@ test.describe("add", () => {
     await form.getByLabel("Level").fill("80.5");
     await form.getByRole("combobox", { name: /^Volume/ }).selectOption("shares");
     await form.getByLabel("Volume at least").fill("2.5M");
-    await form.getByLabel("Over").fill("30m");
+    await form.getByLabel("Over").selectOption("30m");
     await form.locator("button[type=submit]").click();
 
     await expect(page.locator("#toasts")).toContainText("Queued: add GMED crosses up 80.5 with volume ≥ 2.5M shares over 30m");
     const [op] = await queuedOps(page);
     expect(op.params).toEqual({ symbol: "GMED", level: 80.5, direction: "up", volumeAtLeast: 2_500_000, volumePeriod: "30m" });
+  });
+
+  // The window used to be a free-text spec whose only documentation was a
+  // placeholder, so what it accepted was guesswork.
+  test("offers the windows as a list, defaulting to today", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    const over = page.locator("#alert-add form").getByLabel("Over");
+    await expect(over).toHaveValue("");
+    expect(await over.locator("option").allInnerTexts()).toEqual([
+      "Today",
+      "Last 15 minutes",
+      "Last 30 minutes",
+      "Last hour",
+      "Last 2 hours",
+      "Last 4 hours",
+      "Last day",
+      "Last 2 days",
+      "Last 5 days",
+      "Last 10 days",
+    ]);
+    // Nothing above 4 days in sub-day units: those fetch ceil(days)+1 days of
+    // minute bars, and Schwab rejects a 6-9 day request.
+    for (const value of await over.locator("option").evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value))) {
+      const match = /^(\d+)([smhd])$/.exec(value);
+      if (match && match[2] !== "d") expect(Number(match[1]) * { s: 1, m: 60, h: 3600 }[match[2] as "s" | "m" | "h"]).toBeLessThanOrEqual(4 * 86400);
+    }
   });
 
   test("rejects a share count the same way the Edit form does", async ({ page }) => {
@@ -151,10 +178,6 @@ test.describe("add", () => {
     await form.locator("button[type=submit]").click();
     await expect(form.locator(".form-error")).toHaveText("Enter a share count above 0, e.g. 2.5M.");
 
-    await form.getByLabel("Volume at least").fill("2.5M");
-    await form.getByLabel("Over").fill("nonsense");
-    await form.locator("button[type=submit]").click();
-    await expect(form.locator(".form-error")).toHaveText('Volume window: leave empty for today, or e.g. "30m", "2h", "1d".');
     expect(await queuedOps(page)).toEqual([]);
   });
 });
@@ -565,7 +588,7 @@ test.describe("price and volume in one edit form", () => {
     await expect(form.getByRole("combobox", { name: /^Volume/ })).toHaveValue("none");
     await form.getByRole("combobox", { name: /^Volume/ }).selectOption("ratio");
     await form.getByLabel("Volume at least").fill("1.5");
-    await form.getByLabel("Over").fill("2h");
+    await form.getByLabel("Over").selectOption("2h");
     await form.locator("button[type=submit]").click();
     await expect(page.locator("#drawer-body")).toContainText("edit AA volume ≥ 1.5x normal over 2h");
     const [op] = await queuedOps(page);
@@ -603,6 +626,27 @@ test.describe("price and volume in one edit form", () => {
     await expect(page.locator("#drawer-body")).toContainText("edit NVDA volume ≥ 2.5M shares over 30m");
     const [op] = await queuedOps(page);
     expect(op.params).toEqual({ volumeAtLeast: 2_500_000, volumePeriod: "30m" });
+  });
+
+  // A window set from the CLI need not be one the list offers. Opening the
+  // form must not quietly re-level it to Today.
+  test("keeps a window the list doesn't offer, rather than snapping it", async ({ page }) => {
+    await storeToken(page);
+    await page.route("**/alerts.json", async (route) => {
+      const response = await route.fetch();
+      const doc = await response.json();
+      const row = doc.alerts.find((a: any) => a.id === VOLUME_ONLY.id);
+      row.volume = { threshold: 5_000_000, mode: "period", periodValue: 45, periodUnit: "s" };
+      await route.fulfill({ response, json: doc });
+    });
+    await page.goto(`/#/alert/${VOLUME_ONLY.id}`);
+    const form = page.locator("#drawer-body form");
+    await expect(form.getByLabel("Over")).toHaveValue("45s");
+    await expect(form.getByLabel("Over").locator("option[value='45s']")).toHaveText("Last 45s");
+    // Submitting it untouched is still "nothing changed", not a window edit.
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText("Nothing changed.");
+    expect(await queuedOps(page)).toEqual([]);
   });
 
   test("a ratio takes no suffix, and each mode says what it wants", async ({ page }) => {

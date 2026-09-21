@@ -450,6 +450,22 @@ Things that look simplifiable and aren't:
   which is what makes a new alert a plain price alert.
   Note for tests: the add form now has three text inputs, so
   `#alert-add input[type=text]` is ambiguous. Select its fields by label.
+- **The volume window is a `<select>`, and what it leaves out is deliberate.**
+  It was a free-text `Nunit` spec whose only documentation was a placeholder.
+  Option values are still the spec the worker parses, so `""` means today and
+  nothing downstream changed. Two rules for editing that list:
+  - **No sub-day window past 4 days.** A `s`/`m`/`h` window fetches
+    `min(10, max(2, ceil(days) + 1))` days of 1-minute bars, and Schwab's
+    `periodType=day` only takes 1-5 or 10 — so a window over 4 days and up to
+    8 asks for 6-9 and fails on *every* check (`120h` is the example in the
+    moving-average section). Past 8 days it clamps back to 10 and succeeds,
+    which makes the broken band easy to miss. Day-unit windows are not
+    affected at all: `getDailyBars` sends a date range, not a period count,
+    which is why 10 days is offered as `10d` and never as `240h`.
+  - **A window the list doesn't offer is preserved, not snapped.** An alert set
+    from the CLI can hold `45s`; the select grows an extra option for it, so
+    opening an alert's form to read it and saving doesn't quietly re-window it.
+    The CLI itself still accepts any `Nunit`, including the ones that fail.
 - **Both drawers fetch `alerts.json`.** The trigger drawer needs the alert's
   *current* level and direction for the edit form, and `TriggerRow` carries
   neither (it records what fired, not what is set now). `RevisitRow.alertId`

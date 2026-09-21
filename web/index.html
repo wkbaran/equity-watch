@@ -262,8 +262,9 @@
   .field { display: flex; flex-direction: column; gap: 2px; font-size: 0.75rem; color: var(--subtext); }
   .field input[type="number"] { width: 8rem; }
   .field input[type="text"] { width: 7rem; text-transform: uppercase; }
-  /* A volume window is "30m" (minutes); uppercased it reads as 30 million. */
-  .field input[type="text"].volume-window { text-transform: none; }
+  /* The volume amount is the one text field that isn't a ticker; uppercasing
+     it is wanted here, since "2.5m" shown as "2.5M" is what it means. The
+     window beside it is a select, so it needs nothing. */
   .form-error { color: var(--red); font-size: 0.8rem; align-self: center; }
   .tag.pending { border-color: var(--yellow); color: var(--yellow); }
   #ops-pending { margin-bottom: 1rem; }
