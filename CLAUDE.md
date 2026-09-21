@@ -441,6 +441,15 @@ Things that look simplifiable and aren't:
   `AlertRow.volume` carries the condition so the form can prefill it; the
   condition text can't be parsed back. Moving averages have no volume
   condition and still aren't editable from the page.
+- **The New alert form shares those three controls** (`buildVolumeFields` in
+  `web/app.js`), so a new alert can carry an absolute share count and a window,
+  not only a ratio. Keep them shared rather than writing a second copy: the two
+  forms have to offer the same choices and reject the same input with the same
+  words, and it is the page's parse of "2.5M" that decides what number reaches
+  the worker. Volume stays optional there — the kind select defaults to "none",
+  which is what makes a new alert a plain price alert.
+  Note for tests: the add form now has three text inputs, so
+  `#alert-add input[type=text]` is ambiguous. Select its fields by label.
 - **Both drawers fetch `alerts.json`.** The trigger drawer needs the alert's
   *current* level and direction for the edit form, and `TriggerRow` carries
   neither (it records what fired, not what is set now). `RevisitRow.alertId`

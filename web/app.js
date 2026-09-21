@@ -580,7 +580,10 @@
     const symbol = h("input", { type: "text", placeholder: "GMED", autocapitalize: "characters", autocomplete: "off", spellcheck: "false", maxlength: "16" });
     const level = numberInput(null, { placeholder: "80.50" });
     const direction = directionSelect("up");
-    const ratio = numberInput(null, { placeholder: "optional" });
+    // The same three controls as the Edit form, so a new alert can carry an
+    // absolute share count ("2.5M") and a window, not only a ratio - and so
+    // both forms reject the same input with the same words.
+    const volumeFields = buildVolumeFields(null);
     const error = h("span", { class: "form-error" });
     const button = h("button", { type: "submit", text: "Add alert" });
     addFormEl = h(
@@ -592,19 +595,22 @@
           error.textContent = "";
           const sym = symbol.value.trim().toUpperCase();
           const lvl = positive(level.value);
-          const vr = ratio.value.trim() === "" ? undefined : positive(ratio.value);
           if (!sym) return (error.textContent = "Enter a symbol.");
           if (lvl === null) return (error.textContent = "Enter a level above 0.");
-          if (vr === null) return (error.textContent = "Volume ratio must be above 0, or empty.");
-          const params = { symbol: sym, level: lvl, direction: direction.value, ...(vr !== undefined ? { volumeRatio: vr } : {}) };
-          const summary = `add ${sym} ${DIRECTION_LABEL[direction.value].toLowerCase()} ${lvl}${vr !== undefined ? ` with volume ≥ ${vr}x normal today` : ""}`;
+          const read = volumeFields.read();
+          if (read.error) return (error.textContent = read.error);
+          const volume = read.volume;
+          const params = { symbol: sym, level: lvl, direction: direction.value, ...(volume === null ? {} : volumeParams(volume)) };
+          const summary =
+            `add ${sym} ${DIRECTION_LABEL[direction.value].toLowerCase()} ${lvl}` +
+            (volume === null ? "" : ` with volume ${volumeConditionText(volume)}`);
           button.disabled = true;
           const queued = await submitOp({ type: "alert.add", params }, { symbol: sym, summary });
           button.disabled = false;
           if (queued) {
             symbol.value = "";
             level.value = "";
-            ratio.value = "";
+            volumeFields.reset();
           }
         },
       },
@@ -612,7 +618,7 @@
       field("Symbol", symbol),
       field("Level", level),
       field("Fires on", direction),
-      field("Volume ≥ x normal", ratio),
+      ...volumeFields.fields,
       button,
       error,
       h("div", { class: "note", text: "Applied at the next scheduled check, against a live quote. A level at the current price is rejected." })
@@ -658,6 +664,85 @@
     `${v.ratio !== undefined ? `≥ ${v.ratio}x normal` : `≥ ${formatVolume(v.threshold)} shares`} ${v.mode === "period" ? `over ${v.periodValue}${v.periodUnit}` : "today"}`;
 
   /**
+   * The Volume / Volume at least / Over controls, shared by the New alert form
+   * and the Edit form so both offer the same choices and reject the same input.
+   *
+   * `existing` is the alert's current VolumeCondition, or null on a new alert.
+   * `read()` returns { volume } - null meaning no condition - or { error }.
+   */
+  function buildVolumeFields(existing) {
+    const kind = h(
+      "select",
+      {},
+      h("option", { value: "none", text: "No volume condition" }),
+      h("option", { value: "ratio", text: "× normal volume" }),
+      h("option", { value: "shares", text: "Shares" })
+    );
+    kind.value = existing === null ? "none" : existing.ratio !== undefined ? "ratio" : "shares";
+    // Text, not number: an <input type="number"> reports "" for "2.5M", so the
+    // shorthand would be silently swallowed. Prefilled with volumeInputValue so
+    // saving an untouched form sends back exactly the threshold it opened with.
+    const amount = h("input", {
+      type: "text",
+      inputmode: "decimal",
+      autocomplete: "off",
+      spellcheck: "false",
+      value: existing === null ? "" : existing.ratio !== undefined ? String(existing.ratio) : volumeInputValue(existing.threshold),
+    });
+    const window = h("input", {
+      type: "text",
+      class: "volume-window",
+      placeholder: "today, or 30m, 2h, 1d",
+      autocomplete: "off",
+      spellcheck: "false",
+      value: existing?.mode === "period" ? `${existing.periodValue}${existing.periodUnit}` : "",
+    });
+    const PLACEHOLDER = { ratio: "e.g. 1.5", shares: "e.g. 2.5M", none: "" };
+    const sync = () => {
+      amount.placeholder = PLACEHOLDER[kind.value];
+      amount.disabled = kind.value === "none";
+      window.disabled = kind.value === "none";
+    };
+    kind.addEventListener("change", sync);
+    sync();
+
+    const read = () => {
+      if (kind.value === "none") return { volume: null };
+      // Shares take the K/M/B shorthand; a ratio is a bare multiple, where a
+      // suffix would mean nothing ("1.5M x normal volume").
+      const isRatio = kind.value === "ratio";
+      const value = isRatio ? positive(amount.value) : parseVolume(amount.value);
+      if (value === null) {
+        return { error: isRatio ? "Enter a multiple above 0, e.g. 1.5." : "Enter a share count above 0, e.g. 2.5M." };
+      }
+      const win = window.value.trim().toLowerCase();
+      if (win !== "" && win !== "today" && !VOLUME_WINDOW_RE.test(win)) {
+        return { error: 'Volume window: leave empty for today, or e.g. "30m", "2h", "1d".' };
+      }
+      const period = win === "" || win === "today" ? null : { periodValue: Number(win.slice(0, -1)), periodUnit: win.slice(-1) };
+      return {
+        volume: { ...(isRatio ? { ratio: value } : { threshold: value }), ...(period ? { mode: "period", ...period } : { mode: "today" }) },
+      };
+    };
+
+    const reset = () => {
+      kind.value = "none";
+      amount.value = "";
+      window.value = "";
+      sync();
+    };
+
+    return { fields: [field("Volume", kind), field("Volume at least", amount), field("Over", window)], read, reset };
+  }
+
+  /** An op's volume params, from what buildVolumeFields read. */
+  function volumeParams(volume) {
+    const params = volume.ratio !== undefined ? { volumeRatio: volume.ratio } : { volumeAtLeast: volume.threshold };
+    if (volume.mode === "period") params.volumePeriod = `${volume.periodValue}${volume.periodUnit}`;
+    return params;
+  }
+
+  /**
    * One form for price and volume whatever the alert is now (the user's call,
    * 2026-09-18): a static or volume alert shows both a level and a volume
    * condition, so volume can be added to a price alert and a price level to a
@@ -679,59 +764,16 @@
     else fields.push(field("Trail by", trailType), field("Distance", trailValue));
 
     const old = a.volume ?? null;
-    const volumeKind = h(
-      "select",
-      {},
-      h("option", { value: "none", text: "No volume condition" }),
-      h("option", { value: "ratio", text: "× normal volume" }),
-      h("option", { value: "shares", text: "Shares" })
-    );
-    volumeKind.value = old === null ? "none" : old.ratio !== undefined ? "ratio" : "shares";
-    // Text, not number: an <input type="number"> reports "" for "2.5M", so the
-    // shorthand would be silently swallowed. Prefilled with volumeInputValue so
-    // saving an untouched form sends back exactly the threshold it opened with.
-    const volumeAmount = h("input", {
-      type: "text",
-      inputmode: "decimal",
-      autocomplete: "off",
-      spellcheck: "false",
-      value: old === null ? "" : old.ratio !== undefined ? String(old.ratio) : volumeInputValue(old.threshold),
-    });
-    const VOLUME_PLACEHOLDER = { ratio: "e.g. 1.5", shares: "e.g. 2.5M", none: "" };
-    const syncVolumeAmount = () => {
-      volumeAmount.placeholder = VOLUME_PLACEHOLDER[volumeKind.value];
-      volumeAmount.disabled = volumeKind.value === "none";
-    };
-    volumeKind.addEventListener("change", syncVolumeAmount);
-    syncVolumeAmount();
-    const volumeWindow = h("input", {
-      type: "text",
-      class: "volume-window",
-      placeholder: "today, or 30m, 2h, 1d",
-      autocomplete: "off",
-      spellcheck: "false",
-      value: old?.mode === "period" ? `${old.periodValue}${old.periodUnit}` : "",
-    });
-    fields.push(field("Volume", volumeKind), field("Volume at least", volumeAmount), field("Over", volumeWindow));
+    const volumeFields = buildVolumeFields(old);
+    fields.push(...volumeFields.fields);
 
     const collect = () => {
       const params = {};
       const changes = [];
 
-      let volume = null;
-      if (volumeKind.value !== "none") {
-        // Shares take the K/M/B shorthand; a ratio is a bare multiple, where a
-        // suffix would mean nothing ("1.5M x normal volume").
-        const isRatio = volumeKind.value === "ratio";
-        const amount = isRatio ? positive(volumeAmount.value) : parseVolume(volumeAmount.value);
-        if (amount === null) {
-          return { error: isRatio ? "Enter a multiple above 0, e.g. 1.5." : "Enter a share count above 0, e.g. 2.5M." };
-        }
-        const win = volumeWindow.value.trim().toLowerCase();
-        if (win !== "" && win !== "today" && !VOLUME_WINDOW_RE.test(win)) return { error: 'Volume window: leave empty for today, or e.g. "30m", "2h", "1d".' };
-        const period = win === "" || win === "today" ? null : { periodValue: Number(win.slice(0, -1)), periodUnit: win.slice(-1) };
-        volume = { ...(isRatio ? { ratio: amount } : { threshold: amount }), ...(period ? { mode: "period", ...period } : { mode: "today" }) };
-      }
+      const read = volumeFields.read();
+      if (read.error) return { error: read.error };
+      const volume = read.volume;
 
       if (hasLevel) {
         const raw = level.value.trim();
@@ -763,9 +805,7 @@
         params.clearVolume = true;
         changes.push(`drop volume ${volumeConditionText(old)}`);
       } else if (volume !== null && !sameVolume(volume, old)) {
-        if (volume.ratio !== undefined) params.volumeRatio = volume.ratio;
-        else params.volumeAtLeast = volume.threshold;
-        if (volume.mode === "period") params.volumePeriod = `${volume.periodValue}${volume.periodUnit}`;
+        Object.assign(params, volumeParams(volume));
         changes.push(`volume ${volumeConditionText(volume)}`);
       }
       return { params, changes };

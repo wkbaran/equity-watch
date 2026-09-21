@@ -66,14 +66,14 @@ test.describe("locked", () => {
     await page.route("**/vault.json", (route) => route.fulfill({ status: 404, body: "" }));
     await openAlerts(page);
     await unlock(page, "wrong-token");
-    await page.locator("#alert-add input[type=text]").fill("gmed");
-    await page.locator("#alert-add input[type=number]").first().fill("80.5");
+    await page.locator("#alert-add").getByLabel("Symbol").fill("gmed");
+    await page.locator("#alert-add").getByLabel("Level").fill("80.5");
     await page.locator("#alert-add button[type=submit]").click();
     await expect(page.locator("#toasts")).toContainText("token was rejected");
     await expect(page.locator("#ops-btn")).toHaveText("Unlock editing");
     await expect(page.locator("#alert-add")).toBeHidden();
     await unlock(page);
-    await expect(page.locator("#alert-add input[type=text]")).toHaveValue("gmed");
+    await expect(page.locator("#alert-add").getByLabel("Symbol")).toHaveValue("gmed");
     expect(await queuedOps(page)).toEqual([]);
   });
 });
@@ -83,9 +83,10 @@ test.describe("add", () => {
     await storeToken(page);
     await openAlerts(page);
     const form = page.locator("#alert-add form");
-    const symbol = form.locator("input[type=text]");
-    const level = form.locator("input[type=number]").nth(0);
-    const ratio = form.locator("input[type=number]").nth(1);
+    const symbol = form.getByLabel("Symbol");
+    const level = form.getByLabel("Level");
+    const volumeKind = form.getByRole("combobox", { name: /^Volume/ });
+    const amount = form.getByLabel("Volume at least");
     const submit = form.locator("button[type=submit]");
 
     await submit.click();
@@ -95,23 +96,66 @@ test.describe("add", () => {
     await submit.click();
     await expect(form.locator(".form-error")).toHaveText("Enter a level above 0.");
     await level.fill("80.5");
-    // 0, not a negative: min="0" makes the browser block a negative before the page's own check runs.
-    await ratio.fill("0");
+    // Volume is optional, and off by default: a new alert is a price alert
+    // unless one is chosen here.
+    await expect(volumeKind).toHaveValue("none");
+    await expect(amount).toBeDisabled();
+    await volumeKind.selectOption("ratio");
+    await amount.fill("0");
     await submit.click();
-    await expect(form.locator(".form-error")).toHaveText("Volume ratio must be above 0, or empty.");
+    await expect(form.locator(".form-error")).toHaveText("Enter a multiple above 0, e.g. 1.5.");
     expect(await queuedOps(page)).toEqual([]);
 
-    await ratio.fill("1.5");
-    await form.locator("select").selectOption("down");
+    await amount.fill("1.5");
+    await form.getByLabel("Fires on").selectOption("down");
     await submit.click();
 
     await expect(page.locator("#ops-pending .pending-row")).toHaveCount(1);
     await expect(page.locator("#toasts")).toContainText("Queued: add GMED crosses down 80.5 with volume ≥ 1.5x normal today");
     await expect(symbol).toHaveValue("");
     await expect(level).toHaveValue("");
+    // The volume controls reset with the rest, back to no condition.
+    await expect(volumeKind).toHaveValue("none");
+    await expect(amount).toHaveValue("");
     const [op] = await queuedOps(page);
     expect(op).toMatchObject({ type: "alert.add", params: { symbol: "GMED", level: 80.5, direction: "down", volumeRatio: 1.5 } });
     expect(op.id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  // The New alert form takes an absolute share count, not only a ratio, with
+  // the same K/M/B shorthand and the same window as the Edit form.
+  test("queues a volume condition by share count, with a window", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    const form = page.locator("#alert-add form");
+    await form.getByLabel("Symbol").fill("gmed");
+    await form.getByLabel("Level").fill("80.5");
+    await form.getByRole("combobox", { name: /^Volume/ }).selectOption("shares");
+    await form.getByLabel("Volume at least").fill("2.5M");
+    await form.getByLabel("Over").fill("30m");
+    await form.locator("button[type=submit]").click();
+
+    await expect(page.locator("#toasts")).toContainText("Queued: add GMED crosses up 80.5 with volume ≥ 2.5M shares over 30m");
+    const [op] = await queuedOps(page);
+    expect(op.params).toEqual({ symbol: "GMED", level: 80.5, direction: "up", volumeAtLeast: 2_500_000, volumePeriod: "30m" });
+  });
+
+  test("rejects a share count the same way the Edit form does", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    const form = page.locator("#alert-add form");
+    await form.getByLabel("Symbol").fill("gmed");
+    await form.getByLabel("Level").fill("80.5");
+    await form.getByRole("combobox", { name: /^Volume/ }).selectOption("shares");
+    await form.getByLabel("Volume at least").fill("2.5x");
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText("Enter a share count above 0, e.g. 2.5M.");
+
+    await form.getByLabel("Volume at least").fill("2.5M");
+    await form.getByLabel("Over").fill("nonsense");
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText('Volume window: leave empty for today, or e.g. "30m", "2h", "1d".');
+    expect(await queuedOps(page)).toEqual([]);
   });
 });
 
@@ -219,8 +263,8 @@ test.describe("when a pending change lands", () => {
   const queueOne = async (page: Page) => {
     await openAlerts(page);
     const add = page.locator("#alert-add form");
-    await add.locator("input[type=text]").fill("GMED");
-    await add.locator("input[type=number]").first().fill("80.5");
+    await add.getByLabel("Symbol").fill("GMED");
+    await add.getByLabel("Level").fill("80.5");
     await add.locator("button[type=submit]").click();
     await expect(page.locator("#ops-pending .pending-row")).toHaveCount(1);
   };
@@ -361,8 +405,8 @@ test.describe("results", () => {
     await storeToken(page);
     await openAlerts(page);
     const add = page.locator("#alert-add form");
-    await add.locator("input[type=text]").fill("GMED");
-    await add.locator("input[type=number]").first().fill("80.5");
+    await add.getByLabel("Symbol").fill("GMED");
+    await add.getByLabel("Level").fill("80.5");
     await add.locator("button[type=submit]").click();
     await expect(page.locator("#ops-pending .pending-row")).toHaveCount(1);
 
@@ -391,8 +435,8 @@ test.describe("results", () => {
     await storeToken(page);
     await openAlerts(page);
     const add = page.locator("#alert-add form");
-    await add.locator("input[type=text]").fill("GMED");
-    await add.locator("input[type=number]").first().fill("80.5");
+    await add.getByLabel("Symbol").fill("GMED");
+    await add.getByLabel("Level").fill("80.5");
     await add.locator("button[type=submit]").click();
     await expect(page.locator("#ops-pending .pending-row")).toHaveCount(1);
 
@@ -407,8 +451,8 @@ test.describe("results", () => {
     await storeToken(page);
     await openAlerts(page);
     const add = page.locator("#alert-add form");
-    await add.locator("input[type=text]").fill("GMED");
-    await add.locator("input[type=number]").first().fill("80.5");
+    await add.getByLabel("Symbol").fill("GMED");
+    await add.getByLabel("Level").fill("80.5");
     await add.locator("button[type=submit]").click();
     await page.locator("#ops-pending button", { hasText: "Forget" }).click();
     await expect(page.locator("#ops-pending")).toBeHidden();
