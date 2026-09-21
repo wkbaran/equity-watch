@@ -314,6 +314,29 @@ Two more things that look wrong and aren't:
   which is correct from both `src/web/site.ts` (tsx) and `dist/web/site.js`.
   `tsc` does not copy non-TS files, which is why the assets aren't under `src/`.
 
+## The Alerts page's A-Z rail is sized from the window, and hides when it would lie
+
+`renderAlphaRail` in `web/app.js`. Three decisions that look like bugs:
+
+- **It is hidden under every sort but `symbol`.** Under "closest to level" or
+  "most triggered" the rows are in no alphabetical order, so a tab marked M
+  would scroll to an arbitrary row. Hiding it is the honest option.
+- **Whether there is a rail at all is decided by the whole alert list; which
+  tabs are *enabled* is decided by the filtered rows.** Basing both on the
+  filter makes the rail vanish as soon as a search narrows to one initial,
+  shifting the table sideways under the cursor and taking the navigation away
+  exactly when it is in use. A letter nothing matches is rendered disabled, so
+  the rail keeps its shape while you type.
+- **It draws twice.** There is no way to know how tall a tab is without
+  rendering one, so the first pass lays out all 27 and the second regroups to
+  whatever `railCapacity` measures. Below 27 the letters go into consecutive
+  ranges ("C–E"), sized by letters spanned rather than by alerts held — the
+  rail is a map of the alphabet, and someone looking for MSFT wants the tab
+  covering M wherever it happens to fall. It regroups on `resize`, debounced.
+
+Symbols can start with a digit, `$` or `^` (`SYMBOL_RE` allows it), so `#` is a
+real bucket, not a placeholder.
+
 ## Dashboard edits are queued, and the op log is what makes them safe to retry
 
 The page adds and edits alerts by POSTing to `/api/ops` (a Lambda behind the

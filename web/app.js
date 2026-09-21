@@ -1668,6 +1668,116 @@
     newest: (a, b) => b.createdAt.localeCompare(a.createdAt),
   };
 
+  // ---- the A-Z rail ---------------------------------------------------------
+  //
+  // A jump list down the left of the alerts table. Only meaningful while the
+  // table is sorted by symbol - under "closest to level" or "most triggered"
+  // the symbols are in no alphabetical order, and a tab marked M would land
+  // somewhere arbitrary - so the rail is hidden under every other sort rather
+  // than lying about where it goes.
+
+  /** A symbol's bucket: its first letter, or "#" for the digits and $^ prefixes SYMBOL_RE allows. */
+  const initialOf = (symbol) => {
+    const c = symbol.trim().charAt(0).toUpperCase();
+    return c >= "A" && c <= "Z" ? c : "#";
+  };
+
+  const ALPHABET = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
+  // Height of one tab including its gap, and the chrome above and below the
+  // rail. Both are measured from the rendered rail when there is one, so a
+  // change to .alpha-rail's padding or font size doesn't need a change here.
+  const RAIL_FALLBACK_TAB_PX = 17;
+  const RAIL_MIN_TABS = 4;
+
+  /**
+   * Splits the alphabet into at most `slots` consecutive groups.
+   *
+   * Groups are sized by how many letters they span, not by how many alerts
+   * they hold: the rail is a map of the alphabet, and a reader looking for
+   * "MSFT" wants the tab covering M wherever it falls. Sized evenly, with the
+   * remainder spread across the leading groups so no group is more than one
+   * letter longer than another.
+   */
+  function railGroups(slots) {
+    if (slots >= ALPHABET.length) return ALPHABET.map((letter) => [letter]);
+    const groups = [];
+    const size = Math.floor(ALPHABET.length / slots);
+    let extra = ALPHABET.length % slots;
+    for (let i = 0; i < ALPHABET.length; ) {
+      const take = size + (extra > 0 ? 1 : 0);
+      if (extra > 0) extra--;
+      groups.push(ALPHABET.slice(i, i + take));
+      i += take;
+    }
+    return groups;
+  }
+
+  /** How many tabs fit beside the table, from the height actually available. */
+  function railCapacity(rail) {
+    const tab = rail.firstElementChild;
+    const tabPx = tab ? tab.getBoundingClientRect().height + 1 : RAIL_FALLBACK_TAB_PX;
+    // The rail is sticky under the header, so what it has to play with is the
+    // viewport below its own top edge, less the same margin again at the foot.
+    const top = rail.getBoundingClientRect().top;
+    const available = window.innerHeight - Math.max(top, 0) - 12;
+    return Math.max(RAIL_MIN_TABS, Math.floor(available / Math.max(tabPx, 1)));
+  }
+
+  let jumpedRow = null;
+
+  /** Scrolls the first row in `letters` into view and marks where it landed. */
+  function jumpToLetters(letters) {
+    const table = $("alerts-table");
+    const rows = [...table.querySelectorAll("tbody tr[data-initial]")];
+    const target = rows.find((tr) => letters.includes(tr.dataset.initial));
+    if (!target) return;
+    if (jumpedRow) jumpedRow.classList.remove("jumped");
+    jumpedRow = target;
+    target.classList.add("jumped");
+    target.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+
+  /**
+   * Builds the rail for the rows currently in the table. `present` is the set
+   * of initials those rows actually use; a group with none of them is rendered
+   * disabled rather than dropped, so the rail keeps the same shape while a
+   * search narrows the list.
+   *
+   * Whether there is a rail at all is decided by the *whole* alert list, not by
+   * `present`. Otherwise typing into the search box makes the rail vanish the
+   * moment the matches share an initial, shifting the table sideways under the
+   * cursor - and the navigation disappears exactly when it is being used.
+   */
+  function renderAlphaRail(present) {
+    const rail = $("alerts-index");
+    const initials = new Set((alertsDoc ? alertsDoc.alerts : []).map((a) => initialOf(a.symbol)));
+    if (alertsFilter.sort !== "symbol" || initials.size < 2) {
+      rail.hidden = true;
+      rail.replaceChildren();
+      return;
+    }
+    rail.hidden = false;
+    // Two passes: the first gives the rail a tab to measure, the second sizes
+    // the groups to the height that tab turns out to need.
+    const draw = (slots) => {
+      rail.replaceChildren(
+        ...railGroups(slots).map((letters) => {
+          const label = letters.length === 1 ? letters[0] : `${letters[0]}–${letters[letters.length - 1]}`;
+          const enabled = letters.some((l) => present.has(l));
+          return h("button", {
+            type: "button",
+            text: label,
+            title: enabled ? `Jump to ${label}` : `No alerts under ${label}`,
+            ...(enabled ? { onclick: () => jumpToLetters(letters) } : { disabled: "disabled" }),
+          });
+        })
+      );
+    };
+    draw(ALPHABET.length);
+    const capacity = railCapacity(rail);
+    if (capacity < ALPHABET.length) draw(capacity);
+  }
+
   function renderAlerts() {
     renderAddForm();
     renderPending();
@@ -1692,6 +1802,9 @@
         {
           class: "clickable",
           tabindex: "0",
+          // What the A-Z rail scrolls to; set on every row so the rail works
+          // against whatever the current filter left in the table.
+          "data-initial": initialOf(a.symbol),
           onclick: () => open(a.id),
           onkeydown: (e) => {
             if (e.key === "Enter") open(a.id);
@@ -1709,9 +1822,12 @@
     );
     if (body.length === 0) {
       table.replaceChildren(h("tbody", {}, h("tr", {}, h("td", { class: "empty", colspan: "8", text: "No alerts match." }))));
+      renderAlphaRail(new Set());
       return;
     }
+    jumpedRow = null;
     table.replaceChildren(h("thead", {}, head), h("tbody", {}, ...body));
+    renderAlphaRail(new Set(rows.map((a) => initialOf(a.symbol))));
   }
 
   // ---- details drawer -------------------------------------------------------
@@ -2303,6 +2419,17 @@
   $("alerts-sort").addEventListener("change", (e) => {
     alertsFilter.sort = e.target.value;
     renderAlerts();
+  });
+  // A short window fits fewer tabs, so the rail regroups on resize and on the
+  // rotation of a phone. Debounced: this runs on every pixel of a drag.
+  let railResizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (baseView !== "alerts" || $("alerts-index").hidden) return;
+    clearTimeout(railResizeTimer);
+    railResizeTimer = setTimeout(() => {
+      const initials = [...$("alerts-table").querySelectorAll("tbody tr[data-initial]")].map((tr) => tr.dataset.initial);
+      renderAlphaRail(new Set(initials));
+    }, 150);
   });
   $("ops-btn").addEventListener("click", () => {
     if (opsToken) {

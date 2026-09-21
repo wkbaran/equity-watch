@@ -177,6 +177,28 @@
   .bar span.up { left: 50%; background: var(--green); border-radius: 0 2px 2px 0; }
   .bar span.down { right: 50%; background: var(--red); border-radius: 2px 0 0 2px; }
 
+  /*
+   * The A-Z rail beside a long table. Sticky rather than fixed: it is the page
+   * that scrolls, so the rail only needs to stay put within its own column.
+   * How many tabs it shows is decided in app.js from the height actually
+   * available - the letters are grouped into ranges when they don't all fit.
+   */
+  .indexed { display: flex; align-items: flex-start; gap: 0.5rem; }
+  .indexed > .table-wrap { flex: 1 1 auto; min-width: 0; }
+  .alpha-rail {
+    position: sticky; top: 0.75rem; flex: 0 0 auto;
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  .alpha-rail button {
+    font-size: 0.7rem; line-height: 1.1; padding: 2px 4px; min-width: 2.5rem;
+    background: none; border: 0; border-radius: 3px; color: var(--subtext);
+  }
+  .alpha-rail button:hover { background: var(--surface2); color: var(--text); }
+  /* A letter nothing starts with stays in place, so the rail doesn't reflow as you filter. */
+  .alpha-rail button[disabled] { color: var(--border); cursor: default; background: none; }
+  /* Where the last jump landed; cleared on the next one. Same marker as tr.focused. */
+  tr.jumped > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+
   .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
   .toolbar input[type="search"] { flex: 1 1 14rem; min-width: 0; }
 
@@ -341,7 +363,12 @@
     </div>
     <div id="alert-add" hidden></div>
     <div id="ops-pending" class="card" hidden></div>
-    <div class="card table-wrap"><table id="alerts-table"></table></div>
+    <!-- The A-Z rail is built beside the table, not inside it, so the table
+         keeps its own horizontal scroll. Populated only when sorted by symbol. -->
+    <div class="indexed">
+      <nav id="alerts-index" class="alpha-rail" aria-label="Jump to symbol" hidden></nav>
+      <div class="card table-wrap"><table id="alerts-table"></table></div>
+    </div>
   </section>
 </main>
 

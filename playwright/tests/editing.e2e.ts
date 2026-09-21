@@ -593,3 +593,61 @@ test.describe("price and volume in one edit form", () => {
     expect(op.params).toEqual({ clearLevel: true });
   });
 });
+
+// An A-Z rail down the left of the alerts table. The fixture symbols are AA,
+// MSFT, NVDA, SPY and TSLA, so A/M/N/S/T are live and everything else is dead.
+test.describe("the alphabet rail", () => {
+  const rail = (page: Page) => page.locator("#alerts-index");
+
+  test("offers every letter, with the ones nothing starts with disabled", async ({ page }) => {
+    await openAlerts(page);
+    await expect(rail(page)).toBeVisible();
+    // "#" for the digit and $^ prefixes a symbol may start with, then A-Z.
+    await expect(rail(page).locator("button")).toHaveCount(27);
+    await expect(rail(page).getByRole("button", { name: "A", exact: true })).toBeEnabled();
+    await expect(rail(page).getByRole("button", { name: "M", exact: true })).toBeEnabled();
+    await expect(rail(page).getByRole("button", { name: "B", exact: true })).toBeDisabled();
+    await expect(rail(page).getByRole("button", { name: "#", exact: true })).toBeDisabled();
+  });
+
+  test("a letter scrolls its first symbol into view and marks it", async ({ page }) => {
+    await openAlerts(page);
+    await rail(page).getByRole("button", { name: "M", exact: true }).click();
+    const marked = page.locator("#alerts-table tbody tr.jumped");
+    await expect(marked).toHaveCount(1);
+    await expect(marked).toContainText("MSFT");
+    await expect(marked).toBeInViewport();
+  });
+
+  test("a search that narrows the table leaves the rail's shape, disabling what went", async ({ page }) => {
+    await openAlerts(page);
+    await page.locator("#alerts-search").fill("MSFT");
+    await expect(rail(page).locator("button")).toHaveCount(27);
+    await expect(rail(page).getByRole("button", { name: "M", exact: true })).toBeEnabled();
+    await expect(rail(page).getByRole("button", { name: "A", exact: true })).toBeDisabled();
+  });
+
+  test("hides under a sort that isn't alphabetical, because a letter would land anywhere", async ({ page }) => {
+    await openAlerts(page);
+    await page.locator("#alerts-sort").selectOption("closest");
+    await expect(rail(page)).toBeHidden();
+    await page.locator("#alerts-sort").selectOption("symbol");
+    await expect(rail(page)).toBeVisible();
+  });
+
+  test("groups into ranges when the window is too short for 27 tabs", async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 360 });
+    await openAlerts(page);
+    const buttons = rail(page).locator("button");
+    const count = await buttons.count();
+    expect(count).toBeGreaterThanOrEqual(4);
+    expect(count).toBeLessThan(27);
+    // Ranges are consecutive and cover the whole alphabet, first to last.
+    const labels = await buttons.allInnerTexts();
+    expect(labels[0].startsWith("#")).toBe(true);
+    expect(labels[labels.length - 1].endsWith("Z")).toBe(true);
+    // A range still jumps: A–? covers AA.
+    await buttons.first().click();
+    await expect(page.locator("#alerts-table tbody tr.jumped")).toContainText("AA");
+  });
+});
