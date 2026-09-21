@@ -17,7 +17,7 @@ import {
   type VolumeCondition,
   type VolumePeriodUnit,
 } from "../alerts/models.js";
-import { parseMaSpec, type MaSpec } from "../indicators/movingAverage.js";
+import { MAX_INTRADAY_HISTORY_DAYS, parseMaSpec, type MaSpec } from "../indicators/movingAverage.js";
 import { parseVolume } from "../volume.js";
 
 type Scalar = string | number;
@@ -100,12 +100,31 @@ export function parseVolumePeriod(raw: string): Parsed<{ periodValue: number; pe
   return attempt(() => volumePeriod(raw));
 }
 
+/** Seconds in each unit, for comparing a window against the history available. */
+const PERIOD_UNIT_SECONDS: Record<VolumePeriodUnit, number> = { s: 1, m: 60, h: 3_600, d: 86_400 };
+
 function volumePeriod(raw: string): { periodValue: number; periodUnit: VolumePeriodUnit } {
   const match = /^(\d+(?:\.\d+)?)(s|m|h|d)$/.exec(String(raw).trim());
   if (!match) {
     fail(`Invalid --volume-period "${raw}" — expected a number followed by s, m, h, or d (e.g. "30m").`);
   }
-  return { periodValue: parseFloat(match[1]), periodUnit: match[2] as VolumePeriodUnit };
+  const periodValue = parseFloat(match[1]);
+  const periodUnit = match[2] as VolumePeriodUnit;
+  if (periodValue <= 0) {
+    fail(`Invalid --volume-period "${raw}" — the window must be longer than zero.`);
+  }
+  // A sub-day window is measured from 1-minute bars, and Schwab serves only
+  // ten trailing days of those. Past that the engine cannot see the whole
+  // window, so it would report a number quietly short of the truth rather than
+  // fail. Days are measured from daily bars over a date range, with no such
+  // limit, so say so rather than just refusing.
+  if (periodUnit !== "d" && periodValue * PERIOD_UNIT_SECONDS[periodUnit] > MAX_INTRADAY_HISTORY_DAYS * PERIOD_UNIT_SECONDS.d) {
+    fail(
+      `Invalid --volume-period "${raw}" — a window in ${periodUnit === "s" ? "seconds" : periodUnit === "m" ? "minutes" : "hours"} ` +
+        `is measured from 1-minute bars, and only ${MAX_INTRADAY_HISTORY_DAYS} days of those exist. Give it in days instead (e.g. "${Math.ceil((periodValue * PERIOD_UNIT_SECONDS[periodUnit]) / PERIOD_UNIT_SECONDS.d)}d").`
+    );
+  }
+  return { periodValue, periodUnit };
 }
 
 /** The optional VolumeCondition shared by static, trailing, and volume alerts. */

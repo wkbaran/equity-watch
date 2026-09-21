@@ -31,6 +31,7 @@ import {
   withinReversionWindow,
 } from "./reversion.js";
 import { requiredVolume } from "./volumeBaseline.js";
+import { MAX_INTRADAY_HISTORY_DAYS, schwabIntradayPeriod } from "../indicators/movingAverage.js";
 import { nextMarketMidnight } from "../timezone.js";
 import { findAlert, loadAlerts, saveAlerts } from "./store.js";
 
@@ -106,8 +107,14 @@ async function volumeSatisfied(
 
   // Sub-day periods: Schwab's REST history floors out at 1-minute bars, so
   // fetch enough trailing days to cover the window and filter client-side.
-  const daysBack = Math.min(10, Math.max(2, Math.ceil(windowMs / PERIOD_UNIT_MS.d) + 1));
-  const bars = await market.getIntradayBars(symbol, daysBack);
+  //
+  // Snapped, not clamped. Schwab's periodType=day takes `period` only as
+  // 1-5 or 10, so the old `min(10, ...)` asked for 6-9 on any window over four
+  // days and failed on *every* check - silently, because a failed check looks
+  // like a quiet one. A window that needs more history than exists is refused
+  // up front instead (volumeWindow in src/ops/validate.ts).
+  const daysNeeded = Math.max(2, Math.ceil(windowMs / PERIOD_UNIT_MS.d) + 1);
+  const bars = await market.getIntradayBars(symbol, schwabIntradayPeriod(daysNeeded));
   return observe(bars.filter((b) => b.date.getTime() >= windowStart).reduce((sum, b) => sum + b.volume, 0));
 }
 

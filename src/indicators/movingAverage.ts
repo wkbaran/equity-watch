@@ -194,13 +194,16 @@ export function intradaySessionsNeeded(spec: MaSpec): number {
   return Math.ceil((barsWanted(spec) * minutes) / 390) + 1;
 }
 
+/** The most trailing days of 1-minute bars Schwab's price history will serve. */
+export const MAX_INTRADAY_HISTORY_DAYS = 10;
+
 /**
  * Schwab's price history takes `period` for periodType=day only as 1-5 or 10.
  * Round a day count up to one it accepts; beyond 10 there's no more minute
  * history to ask for.
  */
 export function schwabIntradayPeriod(days: number): number {
-  return [1, 2, 3, 4, 5, 10].find((p) => p >= days) ?? 10;
+  return [1, 2, 3, 4, 5, MAX_INTRADAY_HISTORY_DAYS].find((p) => p >= days) ?? MAX_INTRADAY_HISTORY_DAYS;
 }
 
 const SPEC_RE = /^(sma|ema)(\d+)@(1m|2m|5m|15m|1d|1w)$/i;

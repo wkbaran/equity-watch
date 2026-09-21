@@ -655,12 +655,24 @@ Things that look like bugs and aren't:
   some UTC readings. Never bucket by `toISOString().slice(0, 10)`.
 - **Schwab's `periodType=day` only accepts `period` 1-5 or 10.** Confirmed
   2026-09-13: `period=6` returns HTTP 400 ("When periodType=day valid val…"),
-  `period=5` works. `schwabIntradayPeriod` snaps to the valid values. The
-  pre-existing volume-period code in `engine.ts` (`volumeSatisfied`) does
-  **not** snap: it computes `daysBack = ceil(window / 1 day) + 1`, so a volume
-  window given in hours or minutes that spans more than 4 days (e.g.
-  `--volume-period 120h`) requests 6-9 and fails on every check. Not fixed as of
-  this note.
+  `period=5` works. `schwabIntradayPeriod` snaps to the valid values, and
+  `MAX_INTRADAY_HISTORY_DAYS` beside it is the 10-day ceiling on minute
+  history. **Every** caller must snap. `volumeSatisfied` in `engine.ts` used
+  to clamp instead (`min(10, ceil(window / 1 day) + 1)`), so a volume window
+  given in seconds, minutes or hours spanning more than 4 days and up to 8
+  (e.g. `--volume-period 120h`) asked for 6-9 and failed on every check —
+  fixed 2026-09-21. Note how that hid: past 8 days the clamp landed back on
+  10 and worked again, so the broken band sat in the middle, and a failing
+  check is indistinguishable from a quiet one.
+
+  Snapping keeps the request legal but cannot invent history, so a sub-day
+  window longer than `MAX_INTRADAY_HISTORY_DAYS` is now refused by
+  `volumePeriod` in `src/ops/validate.ts` (the CLI and the queued op both go
+  through it) rather than silently measured against the ten days that exist.
+  The message says to give it in days instead, because a `d` window is read
+  from `getDailyBars`, which takes a date range and has no such ceiling. That
+  asymmetry is why the dashboard's window list offers 10 days as `10d` and
+  never as `240h`.
 
 ## A zero volume baseline must mean "cannot evaluate", never "no threshold"
 

@@ -2128,7 +2128,8 @@ function buildProgram(): Command {
     )
     .option(
       "--volume-period <Nunit>",
-      "Look at volume over a trailing window instead of the default 'so far today' (e.g. 30m, 2h, 1d, 45s)"
+      "Look at volume over a trailing window instead of the default 'so far today' (e.g. 30m, 2h, 1d, 45s). " +
+        "Windows in s/m/h are read from 1-minute bars, of which only 10 days exist — give anything longer in days"
     )
     .option(
       "--ma <spec>",
@@ -2228,7 +2229,7 @@ function buildProgram(): Command {
     .option("--trail-amount <n>", "Trailing: trail distance as a dollar amount")
     .option("--volume-at-least <shares>", "Replace the volume condition with an absolute threshold, K/M/B accepted (e.g. 2.5M)")
     .option("--volume-ratio <multiple>", "Replace the volume condition with a multiple of typical volume")
-    .option("--volume-period <Nunit>", "With --volume-at-least/--volume-ratio: a trailing window (e.g. 30m, 2h, 1d)")
+    .option("--volume-period <Nunit>", "With --volume-at-least/--volume-ratio: a trailing window (e.g. 30m, 2h, 1d). Over 10 days, use days")
     .option("--clear-volume", "Static/trailing: remove the volume condition")
     .option("--ma <spec>", "Moving average: a different average, e.g. ema20@1D (restarts its evaluation)")
     .option("--touch <marginPct>", "Moving-average touch: the band, as a percent of the average")
