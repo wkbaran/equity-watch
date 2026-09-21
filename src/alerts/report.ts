@@ -47,7 +47,11 @@ function volumeFields(alert: Alert): { volume_mode: string; volume_threshold: nu
   };
 }
 
-export function writeAlertTriggerReport(triggered: Alert[], outPath: string): void {
+/**
+ * `exchanges` supplies each symbol's TradingView prefix (exchangesFromProfiles).
+ * Optional: a symbol with no cached profile gets the bare link it always got.
+ */
+export function writeAlertTriggerReport(triggered: Alert[], outPath: string, exchanges: Map<string, string> = new Map()): void {
   const rows = triggered.map((a) => ({
     id: a.id,
     kind: a.kind,
@@ -63,7 +67,7 @@ export function writeAlertTriggerReport(triggered: Alert[], outPath: string): vo
     ...volumeFields(a),
     trigger_price: a.lastTriggerPrice,
     triggered_at: a.lastTriggeredAt,
-    chart_url: tradingViewUrl(a.symbol, null),
+    chart_url: tradingViewUrl(a.symbol, exchanges.get(a.symbol) ?? null),
   }));
   writeCsv(outPath, rows, OUTPUT_FIELDS);
 }

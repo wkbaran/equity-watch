@@ -766,10 +766,8 @@ yourself about to write a second one, these are the reasons not to:
   `alerts/report.ts` and `holdings/report.ts` each had a private `chartUrl`
   that skipped the exchange prefix *and* the URL encoding, so `BRK/B` came out
   broken and `PPL` opened Pakistan Petroleum. They now pass `null` for the
-  exchange, which is the link they always built, only encoded. **Remaining
-  gap:** those three have no profile cache to hand, so they still can't
-  prefix. Fixing that means threading an `exchanges` map through `checkAlerts`
-  and both report writers.
+  exchange, which is the link they always built, only encoded. They take a real
+  `exchanges` map since 2026-09-21 — see the TradingView section.
 - **`heldSymbolsOf`** (`src/holdings/models.ts`) decides `heldPosition` for
   trigger rows, alert rows and `revisit relevel`. The `held` tag must read the
   same on every view and nothing else ties those three together.
@@ -828,6 +826,36 @@ Profiles cached before 2026-09-13 have no `exchange` key. `profileNeedsFetch`
 treats those as missing, so the next `profile fetch --all-known` refetches
 them (a `null` exchange means FMP had none, and is not refetched). Until then
 those links fall back to the bare symbol, and `dashboard` says how many.
+
+**Every chart link now gets the prefix, not just the dashboard's.** Until
+2026-09-21 `engine.ts` (notifications), `alerts/report.ts` and
+`holdings/report.ts` each built the URL by hand and could not reach the profile
+cache at all. They take an `exchanges` map now — `CheckOptions.exchanges` and a
+third argument respectively — which `alert check` and `holdings check` build
+with `exchangesFromProfiles(listCachedProfiles(opts.profileCacheDir))`. The map
+is optional everywhere: a symbol that isn't in it gets the bare link, as before.
+
+**A symbol new to the stores caches its profile as its op is applied.**
+`ApplyContext.ensureProfile` (`src/ops/apply.ts`) is called with the symbol of
+every op that lands, and `profileFiller` in `src/cli.ts` is what `ops pull` and
+`ops apply` pass. That closes the gap where a symbol added from the dashboard
+had no profile — and so a bare, possibly wrong chart link — until someone
+remembered to run `profile fetch`. Four things hold it together:
+
+- **It must never throw.** `applyOp` calls it *after* the result is logged and
+  swallows everything. A chart link is cosmetic, the op is already applied and
+  recorded, and an exception here would stop the drain (CLAUDE.md's rule: an
+  exception is not a result) leaving a message that `applyOp` would only ever
+  see again as a duplicate — applied, but reported as though it hadn't been.
+- **No FMP key means no callback at all**, so `ops pull` gains no requirement.
+  The drain still runs with no FMP configured, exactly as before.
+- **It spends the same `DailyBudget`** as `profile fetch` (`_budget.json` in the
+  profile cache dir), so a burst of adds can't quietly eat the 250/day free
+  tier. Out of budget, it says so and leaves the bare link.
+- **It runs for every op type, not just adds.** The cache check makes a repeat
+  free, and a symbol already in the stores without a profile gets filled in by
+  whatever op next touches it — which is the cheap way to drain the backlog of
+  profiles cached before the `exchange` key existed.
 
 ## Ticker symbols in these exports are not all US listings
 

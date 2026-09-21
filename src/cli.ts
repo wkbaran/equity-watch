@@ -969,6 +969,7 @@ interface AlertCheckOpts extends AlertCommonOpts {
   ignoreHours?: boolean;
   cacheDir: string;
   config: string;
+  profileCacheDir: string;
 }
 
 async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
@@ -1014,7 +1015,11 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
     ignored,
     buildBaselineResolver(market),
     buildDailyHistoryResolver(market),
-    { existingRevisits: stored, reversionWindowDays: (symbol) => reversionWindowFor(symbol, config) }
+    {
+      existingRevisits: stored,
+      reversionWindowDays: (symbol) => reversionWindowFor(symbol, config),
+      exchanges: exchangesFromProfiles(listCachedProfiles(opts.profileCacheDir)),
+    }
   );
   for (const warning of warnings) {
     console.error(`  ! ${warning}`);
@@ -1034,7 +1039,7 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
   );
   if (triggered.length > 0) {
     const outPath = defaultReportPath("alert_triggers", new Date());
-    writeAlertTriggerReport(triggered, outPath);
+    writeAlertTriggerReport(triggered, outPath, exchangesFromProfiles(listCachedProfiles(opts.profileCacheDir)));
     console.log(`Wrote ${triggered.length} triggered alert(s) to ${outPath}`);
     const open = listRevisits(opts.revisitsFile).filter((e) => e.followUpOf === undefined).length;
     console.log(`Queue is now ${open} open — 'alert revisit list' to review.`);
@@ -1393,7 +1398,7 @@ function cmdHoldingsStopRemove(id: string, opts: HoldingsCommonOpts): void {
   console.log(removed ? `Removed stop ${id}.` : `No stop with id ${id}.`);
 }
 
-async function cmdHoldingsCheck(opts: HoldingsCommonOpts & { config: string }): Promise<void> {
+async function cmdHoldingsCheck(opts: HoldingsCommonOpts & { config: string; profileCacheDir: string }): Promise<void> {
   const store = loadHoldingsStore(opts.holdingsFile);
   const market = buildMarketData(opts);
   const ignored = ignoredSymbols(loadTuningConfig(opts.config));
@@ -1412,7 +1417,7 @@ async function cmdHoldingsCheck(opts: HoldingsCommonOpts & { config: string }): 
   );
   if (triggered.length > 0) {
     const outPath = defaultReportPath("holdings_alerts", new Date());
-    writeHoldingsAlertReport(triggered, outPath);
+    writeHoldingsAlertReport(triggered, outPath, exchangesFromProfiles(listCachedProfiles(opts.profileCacheDir)));
     console.log(`Wrote ${triggered.length} holdings alert(s) to ${outPath}`);
   }
 }
@@ -1875,6 +1880,9 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
 interface OpsCommonOpts extends AlertCommonOpts {
   opLog: string;
   holdingsFile: string;
+  /** For caching a newly-seen symbol's profile as its op is applied (profileFiller). */
+  fmpApiKey?: string;
+  profileCacheDir: string;
 }
 
 interface OpsApplyOpts extends OpsCommonOpts {
@@ -1885,6 +1893,48 @@ interface OpsPullOpts extends OpsCommonOpts {
   wait: number;
   /** Undefined means no limit: drain until the queue is empty. */
   max?: number;
+}
+
+/**
+ * Caches one symbol's company profile if it isn't cached already, for the
+ * TradingView exchange prefix its chart links need.
+ *
+ * Wired into the ops drain, where a symbol enters the stores for the first
+ * time. Before this, a symbol added from the dashboard had no profile until
+ * someone remembered to run `profile fetch --all-known`, and until then its
+ * chart link opened whatever TradingView ranks first for the bare ticker.
+ *
+ * Returns undefined when FMP isn't configured, so the drain has no new
+ * requirement: `ops pull` still runs with no FMP key at all. Everything it does
+ * is best-effort, and `applyOp` swallows what it throws - the op has already
+ * been applied and logged by then, and a chart link is not worth stopping a
+ * drain over.
+ */
+function profileFiller(opts: { fmpApiKey?: string; profileCacheDir: string }): ((symbol: string) => Promise<void>) | undefined {
+  const apiKey = opts.fmpApiKey ?? process.env.FMP_API_KEY;
+  if (!apiKey) {
+    return undefined;
+  }
+  let provider: FmpProvider | null = null;
+  // The same cross-run budget `profile fetch` spends from, so a burst of adds
+  // can't quietly eat the 250/day free tier out from under it.
+  const budget = new DailyBudget(join(opts.profileCacheDir, "_budget.json"), FMP_FREE_DAILY_LIMIT);
+  return async (symbol: string) => {
+    const upper = symbol.toUpperCase();
+    if (!profileNeedsFetch(loadCachedProfile(opts.profileCacheDir, upper), false)) {
+      return;
+    }
+    if (!budget.consume()) {
+      console.log(`  (no FMP budget left today to look up ${upper}'s exchange; chart links use the bare symbol until 'profile fetch' runs)`);
+      return;
+    }
+    const profile = await (provider ??= new FmpProvider(apiKey)).getProfile(upper);
+    if (profile === null) {
+      return;
+    }
+    saveCachedProfile(opts.profileCacheDir, profile);
+    console.log(`  cached ${upper} profile (${profile.exchange ?? "no exchange"}) for its chart link`);
+  };
 }
 
 /** Builds the Schwab client on first use, so an op that needs no quote works without a login. */
@@ -1911,7 +1961,14 @@ async function cmdOpsApply(opts: OpsApplyOpts): Promise<void> {
     console.error(`Invalid op: ${parsed.error}`);
     process.exit(1);
   }
-  const { result, duplicate } = await applyOp(parsed.op, { alertsFile: opts.alertsFile, holdingsFile: opts.holdingsFile, revisitsFile: opts.revisitsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) });
+  const { result, duplicate } = await applyOp(parsed.op, {
+    alertsFile: opts.alertsFile,
+    holdingsFile: opts.holdingsFile,
+    revisitsFile: opts.revisitsFile,
+    opLogFile: opts.opLog,
+    market: lazyMarketData(opts),
+    ensureProfile: profileFiller(opts),
+  });
   if (duplicate) {
     console.log(`Already applied at ${result.appliedAt}, so nothing changed. It was: ${result.message}`);
     return;
@@ -1968,7 +2025,14 @@ async function cmdOpsPull(opts: OpsPullOpts): Promise<void> {
   const queue = sqsOpsQueue(queueUrl, process.env.AWS_REGION ?? "us-east-1");
   const summary = await pullOps(
     queue,
-    { alertsFile: opts.alertsFile, holdingsFile: opts.holdingsFile, revisitsFile: opts.revisitsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) },
+    {
+      alertsFile: opts.alertsFile,
+      holdingsFile: opts.holdingsFile,
+      revisitsFile: opts.revisitsFile,
+      opLogFile: opts.opLog,
+      market: lazyMarketData(opts),
+      ensureProfile: profileFiller(opts),
+    },
     {
       max: opts.max ?? Number.POSITIVE_INFINITY,
       waitSeconds: opts.wait,
@@ -2032,6 +2096,12 @@ function buildProgram(): Command {
   // Spread into .option(...) rather than applied as a decorator, so each flag
   // keeps its place in the command's --help rather than jumping to the front.
   const HOLDINGS_FILE_OPTION = ["--holdings-file <path>", "Path to the holdings JSON store", "holdings.json"] as const;
+  const FMP_API_KEY_OPTION = ["--fmp-api-key <key>", "Financial Modeling Prep API key (or FMP_API_KEY in env/.env)"] as const;
+  const PROFILE_CACHE_DIR_OPTION = [
+    "--profile-cache-dir <path>",
+    "Profile cache, which supplies each symbol's exchange for chart links",
+    ".cache/profiles",
+  ] as const;
   const NO_CACHE_OPTION = ["--no-cache", "Disable the on-disk bar cache"] as const;
   const CACHE_DIR_OPTION = ["--cache-dir <path>", "Directory for the on-disk bar cache", ".cache/bars"] as const;
   /** `--config`, with an optional note about what this command reads from it. */
@@ -2152,7 +2222,7 @@ function buildProgram(): Command {
     )
     .option("--skip-unchanged", "With --publish: do nothing, not even fetch quotes, unless something happened or prices are stale")
     .option("--max-stale-minutes <n>", "With --skip-unchanged: republish anyway once prices are this old", (v) => parseInt(v, 10), 30)
-    .option("--profile-cache-dir <path>", "Profile cache, which supplies each symbol's exchange for chart links", ".cache/profiles")
+    .option(...PROFILE_CACHE_DIR_OPTION)
     .action((opts: DashboardOpts) => cmdDashboard(opts));
 
   withAlertCommon(alertCmd.command("seed"))
@@ -2243,13 +2313,18 @@ function buildProgram(): Command {
     .option(...configOption("supplies ignoreSymbols"))
     .option("--ignore-hours", "Poll regardless of market hours")
     .option(...CACHE_DIR_OPTION)
+    .option(...PROFILE_CACHE_DIR_OPTION)
     .action((opts: AlertCheckOpts) => cmdAlertCheck(opts));
 
   const opsCmd = program.command("ops").description("Alert and holdings changes queued from the browser dashboard");
   const withOpsCommon = (cmd: Command): Command =>
     withAlertCommon(cmd)
       .option(...HOLDINGS_FILE_OPTION)
-      .option("--op-log <path>", "Log of applied op results (makes re-applying an op a no-op)", DEFAULT_OP_LOG);
+      .option("--op-log <path>", "Log of applied op results (makes re-applying an op a no-op)", DEFAULT_OP_LOG)
+      // An op that brings in a new symbol caches its profile as it lands, so
+      // the symbol's chart links get the right exchange without a manual fetch.
+      .option(...FMP_API_KEY_OPTION)
+      .option(...PROFILE_CACHE_DIR_OPTION);
 
   withOpsCommon(opsCmd.command("pull"))
     .description("Apply changes queued from the dashboard (OPS_QUEUE_URL in .env); does nothing when that's unset")
@@ -2321,14 +2396,15 @@ function buildProgram(): Command {
   withHoldingsCommon(holdingsCmd.command("check"))
     .description("Check holdings for the 10%-above-basis, month-stagnant, and 3%-appreciation alerts")
     .option(...configOption("supplies ignoreSymbols"))
-    .action((opts: HoldingsCommonOpts & { config: string }) => cmdHoldingsCheck(opts));
+    .option(...PROFILE_CACHE_DIR_OPTION)
+    .action((opts: HoldingsCommonOpts & { config: string; profileCacheDir: string }) => cmdHoldingsCheck(opts));
 
   const profileCmd = program
     .command("profile")
     .description("Cache ticker sector/industry/description data (Financial Modeling Prep)");
   const withProfileCommon = (cmd: Command): Command =>
     cmd
-      .option("--fmp-api-key <key>", "Financial Modeling Prep API key (or FMP_API_KEY in env/.env)")
+      .option(...FMP_API_KEY_OPTION)
       .option("--cache-dir <path>", "Directory for the profile cache", ".cache/profiles");
 
   withProfileCommon(profileCmd.command("fetch"))

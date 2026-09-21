@@ -125,6 +125,21 @@ export interface ApplyContext {
   opLogFile: string;
   market: MarketData;
   now?: () => Date;
+  /**
+   * Called with the symbol of every op that lands, so a symbol arriving here
+   * for the first time gets its company profile cached without anyone
+   * remembering to run `profile fetch`.
+   *
+   * The profile is what supplies the TradingView exchange prefix, and a symbol
+   * added from the dashboard is exactly the case that had none: the chart link
+   * would open whatever TradingView ranks first for the bare ticker until the
+   * next manual fetch. A drain is also the right moment - it is the one place
+   * a new symbol enters the stores.
+   *
+   * A callback rather than an FMP client so this module keeps no provider
+   * knowledge and tests need no network. It must never throw: see the call.
+   */
+  ensureProfile?: (symbol: string) => Promise<void>;
 }
 
 export interface ApplyOutcome {
@@ -156,6 +171,17 @@ export async function applyOp(op: Op, ctx: ApplyContext): Promise<ApplyOutcome> 
             : applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
   const result: OpResult = { id: op.id, type: op.type, ...outcome, appliedAt: (ctx.now?.() ?? new Date()).toISOString() };
   appendOpResult(ctx.opLogFile, result);
+  // After the result is logged, and swallowing everything. A chart link is
+  // cosmetic; the op has already been applied and recorded, and letting a
+  // profile lookup throw here would stop the drain and leave a message that
+  // `applyOp` would only ever see again as a duplicate.
+  if (result.ok && result.symbol !== null && ctx.ensureProfile !== undefined) {
+    try {
+      await ctx.ensureProfile(result.symbol);
+    } catch {
+      /* the symbol just keeps the bare chart link until the next profile fetch */
+    }
+  }
   return { result, duplicate: false };
 }
 

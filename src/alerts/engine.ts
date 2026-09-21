@@ -153,6 +153,14 @@ export interface CheckOptions {
   reversionWindowDays?: (symbol: string) => number;
   /** The check's clock. Tests pin it; everything else uses the real time. */
   now?: Date;
+  /**
+   * Symbol to FMP exchange, for the chart link on a notification. Without it a
+   * link opens whatever TradingView ranks first for the bare ticker, which for
+   * PPL is Pakistan Petroleum rather than PPL Corp. `exchangesFromProfiles`
+   * builds it from the profile cache; a symbol that isn't in it just gets the
+   * bare link, as before.
+   */
+  exchanges?: Map<string, string>;
 }
 
 export interface CheckResult {
@@ -320,7 +328,7 @@ export async function checkAlerts(
 
     triggered.push(alert);
     for (const notifier of notifiers) {
-      await notifier.notify({ alert, currentPrice, chartUrl: tradingViewUrl(alert.symbol, null) });
+      await notifier.notify({ alert, currentPrice, chartUrl: tradingViewUrl(alert.symbol, options.exchanges?.get(alert.symbol) ?? null) });
     }
   }
 
@@ -349,7 +357,7 @@ export async function checkAlerts(
 
       triggered.push(alert);
       for (const notifier of notifiers) {
-        await notifier.notify({ alert, currentPrice: price, chartUrl: tradingViewUrl(alert.symbol, null) });
+        await notifier.notify({ alert, currentPrice: price, chartUrl: tradingViewUrl(alert.symbol, options.exchanges?.get(alert.symbol) ?? null) });
       }
     }
   }

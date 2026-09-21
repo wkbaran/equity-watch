@@ -22,7 +22,8 @@ const OUTPUT_FIELDS = [
   "chart_url",
 ];
 
-export function writeHoldingsAlertReport(triggered: HoldingsTriggerEvent[], outPath: string): void {
+/** `exchanges` supplies each symbol's TradingView prefix; see writeAlertTriggerReport. */
+export function writeHoldingsAlertReport(triggered: HoldingsTriggerEvent[], outPath: string, exchanges: Map<string, string> = new Map()): void {
   const rows = triggered.map((e) => ({
     type: e.type,
     symbol: e.symbol,
@@ -31,7 +32,7 @@ export function writeHoldingsAlertReport(triggered: HoldingsTriggerEvent[], outP
     days_since_purchase: e.daysSincePurchase !== undefined ? e.daysSincePurchase.toFixed(1) : "",
     band: e.band ?? "",
     stop_prices: e.stops.map((s) => `${s.stopPrice}(${s.count ?? "all"})`).join(";"),
-    chart_url: tradingViewUrl(e.symbol, null),
+    chart_url: tradingViewUrl(e.symbol, exchanges.get(e.symbol) ?? null),
   }));
   writeCsv(outPath, rows, OUTPUT_FIELDS);
 }
