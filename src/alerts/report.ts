@@ -8,9 +8,6 @@
  * and most find nothing.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import { stringify } from "csv-stringify/sync";
 import type { Alert } from "./models.js";
 import { describeMaAlert } from "./maEngine.js";
 import { tradingViewUrl } from "../tradingview.js";

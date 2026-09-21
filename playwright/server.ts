@@ -24,7 +24,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildDashboard } from "../src/dashboard.js";
-import type { OpResult } from "../src/ops/apply.js";
+import { OP_TYPES, type OpResult } from "../src/ops/apply.js";
 import type { Quote } from "../src/providers/schwab.js";
 import { buildAlertRows } from "../src/web/alertsPage.js";
 import { SITE_ASSETS, siteDocument } from "../src/web/site.js";
@@ -64,7 +64,8 @@ function resultFor(op: QueuedOp): OpResult {
   if (op.type === "revisit.dismiss") {
     return { id: op.id, type: op.type, symbol: "AA", alertId: op.target?.alertId ?? null, ok: true, message: `Dismissed revisit ${op.target?.revisitId} (AA) from the queue.`, appliedAt };
   }
-  // Holdings results carry no sizes or prices, like the real ones.
+  // Holdings results carry no sizes or prices, like the real ones. Reached
+  // only by a known op type; the POST handler rejects anything else.
   const symbol = String(op.params.symbol ?? op.target?.symbol ?? "AA");
   return { id: op.id, type: op.type, symbol, alertId: null, ok: true, message: `Applied to ${symbol}.`, appliedAt };
 }
@@ -101,6 +102,13 @@ createServer(async (req, res) => {
     if (req.method !== "POST") return send(405, { error: "POST only" });
     if (req.headers.authorization !== `Bearer ${OPS_TOKEN}`) return send(401, { error: "Bad or missing token" });
     const op = JSON.parse(body) as QueuedOp;
+    // The real Lambda rejects a type it doesn't know (its TARGET_KEY in
+    // infra/cloudformation.yaml). Reject here too: falling through to a
+    // generic success meant a page that queued a type nothing could apply
+    // passed the whole suite and failed only after a deploy.
+    if (!(OP_TYPES as readonly string[]).includes(op.type)) {
+      return send(400, { error: "Unknown op type" });
+    }
     ops.push(op);
     return send(202, { id: op.id, queued: true });
   }

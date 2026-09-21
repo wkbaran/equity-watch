@@ -6,6 +6,12 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
+    // An import or local left behind by a refactor compiles fine and is
+    // invisible in review. Both npm run build and npm test enforce this, so a
+    // stale import fails where it is introduced rather than accumulating.
+    // A parameter that must exist but isn't read is prefixed with _.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": false,

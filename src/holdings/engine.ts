@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { MarketData } from "../alerts/engine.js";
-import { computeBasis, type HoldingAlertState, type HoldingsStore, type Lot, type Stop } from "./models.js";
+import { computeBasis, type HoldingsStore, type Lot, type Stop } from "./models.js";
 import { loadHoldingsStore, saveHoldingsStore } from "./store.js";
 import type { HoldingsNotifier } from "./notify.js";
 import { localDateString } from "../timezone.js";

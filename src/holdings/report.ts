@@ -4,9 +4,6 @@
  * reports/ directory. Only written when there's something to show.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import { stringify } from "csv-stringify/sync";
 import type { HoldingsTriggerEvent } from "./engine.js";
 import { tradingViewUrl } from "../tradingview.js";
 import { writeCsv } from "../csv.js";

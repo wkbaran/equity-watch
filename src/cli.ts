@@ -23,7 +23,6 @@ import { baselineKey, computeBaseline } from "./alerts/volumeBaseline.js";
 import {
   DEFAULT_ALERT_DIRECTION,
   effectiveTrigger,
-  type VolumeCondition,
 } from "./alerts/models.js";
 import { endedOnFiredSide, entryDirection, reversalOf, reversionWindowFor, sideOf } from "./alerts/reversion.js";
 import { DEFAULT_TOUCH_MARGIN_PCT, describeMaAlert, type DailyHistoryResolver } from "./alerts/maEngine.js";
@@ -1727,11 +1726,6 @@ const OPS_PULL_STATE_PATH = join(".cache", "ops_pull.json");
 
 function loadOpsPullState(): OpsPullState | null {
   return existsSync(OPS_PULL_STATE_PATH) ? (JSON.parse(readFileSync(OPS_PULL_STATE_PATH, "utf-8")) as OpsPullState) : null;
-}
-
-/** When the last clean drain began, or null if `ops pull` has never finished one. */
-function loadOpsWatermark(): string | null {
-  return loadOpsPullState()?.processedThrough ?? null;
 }
 
 /**

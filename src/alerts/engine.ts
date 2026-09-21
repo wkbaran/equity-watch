@@ -31,7 +31,7 @@ import {
   withinReversionWindow,
 } from "./reversion.js";
 import { requiredVolume } from "./volumeBaseline.js";
-import { MAX_INTRADAY_HISTORY_DAYS, schwabIntradayPeriod } from "../indicators/movingAverage.js";
+import { schwabIntradayPeriod } from "../indicators/movingAverage.js";
 import { nextMarketMidnight } from "../timezone.js";
 import { tradingViewUrl } from "../tradingview.js";
 import { findAlert, loadAlerts, saveAlerts } from "./store.js";

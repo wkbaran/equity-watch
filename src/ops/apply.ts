@@ -259,7 +259,7 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
   if (guardFailed(guard)) {
     return guard;
   }
-  const { alert, condition: now } = guard;
+  const { alert } = guard;
   const alertId = alert.id;
   // Any edit closes the alert's open queue entries (closeRevisitsForEdit). One
   // sent from a trigger's details panel also names its entry, which is checked
