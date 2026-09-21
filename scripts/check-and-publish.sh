@@ -7,7 +7,13 @@
 # `dashboard --skip-unchanged` fingerprints before fetching quotes, so a quiet
 # run costs no API calls.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# The code lives next to this script. State (alerts.json, .cache/, ...) is read from
+# the working directory, which is the repo root unless EQUITY_WATCH_STATE_DIR moves it
+# (the Docker image keeps them apart: code in /app, state in a volume at /data).
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${EQUITY_WATCH_STATE_DIR:-$APP_DIR}"
+
+cli() { node "$APP_DIR/dist/cli.js" "$@"; }
 
 echo "=== $(date -Is) ==="
 
@@ -31,13 +37,13 @@ run_step() {
 }
 
 # Dashboard changes first, so the check evaluates them. A failure doesn't stop the check.
-run_step "ops pull" node dist/cli.js ops pull || echo "ops pull failed; continuing with the check."
+run_step "ops pull" cli ops pull || echo "ops pull failed; continuing with the check."
 if [ "$login_expired" -eq 0 ]; then
   # Cover any position that has no alert, whatever added it. Free when all are covered.
-  run_step "holdings cover" node dist/cli.js holdings cover || echo "holdings cover failed; continuing with the check."
+  run_step "holdings cover" cli holdings cover || echo "holdings cover failed; continuing with the check."
 fi
 if [ "$login_expired" -eq 0 ]; then
-  run_step "alert check" node dist/cli.js alert check
+  run_step "alert check" cli alert check
 fi
 
 if [ "$login_expired" -eq 1 ]; then
@@ -46,7 +52,7 @@ if [ "$login_expired" -eq 1 ]; then
   echo "Publishing anyway so the dashboard reports it."
 fi
 
-node dist/cli.js dashboard --site site --publish --skip-unchanged --quiet
+cli dashboard --site site --publish --skip-unchanged --quiet
 
 # Still a failed check, even though the bad news got published.
 [ "$login_expired" -eq 0 ] || exit "$EXIT_LOGIN_EXPIRED"

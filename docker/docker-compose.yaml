@@ -1,0 +1,47 @@
+# Run equity-watch's scheduled check-and-publish loop on a Docker host.
+# Setup, first login, moving existing state in, and updating: docker/README.md.
+#
+#   docker compose -f docker/docker-compose.yaml up -d --build
+#   docker compose -f docker/docker-compose.yaml logs -f
+#
+# Needs a .env in the repo root (copy .env.example) with the Schwab, AWS/S3 and
+# OPS_* values; it is read at run time and never copied into the image.
+
+name: equity-watch
+
+x-common: &common
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  image: equity-watch:latest
+  # TZ and CHECK_INTERVAL_MINUTES can be set here too; the image defaults them.
+  env_file: ../.env
+  volumes:
+    - data:/data
+  init: true
+
+services:
+  equity-watch:
+    <<: *common
+    restart: unless-stopped
+    # A run takes seconds, but `docker stop` waits for the one in flight.
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # One-off CLI against the same state, e.g. the weekly Schwab login:
+  #   docker compose -f docker/docker-compose.yaml run --rm cli schwab-login
+  # Never started by `up`: it needs the "tools" profile, which `run` turns on.
+  cli:
+    <<: *common
+    profiles: ["tools"]
+    entrypoint: ["/app/docker/entrypoint.sh", "equity-watch"]
+    command: []
+
+volumes:
+  # alerts.json, revisits.json, holdings.json, ops.log.jsonl, .cache/, site/ and
+  # the Schwab tokens. Losing it loses your alerts, so back it up.
+  data:

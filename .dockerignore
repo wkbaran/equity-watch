@@ -1,0 +1,29 @@
+# The Dockerfile copies named paths only, so this is a second fence: it keeps
+# the context small, and keeps the real state files (CLAUDE.md, "Real financial
+# data stays out of git") from ever being sent to a build daemon, let alone
+# baked into an image layer.
+.git
+.claude
+node_modules
+dist
+site
+logs
+reports
+history
+.cache
+playwright
+tests
+docs
+infra
+
+.env
+.env.*
+!.env.example
+schwab_tokens.json
+alerts.json
+revisits.json
+holdings.json
+ops.log.jsonl
+alerts_in
+webull_*.csv
+tradingview-*.csv
