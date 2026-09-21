@@ -721,6 +721,29 @@ position. Do not "simplify" this back to reading `Quantity`.
 Rounding is not an error: a 341-share position divides to 340.80 because
 `Last Price` is rounded to the cent. The tolerance exists for that.
 
+## The linter covers `web/` and nothing else, on purpose
+
+`eslint.config.js` lints `web/**/*.js` only. `npm test` runs it first, and
+`npm run lint` runs it alone.
+
+**Don't extend it to `src/`, `tests/` or `playwright/`.** Those are TypeScript
+under `tsc --strict` plus `noUnusedLocals`/`noUnusedParameters`, with two test
+suites over them — a general rule set there would be mostly noise, and this
+file documents a dozen patterns that look wrong and are load-bearing. A default
+config invites "fixing" them.
+
+`web/app.js` is the opposite case: ~2,600 lines of plain JS served with no
+bundler, so until 2026-09-21 nothing checked it at all. Two bugs in one sitting
+made the case, both caught only by a full browser-test run: a `const lot`
+shadowing the `lot` parameter of the function it sat in, so every "did this
+change?" comparison compared the new values against themselves; and a helper
+called before it had actually been written to the file. `no-shadow` and
+`no-undef` catch both in milliseconds. Turning it on immediately found two more
+shadows of the module-level `shares` formatter, since renamed `sharesText`.
+
+Correctness rules only, no stylistic ones. `no-return-assign` is off because
+`return (error.textContent = "...")` is the form every form handler uses.
+
 ## Tests were not typechecked until 2026-09-12
 
 `tsconfig.json` has `"include": ["src/**/*.ts"]`, so `tsc -p tsconfig.json`

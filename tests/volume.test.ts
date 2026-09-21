@@ -87,8 +87,9 @@ describe("volumeInputValue", () => {
 describe("web/app.js carries a faithful copy", () => {
   const appJs = readFileSync(new URL("../web/app.js", import.meta.url), "utf-8");
   const start = appJs.indexOf("  const VOLUME_UNITS = [");
-  const end = appJs.indexOf("  const shares = (n) =>");
+  const end = appJs.indexOf("  // ---- end of the src/volume.ts mirror");
   expect(start, "the volume block moved in web/app.js").toBeGreaterThan(-1);
+  expect(end, "the end-of-mirror marker moved in web/app.js").toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   const copy = new Function(`${appJs.slice(start, end)}\nreturn { parseVolume, formatVolume, volumeInputValue };`)() as {
     parseVolume: (raw: string | number) => number | null;

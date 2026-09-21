@@ -136,7 +136,12 @@
     return suffix !== "" && value * factor === n ? `${value}${suffix}` : String(trimNumber(n, 0));
   }
 
-  const shares = (n) => `${formatVolume(n)} shares`;
+  // ---- end of the src/volume.ts mirror ----------------------------------
+  // tests/volume.test.ts slices from VOLUME_UNITS to this line and evaluates
+  // it. An explicit marker, because it used to key off the name of whatever
+  // came next and a rename broke the test for reasons that read as unrelated.
+
+  const sharesText = (n) => `${formatVolume(n)} shares`;
 
   function ago(iso) {
     const min = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
@@ -2009,7 +2014,7 @@
   function volumeText(v) {
     const window = v.window === "today" ? "today" : `in the last ${v.window}`;
     const multiple = v.required > 0 ? ` (${(v.observed / v.required).toFixed(2)}x)` : "";
-    return `${shares(v.observed)} ${window}, against ${shares(v.required)} required${multiple}`;
+    return `${sharesText(v.observed)} ${window}, against ${sharesText(v.required)} required${multiple}`;
   }
 
   function triggerDetail(id) {
