@@ -54,7 +54,7 @@ function validatePeriod(period: number): void {
 /** Rolling mean aligned to the input: result[i] ends at values[i], null until `period` values exist. */
 export function sma(values: number[], period: number): (number | null)[] {
   validatePeriod(period);
-  const out: (number | null)[] = new Array(values.length).fill(null);
+  const out: (number | null)[] = new Array<number | null>(values.length).fill(null);
   let sum = 0;
   for (let i = 0; i < values.length; i++) {
     sum += values[i];
@@ -77,7 +77,7 @@ export function sma(values: number[], period: number): (number | null)[] {
  */
 export function ema(values: number[], period: number): (number | null)[] {
   validatePeriod(period);
-  const out: (number | null)[] = new Array(values.length).fill(null);
+  const out: (number | null)[] = new Array<number | null>(values.length).fill(null);
   if (values.length < period) {
     return out;
   }

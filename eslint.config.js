@@ -21,6 +21,7 @@
 
 import js from "@eslint/js";
 import globals from "globals";
+import tseslint from "typescript-eslint";
 
 export default [
   {
@@ -42,6 +43,31 @@ export default [
       eqeqeq: ["error", "smart"],
       "no-implicit-globals": "error",
       "no-return-assign": "off", // `return (error.textContent = "...")` is the form every form handler uses.
+    },
+  },
+
+  /**
+   * src/ gets the type-aware rules, which is the only thing eslint offers here
+   * that `tsc --strict` does not. Four rule groups are turned down, each
+   * because it fires on a deliberate idiom rather than a defect — measured, not
+   * guessed. Don't re-enable one without reading the note.
+   */
+  ...tseslint.configs.recommendedTypeChecked.map((c) => ({ ...c, files: ["src/**/*.ts"] })),
+  {
+    files: ["src/**/*.ts"],
+    languageOptions: { parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname } },
+    rules: {
+      // Destructuring to *omit* keys is how several rows are built
+      // ("everything but kind and side"), and the discards are _-prefixed.
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { args: "after-used", argsIgnorePattern: "^_", varsIgnorePattern: "^_", ignoreRestSiblings: true, destructuredArrayIgnorePattern: "^_" },
+      ],
+      // An async method implementing an async interface (Notifier.notify,
+      // MarketData.getQuotes, BaselineResolver) needs no await of its own.
+      "@typescript-eslint/require-await": "off",
+      // `${price}` and `${count}` are most of the strings in this codebase.
+      "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
     },
   },
 ];

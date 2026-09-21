@@ -198,7 +198,7 @@ const VOLATILE_KEYS = new Set([
 ]);
 
 function stableHash(value: unknown): string {
-  const stable = JSON.stringify(value, (key, v) => (VOLATILE_KEYS.has(key) ? undefined : v));
+  const stable = JSON.stringify(value, (key: string, v: unknown) => (VOLATILE_KEYS.has(key) ? undefined : v));
   return createHash("sha256").update(stable).digest("hex");
 }
 

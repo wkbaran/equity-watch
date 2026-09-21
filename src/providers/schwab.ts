@@ -223,7 +223,7 @@ export class SchwabAuth {
     if (Date.now() / 1000 >= this.state.accessTokenExpiresAt - ACCESS_TOKEN_SAFETY_MARGIN_SECONDS) {
       await this.refresh();
     }
-    return this.state!.accessToken;
+    return this.state.accessToken;
   }
 }
 

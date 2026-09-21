@@ -59,6 +59,7 @@ import {
 } from "./holdings/import.js";
 import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
 import { buildDashboard, renderDashboard } from "./dashboard.js";
+import { errorText } from "./errorText.js";
 import { localDateString, pad2 } from "./timezone.js";
 import { isEntryPoint } from "./entrypoint.js";
 import { publishSite } from "./web/publish.js";
@@ -268,7 +269,7 @@ function buildBaselineResolver(market: MarketData, now: Date = new Date()): Base
       memo.set(key, baseline > 0 ? baseline : null);
       return memo.get(key)!;
     } catch (err) {
-      console.error(`  ! ${symbol}: volume baseline unavailable (${err})`);
+      console.error(`  ! ${symbol}: volume baseline unavailable (${errorText(err)})`);
       memo.set(key, null);
       return null;
     }
@@ -421,7 +422,7 @@ export async function runAnalyze(
     try {
       bars = await provider.getDailyBars(symbol, start, end);
     } catch (err) {
-      console.error(`  ! ${symbol}: failed to fetch price history (${err})`);
+      console.error(`  ! ${symbol}: failed to fetch price history (${errorText(err)})`);
       for (const alert of priceCrossAlerts) {
         verdicts.push(providerErrorVerdict(alert, err));
       }
@@ -709,7 +710,7 @@ async function cmdAlertSeed(opts: AlertSeedOpts): Promise<void> {
     try {
       bars = await provider.getDailyBars(candidate.symbol, start, end);
     } catch (err) {
-      console.error(`  ! ${candidate.symbol}: failed to fetch price history (${err})`);
+      console.error(`  ! ${candidate.symbol}: failed to fetch price history (${errorText(err)})`);
       failed++;
       continue;
     }
@@ -995,7 +996,7 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
     } catch (err) {
       // A hours lookup failure shouldn't take the poller down; fall through
       // and check anyway, but say so rather than silently claiming a session.
-      console.error(`  ! market-hours lookup failed (${err}); checking anyway.`);
+      console.error(`  ! market-hours lookup failed (${errorText(err)}); checking anyway.`);
     }
   }
 
@@ -1178,7 +1179,7 @@ async function cmdRevisitRelevel(opts: RevisitRelevelOpts): Promise<void> {
       try {
         bars = await provider.getDailyBars(symbol, start, end);
       } catch (err) {
-        console.error(`  ! ${symbol}: failed to fetch price history (${err})`);
+        console.error(`  ! ${symbol}: failed to fetch price history (${errorText(err)})`);
         failed += symbolEntries.length;
         continue;
       }
@@ -1490,7 +1491,7 @@ async function cmdProfileFetch(opts: ProfileFetchOpts): Promise<void> {
       }
     } catch (err) {
       failed++;
-      console.error(`  ! ${symbol}: ${err}`);
+      console.error(`  ! ${symbol}: ${errorText(err)}`);
     }
   }
 
@@ -1832,7 +1833,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     try {
       quotes = await buildMarketData(opts).getQuotes(symbols);
     } catch (err) {
-      console.error(`  ! quote fetch failed (${err}); rendering without live prices.`);
+      console.error(`  ! quote fetch failed (${errorText(err)}); rendering without live prices.`);
     }
   }
 

@@ -721,16 +721,41 @@ position. Do not "simplify" this back to reading `Quantity`.
 Rounding is not an error: a 341-share position divides to 340.80 because
 `Last Price` is rounded to the cent. The tolerance exists for that.
 
-## The linter covers `web/` and nothing else, on purpose
+## The linter: `web/` for the basics, `src/` for the type-aware rules
 
 `eslint.config.js` lints `web/**/*.js` only. `npm test` runs it first, and
 `npm run lint` runs it alone.
 
-**Don't extend it to `src/`, `tests/` or `playwright/`.** Those are TypeScript
-under `tsc --strict` plus `noUnusedLocals`/`noUnusedParameters`, with two test
-suites over them — a general rule set there would be mostly noise, and this
-file documents a dozen patterns that look wrong and are load-bearing. A default
-config invites "fixing" them.
+`src/` gets `recommendedTypeChecked`, which is the only thing eslint offers
+there that `tsc --strict` does not. **Three rules are turned down**, each
+measured rather than guessed, and each because it fires on a deliberate idiom:
+
+- `no-unused-vars` is configured with `ignoreRestSiblings` and `^_` patterns.
+  Destructuring to *omit* keys is how several rows are built, and the discards
+  are underscore-prefixed.
+- `require-await` is off. An async method implementing an async interface
+  (`Notifier.notify`, `MarketData.getQuotes`, `BaselineResolver`) needs no
+  await of its own.
+- `restrict-template-expressions` allows numbers. `${price}` and `${count}`
+  are most of the strings in this codebase.
+
+Everything else it found was real and was fixed rather than suppressed, so it
+sits at zero: seven `${err}` interpolations of a caught `unknown` (which print
+"[object Object]" for anything thrown that isn't an Error — hence
+`src/errorText.ts`), two `new Array(n).fill(null)` widening to `any[]`, an
+unchecked `any` from csv-parse, a redundant non-null assertion in
+`SchwabAuth.getAccessToken`, and an untyped `JSON.stringify` replacer leaking
+`any` out of `stableHash`.
+
+`tests/` and `playwright/` are deliberately **not** linted: they are exercised
+by being run.
+
+A caution that survived the measurement. This file documents a dozen patterns
+that look wrong and are load-bearing — the real-path compare in
+`entrypoint.ts`, `isExpiredRefreshToken` regexing a whole body, `requiredVolume`
+returning null rather than 0, the doubled `theme`/`colorTheme` key. **No lint
+rule flags any of them**, so the linter is not the risk there; a careless
+human refactor is. Don't let a clean lint run stand in for reading this file.
 
 `web/app.js` is the opposite case: ~2,600 lines of plain JS served with no
 bundler, so until 2026-09-21 nothing checked it at all. Two bugs in one sitting

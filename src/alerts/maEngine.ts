@@ -23,6 +23,7 @@
  *     (`inBand`), so hovering at the edge of the band isn't a stream of touches.
  */
 
+import { errorText } from "../errorText.js";
 import type { PriceBar } from "../models.js";
 import type { Quote } from "../providers/schwab.js";
 import {
@@ -199,7 +200,7 @@ export async function checkMaAlerts(
         dailyBars = await resolveDaily(symbol, dailyDays);
       }
     } catch (err) {
-      warnings.push(`${symbol}: moving-average bars unavailable (${err})`);
+      warnings.push(`${symbol}: moving-average bars unavailable (${errorText(err)})`);
       continue;
     }
 

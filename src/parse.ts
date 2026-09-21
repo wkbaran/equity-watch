@@ -109,11 +109,13 @@ export function classifyDescription(description: string): Classification {
 
 export function parseAlerts(csvPath: string): Alert[] {
   const content = readFileSync(csvPath, "utf-8");
-  const records: Record<string, string>[] = parseCsv(content, {
+  // csv-parse is typed `any`; state the row shape here rather than annotate the
+  // binding, which would let anything through unchecked.
+  const records = parseCsv(content, {
     columns: true,
     bom: true,
     skip_empty_lines: true,
-  });
+  }) as Record<string, string>[];
 
   const alerts: Alert[] = [];
   for (const row of records) {
