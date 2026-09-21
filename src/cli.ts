@@ -2119,8 +2119,8 @@ function buildProgram(): Command {
     .option("--trail-percent <n>", "Trailing alert: trail distance as a percent")
     .option("--trail-amount <n>", "Trailing alert: trail distance as a dollar amount")
     .option(
-      "--volume-at-least <n>",
-      "Absolute volume threshold; standalone if --level/--near are omitted, otherwise ANDed onto that alert"
+      "--volume-at-least <shares>",
+      "Absolute volume threshold, K/M/B accepted (e.g. 2.5M); standalone if --level/--near are omitted, otherwise ANDed onto that alert"
     )
     .option(
       "--volume-ratio <multiple>",
@@ -2226,7 +2226,7 @@ function buildProgram(): Command {
     .option("--direction <dir>", "Static: up|down|either. Moving-average cross: up|down")
     .option("--trail-percent <n>", "Trailing: trail distance as a percent")
     .option("--trail-amount <n>", "Trailing: trail distance as a dollar amount")
-    .option("--volume-at-least <n>", "Replace the volume condition with an absolute threshold")
+    .option("--volume-at-least <shares>", "Replace the volume condition with an absolute threshold, K/M/B accepted (e.g. 2.5M)")
     .option("--volume-ratio <multiple>", "Replace the volume condition with a multiple of typical volume")
     .option("--volume-period <Nunit>", "With --volume-at-least/--volume-ratio: a trailing window (e.g. 30m, 2h, 1d)")
     .option("--clear-volume", "Static/trailing: remove the volume condition")

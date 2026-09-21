@@ -7,11 +7,16 @@
  * the alert was when it fired, even after the alert is edited or removed.
  */
 
+import { formatVolume } from "../volume.js";
 import { describeMaAlert } from "./maEngine.js";
 import type { Alert, VolumeCondition } from "./models.js";
 
 export function describeVolumeCondition(v: VolumeCondition): string {
-  const amount = v.threshold !== undefined ? String(v.threshold) : `${v.ratio}x normal`;
+  // An absolute threshold reads as "2.5M", not "2500000": these run to seven
+  // digits and this sentence is read on a phone. Note that it is also the
+  // `expect.condition` guard for a queued edit, so changing the wording
+  // rejects everything queued before the deploy, once.
+  const amount = v.threshold !== undefined ? `${formatVolume(v.threshold)} shares` : `${v.ratio}x normal`;
   return v.mode === "today" ? `volume >= ${amount} today` : `volume >= ${amount} in last ${v.periodValue}${v.periodUnit}`;
 }
 

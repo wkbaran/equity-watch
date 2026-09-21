@@ -112,6 +112,47 @@ are worth knowing before you touch those regexes:
 - `AGNC, 1D Exiting rectangle` — a drawing/pattern alert, now its own
   `pattern` type rather than falling through to `other`.
 
+## Volumes are numbers everywhere; "2.5M" is only an edge
+
+`src/volume.ts` is the one algorithm, used on input (`parseVolume`) and output
+(`formatVolume`). Nothing in a store, an op's params, or a document holds a
+suffixed string: the engine compares and divides these numbers (`observed >=
+required`, the observed ratio on a trigger), so a stored `"2.5M"` would have to
+be re-parsed at each of those sites. The only persisted formatted volume is
+`RevisitEntry.condition`, which is a recorded sentence, not a number.
+
+Three things that bite:
+
+- **`formatVolume` is lossy and `volumeInputValue` is not.** Display rounds to
+  two decimals (1,234,567 reads "1.23M"). A form field must be prefilled with
+  `volumeInputValue`, which only uses a suffix when it is exact and falls back
+  to the plain integer — otherwise opening an alert's edit form and saving it
+  untouched would silently rewrite 1,234,567 as 1,230,000. The round-trip is
+  asserted in `tests/volume.test.ts`.
+- **`web/app.js` carries a hand-copy of all three functions.** The page is
+  served as plain files with no bundler, so it cannot import `src/volume.ts`,
+  and it must accept and render exactly what the worker does. `tests/volume.test.ts`
+  evaluates the block out of `app.js` and diffs both against a table of cases —
+  the same trick the vault key prefix uses. Change one, change the other.
+  It replaced `Intl` compact notation, which was locale-dependent ("2.5 k" in
+  some locales) and so could never match the worker's rendering anyway.
+- **The suffix is for share counts only, never a ratio.** "1.5M x normal
+  volume" is meaningless, so the edit form parses by mode and the two modes have
+  their own rejection messages. The amount field is a **text** input for the
+  same reason: an `<input type="number">` reports `""` for "2.5M", which would
+  swallow the shorthand silently.
+
+`describeVolumeCondition` now says "volume >= 2.5M shares today" where it used
+to say "volume >= 2500000 today". That function is `expect.condition`, the
+queued-edit conflict guard, so every edit queued before that deploy was rejected
+once — expected, per the ops section below.
+
+`src/parse.ts` has its own K/M/B handling for TradingView descriptions, and
+deliberately keeps it: those units are captured mid-regex as part of much larger
+description patterns (`VOLUME_CROSS_RE`, `COMPOUND_PRICE_VOLUME_RE`) that
+classify 671 rows, not parsed from a standalone field. `src/alerts/report.ts`
+also stays numeric — it writes a CSV for a spreadsheet, not a sentence.
+
 ## Alerts never disarm — `status` is only `live` or `cancelled`
 
 There is no "armed" or "triggered" status any more. A trigger appends to the

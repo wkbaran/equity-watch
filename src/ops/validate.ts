@@ -18,6 +18,7 @@ import {
   type VolumePeriodUnit,
 } from "../alerts/models.js";
 import { parseMaSpec, type MaSpec } from "../indicators/movingAverage.js";
+import { parseVolume } from "../volume.js";
 
 type Scalar = string | number;
 
@@ -81,6 +82,19 @@ function positive(flag: string, raw: Scalar): number {
   return n;
 }
 
+/**
+ * A share count, accepting the "2.5M"/"250K" shorthand the dashboard's form and
+ * the CLI flag both take. Whole shares: `parseVolume` rounds, because a
+ * fraction of a share is not tradeable and `requiredVolume` rounds anyway.
+ */
+function volumeShares(flag: string, raw: Scalar): number {
+  const shares = parseVolume(raw);
+  if (shares === null) {
+    fail(`Invalid ${flag} "${raw}" — expected a positive share count, optionally with K, M, or B (e.g. 2.5M).`);
+  }
+  return shares;
+}
+
 /** Parses "30m" / "2h" / "1d" / "45s" into a VolumeCondition's period fields. */
 export function parseVolumePeriod(raw: string): Parsed<{ periodValue: number; periodUnit: VolumePeriodUnit }> {
   return attempt(() => volumePeriod(raw));
@@ -112,7 +126,7 @@ function volumeCondition(raw: { volumeAtLeast?: Scalar; volumeRatio?: Scalar; vo
     }
     return undefined;
   }
-  const threshold = positive("--volume-at-least", raw.volumeAtLeast);
+  const threshold = volumeShares("--volume-at-least", raw.volumeAtLeast);
   return raw.volumePeriod === undefined ? { threshold, mode: "today" } : { threshold, mode: "period", ...volumePeriod(raw.volumePeriod) };
 }
 

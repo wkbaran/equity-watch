@@ -67,8 +67,80 @@
   const money = (n) =>
     n === null || n === undefined ? "–" : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pct = (n) => (n === null || n === undefined ? "–" : `${n > 0 ? "+" : ""}${n.toFixed(1)}%`);
-  const COMPACT = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 2 });
-  const shares = (n) => `${COMPACT.format(n)} shares`;
+  // ---- volumes ---------------------------------------------------------------
+  //
+  // Share counts in and out: "2.5M" typed into the edit form, "2.5M" wherever a
+  // volume is shown. A byte-for-byte copy of src/volume.ts, because the page is
+  // served as plain files with no bundler and cannot import it. The page must
+  // reject and render exactly what the worker does, so tests/volume.test.ts
+  // evaluates this block and checks both agree. Change one, change the other.
+  //
+  // Not Intl compact notation, which this used to be: that is locale-dependent
+  // (a lowercase "k" in some locales, a different suffix in others), and the
+  // worker's own rendering has no locale to match it against.
+
+  const VOLUME_UNITS = [
+    { suffix: "K", factor: 1e3 },
+    { suffix: "M", factor: 1e6 },
+    { suffix: "B", factor: 1e9 },
+  ];
+  const VOLUME_RE = /^([\d,]*\.?\d+)\s*([KMB]?)$/i;
+  const VOLUME_DECIMALS = 2;
+
+  const trimNumber = (n, places) => Number(n.toFixed(places));
+
+  function scaleVolume(n) {
+    const magnitude = Math.abs(n);
+    let index = -1;
+    for (let i = VOLUME_UNITS.length - 1; i >= 0; i--) {
+      if (magnitude >= VOLUME_UNITS[i].factor) {
+        index = i;
+        break;
+      }
+    }
+    if (index === -1) return { value: trimNumber(n, 0), suffix: "", factor: 1 };
+    let { suffix, factor } = VOLUME_UNITS[index];
+    let value = trimNumber(n / factor, VOLUME_DECIMALS);
+    // Rounding can overflow the unit: 999,999 is 999.999K, which prints as
+    // "1000K" at two decimals. Step up rather than say that.
+    if (Math.abs(value) >= 1000 && index + 1 < VOLUME_UNITS.length) {
+      ({ suffix, factor } = VOLUME_UNITS[index + 1]);
+      value = trimNumber(n / factor, VOLUME_DECIMALS);
+    }
+    return { value, suffix, factor };
+  }
+
+  /** Shares from "2.5M", "250k", "3 M", "1,500,000" or "1500000"; null if it isn't a positive count. */
+  function parseVolume(raw) {
+    if (typeof raw === "number") return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : null;
+    const match = VOLUME_RE.exec(String(raw).trim());
+    if (!match) return null;
+    const value = Number(match[1].replace(/,/g, ""));
+    if (!Number.isFinite(value) || value <= 0) return null;
+    const unit = VOLUME_UNITS.find((u) => u.suffix === match[2].toUpperCase());
+    return Math.round(value * (unit ? unit.factor : 1));
+  }
+
+  /** A volume for reading: "2.5M", "250K", "850". Lossy; never prefill an input with it. */
+  function formatVolume(n) {
+    if (!Number.isFinite(n)) return String(n);
+    const { value, suffix } = scaleVolume(n);
+    return `${value}${suffix}`;
+  }
+
+  /**
+   * A volume for an input the user may save unchanged: exact, so a form that
+   * prefills it and is submitted untouched sends back the number it started
+   * with. 2,500,000 prefills as "2.5M"; 1,234,567 prefills as "1234567" rather
+   * than silently becoming 1,230,000 on save.
+   */
+  function volumeInputValue(n) {
+    if (!Number.isFinite(n)) return "";
+    const { value, suffix, factor } = scaleVolume(n);
+    return suffix !== "" && value * factor === n ? `${value}${suffix}` : String(trimNumber(n, 0));
+  }
+
+  const shares = (n) => `${formatVolume(n)} shares`;
 
   function ago(iso) {
     const min = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
@@ -583,7 +655,7 @@
     (x?.ratio ?? null) === (y?.ratio ?? null) &&
     (x?.mode === "period" ? `${x.periodValue}${x.periodUnit}` : "") === (y?.mode === "period" ? `${y.periodValue}${y.periodUnit}` : "");
   const volumeConditionText = (v) =>
-    `${v.ratio !== undefined ? `≥ ${v.ratio}x normal` : `≥ ${v.threshold.toLocaleString()} shares`} ${v.mode === "period" ? `over ${v.periodValue}${v.periodUnit}` : "today"}`;
+    `${v.ratio !== undefined ? `≥ ${v.ratio}x normal` : `≥ ${formatVolume(v.threshold)} shares`} ${v.mode === "period" ? `over ${v.periodValue}${v.periodUnit}` : "today"}`;
 
   /**
    * One form for price and volume whatever the alert is now (the user's call,
@@ -615,7 +687,23 @@
       h("option", { value: "shares", text: "Shares" })
     );
     volumeKind.value = old === null ? "none" : old.ratio !== undefined ? "ratio" : "shares";
-    const volumeAmount = numberInput(old === null ? null : (old.ratio ?? old.threshold), { placeholder: "e.g. 1.5" });
+    // Text, not number: an <input type="number"> reports "" for "2.5M", so the
+    // shorthand would be silently swallowed. Prefilled with volumeInputValue so
+    // saving an untouched form sends back exactly the threshold it opened with.
+    const volumeAmount = h("input", {
+      type: "text",
+      inputmode: "decimal",
+      autocomplete: "off",
+      spellcheck: "false",
+      value: old === null ? "" : old.ratio !== undefined ? String(old.ratio) : volumeInputValue(old.threshold),
+    });
+    const VOLUME_PLACEHOLDER = { ratio: "e.g. 1.5", shares: "e.g. 2.5M", none: "" };
+    const syncVolumeAmount = () => {
+      volumeAmount.placeholder = VOLUME_PLACEHOLDER[volumeKind.value];
+      volumeAmount.disabled = volumeKind.value === "none";
+    };
+    volumeKind.addEventListener("change", syncVolumeAmount);
+    syncVolumeAmount();
     const volumeWindow = h("input", {
       type: "text",
       class: "volume-window",
@@ -632,12 +720,17 @@
 
       let volume = null;
       if (volumeKind.value !== "none") {
-        const amount = positive(volumeAmount.value);
-        if (amount === null) return { error: "Enter a volume above 0, or choose no volume condition." };
+        // Shares take the K/M/B shorthand; a ratio is a bare multiple, where a
+        // suffix would mean nothing ("1.5M x normal volume").
+        const isRatio = volumeKind.value === "ratio";
+        const amount = isRatio ? positive(volumeAmount.value) : parseVolume(volumeAmount.value);
+        if (amount === null) {
+          return { error: isRatio ? "Enter a multiple above 0, e.g. 1.5." : "Enter a share count above 0, e.g. 2.5M." };
+        }
         const win = volumeWindow.value.trim().toLowerCase();
         if (win !== "" && win !== "today" && !VOLUME_WINDOW_RE.test(win)) return { error: 'Volume window: leave empty for today, or e.g. "30m", "2h", "1d".' };
         const period = win === "" || win === "today" ? null : { periodValue: Number(win.slice(0, -1)), periodUnit: win.slice(-1) };
-        volume = { ...(volumeKind.value === "ratio" ? { ratio: amount } : { threshold: amount }), ...(period ? { mode: "period", ...period } : { mode: "today" }) };
+        volume = { ...(isRatio ? { ratio: amount } : { threshold: amount }), ...(period ? { mode: "period", ...period } : { mode: "today" }) };
       }
 
       if (hasLevel) {
@@ -1270,7 +1363,7 @@
 
   // Documents published before HoldingRow carried accounts have no such key.
   const accountsOf = (r) => r.accounts ?? [];
-  const UNLABELED_ACCOUNT = " none";
+  const UNLABELED_ACCOUNT = "__none";
 
   /** A position is in an account if any of its lots is; unlabeled ones are their own bucket. */
   function inAccountFilter(r) {

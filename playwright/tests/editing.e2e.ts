@@ -534,7 +534,7 @@ test.describe("price and volume in one edit form", () => {
     const form = page.locator("#drawer-body form");
     await expect(form.getByLabel("Level")).toHaveValue("");
     await expect(form.getByRole("combobox", { name: /^Volume/ })).toHaveValue("shares");
-    await expect(form.getByLabel("Volume at least")).toHaveValue("5000000");
+    await expect(form.getByLabel("Volume at least")).toHaveValue("5M");
     await expect(form.getByLabel("Over")).toHaveValue("30m");
 
     await form.locator("button[type=submit]").click();
@@ -546,6 +546,34 @@ test.describe("price and volume in one edit form", () => {
     const [op] = await queuedOps(page);
     expect(op).toMatchObject({ type: "alert.edit", target: { alertId: VOLUME_ONLY.id }, params: { level: 200, direction: "up" } });
     expect(Object.keys(op.params).sort()).toEqual(["direction", "level"]);
+  });
+
+  // The whole point of the shorthand: seven digits are unreadable and easy to
+  // mistype by a factor of ten.
+  test("a share threshold is typed and shown as K/M", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${VOLUME_ONLY.id}`);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Volume at least").fill("2.5M");
+    await form.locator("button[type=submit]").click();
+    await expect(page.locator("#drawer-body")).toContainText("edit NVDA volume ≥ 2.5M shares over 30m");
+    const [op] = await queuedOps(page);
+    expect(op.params).toEqual({ volumeAtLeast: 2_500_000, volumePeriod: "30m" });
+  });
+
+  test("a ratio takes no suffix, and each mode says what it wants", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${VOLUME_ONLY.id}`);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Volume at least").fill("2.5x");
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText("Enter a share count above 0, e.g. 2.5M.");
+
+    await form.getByRole("combobox", { name: /^Volume/ }).selectOption("ratio");
+    await form.getByLabel("Volume at least").fill("1.5M");
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText("Enter a multiple above 0, e.g. 1.5.");
+    expect(await queuedOps(page)).toEqual([]);
   });
 
   test("emptying a price alert's level leaves a volume alert, and emptying both is refused", async ({ page }) => {

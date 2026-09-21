@@ -97,7 +97,7 @@ describe("describeAlertCondition", () => {
     expect(describeAlertCondition(makeTrailing({ side: "above", trailType: "amount", trailValue: 2 }))).toBe(
       "trailing $2 off the high (started near 100)"
     );
-    expect(describeAlertCondition(makeVolume())).toBe("volume >= 1000000 today");
+    expect(describeAlertCondition(makeVolume())).toBe("volume >= 1M shares today");
     expect(describeAlertCondition(makeMa())).toBe("cross 200-day SMA");
   });
 });
@@ -107,7 +107,7 @@ describe("what a trigger records", () => {
     const { revisits } = await checkAlerts([makeVolume()], market({ VOL: { price: 50, volume: 1_500_000 } }), []);
     expect(revisits).toHaveLength(1);
     expect(revisits[0]).toMatchObject({
-      condition: "volume >= 1000000 today",
+      condition: "volume >= 1M shares today",
       volume: { observed: 1_500_000, required: 1_000_000, window: "today", basis: "threshold" },
     });
   });
