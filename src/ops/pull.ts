@@ -13,7 +13,7 @@
  * logged and deleted, and the next run finishes the rest.
  */
 
-import { DeleteMessageCommand, ReceiveMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
+import { ChangeMessageVisibilityCommand, DeleteMessageCommand, ReceiveMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { applyOp, parseOp, type ApplyContext } from "./apply.js";
 
 export interface QueueMessage {
@@ -24,6 +24,17 @@ export interface QueueMessage {
 export interface OpsQueue {
   receive(max: number, waitSeconds: number): Promise<QueueMessage[]>;
   remove(receiptHandle: string): Promise<void>;
+  /**
+   * Hand a received message straight back, instead of letting it serve out the
+   * queue's visibility timeout invisible.
+   *
+   * Without this, a drain that stops partway leaves everything it had already
+   * received hidden for the timeout (120s on this queue). The scheduled task
+   * never notices - it runs every 15 minutes - but a person retrying by hand
+   * right after fixing the cause gets "No queued ops", which is
+   * indistinguishable from a successful drain. That happened on 2026-09-19.
+   */
+  release(receiptHandle: string): Promise<void>;
 }
 
 export function sqsOpsQueue(queueUrl: string, region: string): OpsQueue {
@@ -37,6 +48,9 @@ export function sqsOpsQueue(queueUrl: string, region: string): OpsQueue {
     },
     async remove(receiptHandle) {
       await client.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: receiptHandle }));
+    },
+    async release(receiptHandle) {
+      await client.send(new ChangeMessageVisibilityCommand({ QueueUrl: queueUrl, ReceiptHandle: receiptHandle, VisibilityTimeout: 0 }));
     },
   };
 }
@@ -54,14 +68,58 @@ export interface PullSummary {
   startedAt: string;
   /** Set when an op threw; it and everything after it stay queued. */
   error: string | null;
+  /**
+   * Set when the drain never started, because a precondition failed. The queue
+   * is untouched - not one message was received - so nothing is invisible and
+   * nothing is half-applied.
+   */
+  blocked: string | null;
+}
+
+/**
+ * Best-effort: a release that fails changes nothing that matters, since the
+ * message reappears on its own when the visibility timeout runs out. Never let
+ * it mask the error that stopped the drain.
+ */
+async function releaseAll(queue: OpsQueue, messages: QueueMessage[], log: (line: string) => void): Promise<void> {
+  for (const message of messages) {
+    try {
+      await queue.release(message.receiptHandle);
+    } catch (err) {
+      log(`  ! couldn't return a message to the queue (${(err as Error).message}); it reappears when its visibility timeout ends.`);
+    }
+  }
 }
 
 export async function pullOps(
   queue: OpsQueue,
   ctx: ApplyContext,
-  opts: { max: number; waitSeconds: number; log: (line: string) => void }
+  opts: {
+    max: number;
+    waitSeconds: number;
+    log: (line: string) => void;
+    /**
+     * Checked BEFORE the first receive, and the reason it exists: the Schwab
+     * login expires weekly, and an add or a level edit cannot be applied
+     * without a live quote. Discovering that mid-drain means messages already
+     * received go invisible for the visibility timeout while nothing has been
+     * accomplished. Returns null when the drain may proceed, or a sentence
+     * saying why it may not.
+     */
+    preflight?: () => Promise<string | null>;
+  }
 ): Promise<PullSummary> {
-  const summary: PullSummary = { applied: 0, rejected: 0, duplicates: 0, malformed: 0, startedAt: new Date().toISOString(), error: null };
+  const summary: PullSummary = { applied: 0, rejected: 0, duplicates: 0, malformed: 0, startedAt: new Date().toISOString(), error: null, blocked: null };
+
+  // Nothing above this line touches the queue, and nothing below it runs if
+  // the check fails. Receiving is not free to undo: a message handed out is
+  // invisible until it is deleted or released.
+  const blocked = opts.preflight === undefined ? null : await opts.preflight();
+  if (blocked !== null) {
+    summary.blocked = blocked;
+    return summary;
+  }
+
   let seen = 0;
   let wait = opts.waitSeconds;
   while (seen < opts.max) {
@@ -104,6 +162,10 @@ export async function pullOps(
         // Stop here. Later ops in a FIFO group may depend on this one (an edit
         // of an alert this add creates), so they must not jump ahead of it.
         summary.error = `${parsed.op.id}: ${(err as Error).message}`;
+        // Put back what this run received but never applied - this message and
+        // the rest of its batch - so a retry sees them immediately instead of
+        // an empty queue for the length of the visibility timeout.
+        await releaseAll(queue, [message, ...batch.slice(batch.indexOf(message) + 1)], opts.log);
         return summary;
       }
       await queue.remove(message.receiptHandle);

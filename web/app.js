@@ -390,6 +390,17 @@
   // merely due: at a 15 min cadence a run that slips a few minutes is normal.
   const OPS_OVERDUE_FACTOR = 2;
 
+  /**
+   * When the machine's Schwab login expired, or null while it is healthy.
+   *
+   * This outranks every other schedule signal on the page. The task may still
+   * be running perfectly on its 15-minute grid, but without a login it fetches
+   * no quotes, so `alert check` evaluates nothing and queued adds and level
+   * edits cannot apply (both need a live price to place a level against). The
+   * page must not project a next check that will not do anything.
+   */
+  const authExpiredSince = () => current?.opsAuthExpiredSince ?? null;
+
   // Changes to the alert itself. A pending dismiss names the alert too, but
   // leaves it untouched, so it must not read as "edit pending" on the alert.
   const pendingFor = (alertId) => pendingOps.filter((p) => p.alertId === alertId && p.type.startsWith("alert."));
@@ -449,6 +460,13 @@
    * queued edit lands at the next check whether or not the market is open.
    */
   function opsScheduleNote() {
+    const since = authExpiredSince();
+    if (since !== null) {
+      return h("div", {
+        class: "note warn",
+        text: `⚠ Waiting on the Schwab login, which expired ${ago(since)}. Queued changes keep their place and apply at the first check after it is renewed.`,
+      });
+    }
     const next = projectedNextCheck();
     if (next !== null) return h("div", { class: "note", text: `Applies at the next check, ${when(next)} (${until(next)}).` });
     const last = current?.opsProcessedThrough ?? null;
@@ -650,7 +668,7 @@
 
       if (volume === null && old !== null) {
         params.clearVolume = true;
-        changes.push("drop volume");
+        changes.push(`drop volume ${volumeConditionText(old)}`);
       } else if (volume !== null && !sameVolume(volume, old)) {
         if (volume.ratio !== undefined) params.volumeRatio = volume.ratio;
         else params.volumeAtLeast = volume.threshold;
@@ -681,7 +699,7 @@
             {
               symbol: a.symbol,
               alertId: a.id,
-              summary: `edit ${a.symbol} ${c.changes.join(", ")}${revisitId === null ? "" : " and close its queue entry"}`,
+              summary: `edit ${a.symbol} ${c.changes.join(", ")}`,
             }
           );
           button.disabled = false;
@@ -793,6 +811,7 @@
     if (rows === null) {
       $("holdings").replaceChildren();
       $("holdings-count").textContent = "";
+      $("holdings-toolbar").hidden = true;
       return;
     }
     renderHoldings(rows);
@@ -1103,6 +1122,8 @@
   // scrolling into view (once per arrival, not on every poll's re-render).
   let focusedHolding = null;
   let scrollToFocused = false;
+  // "all", an account label, or UNLABELED_ACCOUNT for positions whose lots name none.
+  let holdingsAccount = "all";
   let baseView = "overview";
   let openDrawerKey = null;
   const alertsFilter = { q: "", kind: "all", sort: "symbol" };
@@ -1238,6 +1259,7 @@
 
   const HOLDING_COLS = [
     { key: "symbol", label: "Symbol" },
+    { key: "accounts", label: "Account" },
     { key: "shares", label: "Shares" },
     { key: "basis", label: "Basis" },
     { key: "price", label: "Price" },
@@ -1246,18 +1268,62 @@
     { key: "marketValue", label: "Value" },
   ];
 
+  // Documents published before HoldingRow carried accounts have no such key.
+  const accountsOf = (r) => r.accounts ?? [];
+  const UNLABELED_ACCOUNT = " none";
+
+  /** A position is in an account if any of its lots is; unlabeled ones are their own bucket. */
+  function inAccountFilter(r) {
+    if (holdingsAccount === "all") return true;
+    const accounts = accountsOf(r);
+    if (holdingsAccount === UNLABELED_ACCOUNT) return accounts.length === 0;
+    return accounts.includes(holdingsAccount);
+  }
+
+  /** Sorting by Account uses what the cell reads; no labels sort last, as nulls do. */
+  const holdingSortValue = (r, key) => (key === "accounts" ? accountsOf(r).join(", ") || null : r[key]);
+
+  /**
+   * The choices come from the rows themselves, so a renamed or emptied account
+   * disappears on the next poll. Counts are of positions, not lots, and a
+   * symbol held in two accounts is counted under both.
+   */
+  function renderAccountFilter(rows) {
+    const counts = new Map();
+    let unlabeled = 0;
+    for (const r of rows) {
+      const accounts = accountsOf(r);
+      if (accounts.length === 0) unlabeled++;
+      for (const a of accounts) counts.set(a, (counts.get(a) ?? 0) + 1);
+    }
+    const options = [...counts.keys()].sort().map((a) => ({ value: a, text: `${a} (${counts.get(a)})` }));
+    if (unlabeled) options.push({ value: UNLABELED_ACCOUNT, text: `No account (${unlabeled})` });
+    // One bucket is nothing to choose between, so the filter stays out of the way.
+    $("holdings-toolbar").hidden = options.length < 2;
+    // Drop a selection whose account is gone, or the table would render empty
+    // with no way to see why.
+    if (holdingsAccount !== "all" && !options.some((o) => o.value === holdingsAccount)) holdingsAccount = "all";
+    const select = $("holdings-account");
+    select.replaceChildren(h("option", { value: "all", text: `All accounts (${rows.length})` }), ...options.map((o) => h("option", o)));
+    select.value = holdingsAccount;
+  }
+
   function renderHoldings(rows) {
-    $("holdings-count").textContent = rows.length ? `(${rows.length})` : "";
+    renderAccountFilter(rows);
+    const shown = rows.filter(inAccountFilter);
+    // Say "3 of 12" while a filter hides some, so a short list never reads as the whole book.
+    $("holdings-count").textContent = shown.length === rows.length ? (rows.length ? `(${rows.length})` : "") : `(${shown.length} of ${rows.length})`;
     const { key, dir } = holdingsSort;
-    const sorted = [...rows].sort((a, b) => {
-      const av = a[key];
-      const bv = b[key];
+    const sorted = [...shown].sort((a, b) => {
+      const av = holdingSortValue(a, key);
+      const bv = holdingSortValue(b, key);
       if (av === null) return 1;
       if (bv === null) return -1;
       return (typeof av === "string" ? av.localeCompare(bv) : av - bv) * dir;
     });
-    // Scale bars to the largest move shown, capped so one outlier can't flatten the rest.
-    const span = Math.min(50, Math.max(5, ...rows.map((r) => Math.abs(r.pctFromBasis ?? 0))));
+    // Scale bars to the largest move shown, capped so one outlier can't flatten
+    // the rest. Measured over the filtered set: a hidden row must not set the scale.
+    const span = Math.min(50, Math.max(5, ...shown.map((r) => Math.abs(r.pctFromBasis ?? 0))));
     const editable = canEditHoldings();
     const pendingSymbols = new Set(pendingOps.filter(isHoldingsOp).map((p) => p.symbol));
 
@@ -1310,6 +1376,7 @@
           r.stops.length ? h("span", { class: "tag", text: `stop ${r.stops.join(", ")}` }) : null,
           pendingSymbols.has(r.symbol) ? h("span", { class: "tag pending", text: "change pending" }) : null
         ),
+        h("td", { text: accountsOf(r).join(", ") || "—" }),
         h("td", { text: r.shares }),
         h("td", { text: money(r.basis) }),
         h("td", { text: money(r.price) }),
@@ -1337,6 +1404,31 @@
     $("quiet").replaceChildren(...notes.map((n) => h("li", {}, ...linkLeadingSymbol(n, n.match(/^([^\s:]+):/)?.[1]))));
   }
 
+  /**
+   * The one thing on this page that asks the reader to go and do something.
+   * Nothing here is recoverable from the browser: the queue is on SQS and the
+   * login lives on the machine that drains it, so the banner names the command
+   * rather than offering a button that could not work (see the header of
+   * src/ops/pull.ts on why nothing can push to the machine).
+   */
+  function renderAuthBanner() {
+    const since = authExpiredSince();
+    const el = $("auth-banner");
+    el.hidden = since === null;
+    if (since === null) return;
+    el.replaceChildren(
+      h("strong", { text: "⚠ Schwab login expired" }),
+      document.createTextNode(` ${ago(since)}. Checks are paused and queued changes are waiting.`),
+      h(
+        "span",
+        { class: "auth-detail" },
+        "Schwab refresh tokens last 7 days and only a browser sign-in renews one. Run ",
+        h("code", { text: "node dist/cli.js schwab-login" }),
+        " on the machine that runs the checks; queued changes apply at the next check after that."
+      )
+    );
+  }
+
   function renderUpdated() {
     if (!current) return;
     const el = $("updated");
@@ -1346,7 +1438,7 @@
     // hour old is normal rather than a sign the checker stopped.
     const next = nextCheckText();
     el.textContent = `Updated ${ago(current.generatedAt)}${next === null ? "" : ` · ${next}`}`;
-    el.classList.toggle("stale", next !== null && checkIsOverdue());
+    el.classList.toggle("stale", authExpiredSince() !== null || (next !== null && checkIsOverdue()));
     el.title = `Document built ${new Date(current.generatedAt).toLocaleString()}`;
   }
 
@@ -1356,6 +1448,9 @@
    * age of the last drain when even that can't be projected.
    */
   function nextCheckText() {
+    // A next check is coming, but it will not check anything, so do not name a
+    // time. The banner carries the detail; this is the one-line version.
+    if (authExpiredSince() !== null) return "checks paused, login expired";
     const next = projectedNextCheck();
     if (next !== null) return `next check ${when(next)}`;
     const last = current?.opsProcessedThrough ?? null;
@@ -1411,6 +1506,7 @@
   function render(d) {
     current = d;
     renderUpdated();
+    renderAuthBanner();
     $("nav-alerts-count").textContent = `(${d.summary.liveAlerts})`;
     $("nav-queue-count").textContent = `(${d.revisitQueue.length})`;
     $("nav-stories-count").textContent = `(${d.stories.length})`;
@@ -2107,6 +2203,10 @@
     alertsFilter.kind = e.target.value;
     renderAlerts();
   });
+  $("holdings-account").addEventListener("change", (e) => {
+    holdingsAccount = e.target.value;
+    renderHoldingsView();
+  });
   $("alerts-sort").addEventListener("change", (e) => {
     alertsFilter.sort = e.target.value;
     renderAlerts();
@@ -2138,6 +2238,8 @@
   setInterval(poll, POLL_MS);
   setInterval(() => {
     renderUpdated();
+    // Its "expired 2 hr ago" ages with the clock like the rest of this tick.
+    renderAuthBanner();
     // "applies in ~9 min" counts down between polls, and goes to the overdue
     // warning on its own when no drain arrives.
     renderPending();

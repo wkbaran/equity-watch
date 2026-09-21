@@ -87,7 +87,8 @@ import type { Alert, BreakoutVerdict, PriceBar } from "./models.js";
 import { parseAlerts } from "./parse.js";
 import { CachingProvider } from "./providers/cache.js";
 import { FMP_FREE_DAILY_LIMIT, FmpProvider } from "./providers/fmp.js";
-import { DEFAULT_MAX_REQUESTS_PER_MINUTE, SchwabAuth, SchwabProvider, type Quote } from "./providers/schwab.js";
+import { DEFAULT_MAX_REQUESTS_PER_MINUTE, SchwabAuth, SchwabAuthError, SchwabProvider, type Quote } from "./providers/schwab.js";
+import { readAuthState } from "./providers/authState.js";
 import type { PriceDataProvider } from "./providers/types.js";
 import { DailyBudget } from "./profiles/budget.js";
 import { loadCachedProfile, listCachedProfiles, profileNeedsFetch, saveCachedProfile } from "./profiles/store.js";
@@ -1750,6 +1751,14 @@ function defaultDashboardPath(now: Date): string {
   return join("reports", `dashboard_${timestampSuffix(now)}.json`);
 }
 
+/**
+ * Exit code for "the Schwab login expired, re-authorize". Distinct from 1 so
+ * scripts/check-and-publish.ps1 can keep going and publish the news instead of
+ * treating it as an ordinary failure (see the top-level handler at the bottom
+ * of this file).
+ */
+const EXIT_SCHWAB_LOGIN_EXPIRED = 3;
+
 const PUBLISH_STATE_PATH = join(".cache", "web_publish.json");
 const OPS_PULL_STATE_PATH = join(".cache", "ops_pull.json");
 
@@ -1810,6 +1819,10 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     intervalMinutes: drainIntervalMinutes(opsPullState),
     nextCheckAt: parseNextCheck(opts.nextCheck),
     maxStaleMinutes: opts.publish && opts.skipUnchanged ? opts.maxStaleMinutes : null,
+    // Read from the marker rather than from this command's own quote attempt:
+    // the failure usually happened in `ops pull` or `alert check` earlier in
+    // the run, and this build may legitimately fetch no quotes at all.
+    authExpiredSince: readAuthState(opts.tokenPath).expiredSince,
   };
   // Chart links need each symbol's exchange; a bare symbol can open a foreign listing.
   const exchanges = exchangesFromProfiles(listCachedProfiles(opts.profileCacheDir));
@@ -1952,6 +1965,44 @@ async function cmdOpsApply(opts: OpsApplyOpts): Promise<void> {
   }
 }
 
+/**
+ * Proves the Schwab login works before the drain touches the queue.
+ *
+ * Applying an op is not the first irreversible step - receiving one is. An SQS
+ * message handed out is invisible until it is deleted or released, so a drain
+ * that discovers a dead login *after* receiving leaves the queue looking empty
+ * to the next person who tries (2026-09-19: the retry printed "No queued ops"
+ * with eight ops sitting right there).
+ *
+ * Refreshing the access token is the only honest check - the marker file only
+ * knows about failures that already happened, so it would miss the first run
+ * of every expiry. It costs nothing when the token is fresh, and when it is
+ * stale it does the refresh the first quote would have done anyway.
+ *
+ * Returns null when the drain may proceed, or the reason it may not.
+ */
+async function schwabLoginBlocker(opts: CommonOpts): Promise<string | null> {
+  const appKey = opts.appKey ?? process.env.SCHWAB_APP_KEY;
+  const appSecret = opts.appSecret ?? process.env.SCHWAB_APP_SECRET;
+  // No Schwab set up at all is not a failure here: holdings ops, removes and
+  // dismisses never need a quote, and this is the case lazyMarketData exists
+  // for. Let the drain run and let any op that does need one fail on its own.
+  if (!appKey || !appSecret) {
+    return null;
+  }
+  try {
+    await new SchwabAuth(appKey, appSecret, opts.tokenPath).getAccessToken();
+    return null;
+  } catch (err) {
+    if (err instanceof SchwabAuthError && err.expired) {
+      return err.message;
+    }
+    // Anything else (Schwab down, no network) is transient and may not even
+    // affect the ops queued. Let the drain try.
+    return null;
+  }
+}
+
 async function cmdOpsPull(opts: OpsPullOpts): Promise<void> {
   const queueUrl = process.env.OPS_QUEUE_URL;
   if (!queueUrl) {
@@ -1962,8 +2013,18 @@ async function cmdOpsPull(opts: OpsPullOpts): Promise<void> {
   const summary = await pullOps(
     queue,
     { alertsFile: opts.alertsFile, holdingsFile: opts.holdingsFile, revisitsFile: opts.revisitsFile, opLogFile: opts.opLog, market: lazyMarketData(opts) },
-    { max: opts.max ?? Number.POSITIVE_INFINITY, waitSeconds: opts.wait, log: (line) => console.log(line) }
+    {
+      max: opts.max ?? Number.POSITIVE_INFINITY,
+      waitSeconds: opts.wait,
+      log: (line) => console.log(line),
+      preflight: () => schwabLoginBlocker(opts),
+    }
   );
+  if (summary.blocked !== null) {
+    console.error(`Schwab login expired, so nothing was pulled: ${summary.blocked}`);
+    console.error("The queue is untouched. Re-authorize with: node dist/cli.js schwab-login");
+    process.exit(EXIT_SCHWAB_LOGIN_EXPIRED);
+  }
   // A clean drain is a watermark: everything queued before it started has been
   // applied. The page retires pending rows older than this, so a burst bigger
   // than the published result list doesn't leave rows waiting forever.
@@ -1983,6 +2044,13 @@ async function cmdOpsPull(opts: OpsPullOpts): Promise<void> {
   }
   if (summary.error !== null) {
     console.error(`Stopped at op ${summary.error}. It and any after it stay queued for the next run.`);
+    // An add or a level edit needs a live quote to place the alert relative to
+    // price, so those are the ops an expired login stops. Nothing is lost - the
+    // queue keeps them - but say what to do rather than only what happened.
+    if (readAuthState(opts.tokenPath).expiredSince !== null) {
+      console.error("That was the Schwab login expiring. Re-authorize with: node dist/cli.js schwab-login");
+      process.exit(EXIT_SCHWAB_LOGIN_EXPIRED);
+    }
     process.exit(1);
   }
 }
@@ -2321,5 +2389,19 @@ function buildProgram(): Command {
 // Not a string comparison of import.meta.url and argv[1]: that never matches
 // on Windows, so the CLI silently did nothing there (see src/entrypoint.ts).
 if (isEntryPoint(import.meta.url)) {
-  buildProgram().parseAsync(process.argv);
+  buildProgram()
+    .parseAsync(process.argv)
+    .catch((err: unknown) => {
+      // An expired Schwab login is the one failure the scheduled script must
+      // tell apart from every other: it is expected (7-day refresh tokens),
+      // only a browser login fixes it, and the run should still go on to
+      // publish that fact rather than abort. Hence its own exit code.
+      if (err instanceof SchwabAuthError && err.expired) {
+        console.error(`Schwab login expired: ${err.message}`);
+        console.error("Re-authorize with: node dist/cli.js schwab-login");
+        process.exit(EXIT_SCHWAB_LOGIN_EXPIRED);
+      }
+      console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+      process.exit(1);
+    });
 }

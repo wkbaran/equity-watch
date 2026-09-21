@@ -14,6 +14,8 @@
  *   GET  /__cadence set the published drain watermark, interval and next-check
  *                   time, so specs can drive the countdown, the scheduler's own
  *                   next-run time, and the overdue warning
+ *   GET  /__auth    publish (or clear) an expired Schwab login, so specs can
+ *                   drive the banner and the "checks paused" schedule text
  *   GET  /__reset   forget ops, un-release, and restore the default cadence
  */
 
@@ -45,6 +47,8 @@ let suppressResults = false;
  */
 const DEFAULT_CADENCE = { minutesAgo: 6, interval: 15 as number | null, nextInMin: null as number | null, maxStale: null as number | null };
 let cadence = { ...DEFAULT_CADENCE };
+/** Set by /__auth: what the publisher read out of the auth marker. */
+let authExpiredSince: string | null = null;
 
 function resultFor(op: QueuedOp): OpResult {
   const appliedAt = new Date().toISOString();
@@ -74,6 +78,7 @@ function documents() {
       results: released && !suppressResults ? ops.map(resultFor) : [],
       processedThrough: released ? new Date().toISOString() : new Date(Date.now() - cadence.minutesAgo * 60_000).toISOString(),
       intervalMinutes: cadence.interval,
+      authExpiredSince,
       nextCheckAt: cadence.nextInMin === null ? null : new Date(Date.now() + cadence.nextInMin * 60_000).toISOString(),
       maxStaleMinutes: cadence.maxStale,
     }),
@@ -117,7 +122,13 @@ createServer(async (req, res) => {
     };
     return send(200, cadence);
   }
+  if (path === "__auth") {
+    const min = url.searchParams.get("expiredMinAgo");
+    authExpiredSince = min === null ? null : new Date(Date.now() - Number(min) * 60_000).toISOString();
+    return send(200, { authExpiredSince });
+  }
   if (path === "__reset") {
+    authExpiredSince = null;
     ops = [];
     released = false;
     suppressResults = false;

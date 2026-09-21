@@ -176,6 +176,13 @@ export interface HoldingRow {
   marketValue: number | null;
   lastPurchaseDate: string;
   stops: number[];
+  /**
+   * Distinct account labels across this symbol's lots, sorted. A row blends
+   * every account (computeBasis does), so this is a list, not a field: one
+   * symbol really can sit in two accounts. Lots with no label contribute
+   * nothing, so an empty array means "none of the lots say".
+   */
+  accounts: string[];
   /** Held but excluded from alerting — cash parking, not a conviction position. */
   ignored: boolean;
 }
@@ -387,6 +394,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       pctFromBasis: price === null ? null : round(((price - basis.blendedBasis) / basis.blendedBasis) * 100),
       marketValue: price === null ? null : round(price * basis.totalCount),
       lastPurchaseDate: basis.lastPurchaseDate,
+      accounts: [...new Set(holdings.lots.filter((l) => l.symbol === symbol && l.account).map((l) => l.account as string))].sort(),
       ignored: isIgnored(symbol),
       stops: holdings.stops.filter((s) => s.symbol === symbol).map((s) => s.stopPrice),
     });

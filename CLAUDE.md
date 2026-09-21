@@ -73,6 +73,26 @@ real paths. Don't simplify it back to a string compare.
 
 When verifying anything on Windows, check for **output**, not just exit code 0.
 
+## Nothing rebuilds `dist/` for you, and a stale one publishes a partial document
+
+`check-and-publish.ps1` builds only when `dist\cli.js` is **missing** (its header
+says to run `npm run build` yourself after new code), and the scheduled task runs
+`dist\`, not `src\`. So a source change that `npm test` proves correct — tests run
+through vitest/tsx off `src/` — still publishes the *old* document until someone
+compiles.
+
+The failure mode is quiet and looks like data loss rather than a stale build. When
+`accounts` was added to `HoldingRow` (2026-09-19), the page rendered every position's
+account as `—`, exactly as it would if the labels had never been set; all 42 lots had
+them. The page can't tell a field the publisher never wrote from one that is genuinely
+empty, and it shouldn't — its fallback for documents published before a field existed
+is the same code path.
+
+After changing anything under `src/` that the page reads: `npm run build`, then let
+the next check publish (a new stable field changes the fingerprint, so
+`--skip-unchanged` does not suppress it). When a field arrives empty, check
+`dist/` for it before suspecting the data.
+
 ## `classifyDescription` handles shapes the old regexes dropped
 
 It originally missed four rows out of 671, all now handled — but the reasons
@@ -390,6 +410,95 @@ Things that look simplifiable and aren't:
   (`playwright/`). `playwright/server.ts` builds the documents from fixture
   alerts with the real builders and fakes the Lambda. Specs are `*.e2e.ts`
   because vitest's default pattern would otherwise pick up `*.spec.ts`.
+  - **A stale server will serve you yesterday's `src/`.** The config sets
+    `reuseExistingServer: !process.env.CI`, and the server reads `src/` once at
+    boot, so a run that reuses one left over from an earlier session tests the
+    old builders against the new specs. The failure looks exactly like a bug in
+    the change under test — a new field arriving empty, say. Before believing
+    such a failure, check the builder directly (`npx tsx` a few lines against
+    the fixtures) or kill whatever is listening on 4178 and re-run. Editing
+    `web/` alone is safe: those files are read per request.
+
+## The Schwab login expires weekly, and the whole run has to cope with it
+
+Schwab refresh tokens last **7 days** and only the interactive browser flow
+(`schwab-login`) renews one — there is no unattended path. So roughly weekly the
+scheduled task wakes up with no way to fetch a quote. Everything below exists
+because the first failure of this kind (2026-09-19) looked like nothing at all:
+`ops pull` stopped, the page kept saying "pending", and no other signal fired.
+
+- **Exit code 3 means "the login expired", everywhere.** `SchwabAuthError`
+  carries an `expired` flag and the CLI's top-level handler maps it to
+  `EXIT_SCHWAB_LOGIN_EXPIRED`. A missing token file counts too: same remedy.
+  Don't collapse it back to 1 — both scripts branch on it.
+- **Detect the expiry from the whole response body, not a parsed field.**
+  Schwab answers a dead refresh token with an envelope whose own `error` says
+  `unsupported_token_type`; the real `invalid_grant` is a JSON string nested
+  inside a JSON string. `isExpiredRefreshToken` regexes the raw text and
+  requires a 400/401, so a 500 stays transient and doesn't send anyone to a
+  browser.
+- **The marker file is how two processes talk.** The command that hits the wall
+  (usually `ops pull`) is not the one that reports it (`dashboard --publish`,
+  a separate process). `src/providers/authState.ts` writes
+  `schwab_auth_state.json` *beside* the token file — not inside it, because that
+  file holds bearer credentials and is written only on a successful exchange.
+  It keeps the **first** failure's timestamp; restamping every run would both
+  say "expired 0 min ago" forever and publish on every run.
+- **The scheduled scripts skip ahead and publish anyway.** `alert check` used to
+  `Stop-Run` on any failure, which exited *before* the publish — so the one run
+  that knew the login was dead was also the one that couldn't say so. Both
+  `check-and-publish.ps1` and `.sh` now skip the quote-needing steps and still
+  publish, then exit 3 so the healthcheck ping still reads as a failure.
+  `cmdDashboard` already tolerates a dead login: it catches the quote failure
+  and renders without live prices.
+- **`opsAuthExpiredSince` is deliberately NOT in `VOLATILE_KEYS`.** It is the
+  rare field that *must* move the fingerprint, like `opResults` — otherwise the
+  page never learns. It's safe there only because it holds the first failure's
+  time, so it changes twice per expiry rather than every run.
+- **The page stops promising checks it can't make.** With the login expired,
+  `nextCheckText` says "checks paused, login expired" instead of counting down
+  to a run that will evaluate nothing, and the pending-change note says it is
+  waiting on the login rather than "Applies at the next check, in 9 min". The
+  banner names the command because nothing can push to the machine — there is
+  no button that could work (see the header of `src/ops/pull.ts`).
+- **`ops pull` checks the login BEFORE it receives anything.** Receiving is the
+  first irreversible step, not applying: an SQS message handed out is invisible
+  until it is deleted or released, so a drain that discovers a dead login
+  mid-batch leaves the queue *looking empty* for the visibility timeout (120s
+  on this queue). That is what happened on 2026-09-19 — a retry printed "No
+  queued ops" with eight ops sitting right there, which is indistinguishable
+  from a successful drain. `pullOps` takes a `preflight` callback, runs it
+  before the first receive, and returns `blocked` without touching the queue.
+  `schwabLoginBlocker` in `src/cli.ts` is that check: it calls
+  `getAccessToken()`, which is free when the token is fresh and does the
+  refresh the first quote would have done anyway.
+  - **Only an `expired` failure blocks.** Schwab being down or the network
+    being out is transient and may not even affect the ops queued, so the drain
+    still tries. And with no Schwab credentials configured at all the check is
+    skipped entirely — that is the case `lazyMarketData` exists for, where
+    removes, dismisses and holdings ops work with no Schwab setup.
+  - **The marker, not the preflight, is why this reports correctly.** Reading
+    `authState` instead would miss the first run of every expiry, since nothing
+    has failed yet to write it. The preflight's own refresh attempt is what
+    sets the marker, which is then what `dashboard --publish` reads later in
+    the same run.
+  - **A blocked run records no drain watermark.** It exits before `recordDrain`,
+    because no drain happened; writing one would tell the page that everything
+    queued before it had been applied.
+- **A drain that stops partway hands its messages straight back**
+  (`OpsQueue.release` → `ChangeMessageVisibility` to 0), both the op that threw
+  and the rest of its batch. Best-effort: a failed release only means the
+  message waits out the timeout as before, and must never mask the error that
+  stopped the drain.
+- **Why only *some* ops need a quote:** `alert.add` and `alert.edit` with a level
+  need a live quote to set `side`/`lastKnownSide` against the current price.
+  `alert.remove`, `revisit.dismiss`, and the holdings ops never touch market
+  data. The queue still stops at the first failure, though: FIFO ordering
+  matters more (an edit may target an alert an earlier add creates), so nothing
+  jumps ahead. Since 2026-09-19 an expired login stops the drain before it
+  starts, so those quote-less ops wait too — deliberate, because during an
+  expiry no checks run at all and a partial drain would publish some results
+  and not others.
 
 ## Trigger details before 2026-09-13 are incomplete, and can't be backfilled
 

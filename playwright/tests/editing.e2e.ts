@@ -172,7 +172,8 @@ test.describe("edit", () => {
 
     await form.getByLabel("Level").fill("61");
     await form.locator("button[type=submit]").click();
-    await expect(page.locator("#toasts")).toContainText("edit AA level 55 → 61 and close its queue entry");
+    await expect(page.locator("#toasts")).toContainText("edit AA level 55 → 61");
+    await expect(page.locator("#toasts")).not.toContainText("queue entry");
 
     const [op] = await queuedOps(page);
     expect(op).toMatchObject({

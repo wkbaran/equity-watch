@@ -76,6 +76,19 @@
   /* The header's clock line when a check is overdue, same signal as .note.warn. */
   #updated.stale { color: var(--yellow); }
 
+  /*
+   * The Schwab login expiring stops checks outright, and only a person at the
+   * machine can fix it - so it gets a banner rather than a tint on the clock
+   * line. Yellow, not red: nothing is lost while it waits, queued edits simply
+   * sit until the login is renewed.
+   */
+  #auth-banner {
+    background: var(--surface2); border: 1px solid var(--yellow); border-left-width: 4px;
+    border-radius: 6px; padding: 0.6rem 0.9rem; margin-bottom: 1rem; font-size: 0.85rem;
+  }
+  #auth-banner strong { color: var(--yellow); }
+  #auth-banner .auth-detail { color: var(--subtext); display: block; margin-top: 0.2rem; }
+
   .site-header {
     background: var(--surface); border-bottom: 1px solid var(--border);
     padding: 0.75rem 1rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
@@ -275,6 +288,9 @@
 
 <main>
   <div id="error" class="card empty" hidden></div>
+  <!-- Shown when the publisher reports opsAuthExpiredSince: checks are stopped
+       until someone re-runs `schwab-login` on the machine. -->
+  <div id="auth-banner" hidden></div>
 
   <section id="view-overview">
     <section id="tiles" class="tiles"></section>
@@ -301,6 +317,10 @@
   <section id="view-holdings" hidden>
     <div class="section-header"><h2 class="section-title">Holdings</h2><span id="holdings-count" class="section-count"></span></div>
     <p id="holdings-status" class="note"></p>
+    <!-- Hidden until there is more than one account to choose between. -->
+    <div class="toolbar" id="holdings-toolbar" hidden>
+      <select id="holdings-account" aria-label="Filter by account"><option value="all">All accounts</option></select>
+    </div>
     <div id="lot-add" hidden></div>
     <div id="holdings-pending" class="card" hidden></div>
     <div class="card table-wrap"><table id="holdings"></table></div>

@@ -463,17 +463,23 @@ describe("pullOps", () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  function fakeQueue(bodies: string[]): OpsQueue & { removed: string[]; waits: number[] } {
+  function fakeQueue(bodies: string[]): OpsQueue & { removed: string[]; waits: number[]; released: string[]; receives: number } {
     const pending: QueueMessage[] = bodies.map((body, i) => ({ body, receiptHandle: `r${i}` }));
     const queue = {
       removed: [] as string[],
+      released: [] as string[],
       waits: [] as number[],
+      receives: 0,
       async receive(max: number, waitSeconds: number) {
+        queue.receives++;
         queue.waits.push(waitSeconds);
         return pending.filter((m) => !queue.removed.includes(m.receiptHandle)).slice(0, Math.min(max, 2));
       },
       async remove(handle: string) {
         queue.removed.push(handle);
+      },
+      async release(handle: string) {
+        queue.released.push(handle);
       },
     };
     return queue;
@@ -503,6 +509,60 @@ describe("pullOps", () => {
     expect(summary.error).toBe("op-pull-003: token expired");
     expect(queue.removed).toEqual([]);
     expect(existsSync(opLogFile) ? readFileSync(opLogFile, "utf-8") : "").toBe("");
+    // Queued is not enough: everything this run received has to go back now,
+    // or it stays invisible for the visibility timeout and the next manual run
+    // reports an empty queue (2026-09-19).
+    expect(queue.released).toEqual(["r0", "r1"]);
+  });
+
+  it("carries on when a release fails, since the timeout returns the message anyway", async () => {
+    const queue = fakeQueue([addBody("op-pull-rel", "AAA")]);
+    queue.release = async () => {
+      throw new Error("ReceiptHandleIsInvalid");
+    };
+    const market = fakeMarket({});
+    market.getQuotes = async () => {
+      throw new Error("token expired");
+    };
+    const summary = await pullOps(queue, { alertsFile, opLogFile, market }, { max: 10, waitSeconds: 0, log });
+    // The error that stopped the drain is the one reported, not the release's.
+    expect(summary.error).toBe("op-pull-rel: token expired");
+  });
+
+  describe("preflight", () => {
+    it("does not touch the queue at all when it says no", async () => {
+      const queue = fakeQueue([addBody("op-pull-pf1", "AAA")]);
+      const summary = await pullOps(
+        queue,
+        { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) },
+        { max: 10, waitSeconds: 0, log, preflight: async () => "Token refresh failed (400)." }
+      );
+      // The whole point: receiving is itself irreversible for the length of the
+      // visibility timeout, so a known-doomed drain must not receive.
+      expect(queue.receives).toBe(0);
+      expect(queue.removed).toEqual([]);
+      expect(queue.released).toEqual([]);
+      expect(summary.blocked).toBe("Token refresh failed (400).");
+      expect(summary).toMatchObject({ applied: 0, rejected: 0, duplicates: 0, malformed: 0, error: null });
+      expect(existsSync(opLogFile) ? readFileSync(opLogFile, "utf-8") : "").toBe("");
+    });
+
+    it("drains normally when it says yes", async () => {
+      const queue = fakeQueue([addBody("op-pull-pf2", "AAA")]);
+      const summary = await pullOps(
+        queue,
+        { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) },
+        { max: 10, waitSeconds: 0, log, preflight: async () => null }
+      );
+      expect(summary).toMatchObject({ applied: 1, blocked: null, error: null });
+      expect(queue.removed).toEqual(["r0"]);
+    });
+
+    it("is optional, so every other caller is unaffected", async () => {
+      const queue = fakeQueue([addBody("op-pull-pf3", "AAA")]);
+      const summary = await pullOps(queue, { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) }, { max: 10, waitSeconds: 0, log });
+      expect(summary).toMatchObject({ applied: 1, blocked: null });
+    });
   });
 
   // The default is no limit: a burst bigger than one batch must not need a second run.

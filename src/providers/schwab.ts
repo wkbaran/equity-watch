@@ -20,6 +20,7 @@ import { createInterface } from "node:readline/promises";
 import open from "open";
 import type { PriceBar } from "../models.js";
 import { parseMarketHours, type MarketHours } from "../marketHours.js";
+import { clearAuthExpired, markAuthExpired } from "./authState.js";
 import { RateLimiter } from "./rateLimiter.js";
 import type { PriceDataProvider } from "./types.js";
 
@@ -34,7 +35,39 @@ const MARKETS_URL = "https://api.schwabapi.com/marketdata/v1/markets";
 // request against expiry.
 const ACCESS_TOKEN_SAFETY_MARGIN_SECONDS = 60;
 
-export class SchwabAuthError extends Error {}
+/**
+ * `expired` distinguishes the weekly, expected wall - the 7-day refresh token
+ * ran out and only a browser login fixes it - from a transient token-endpoint
+ * failure. Callers use it to choose an exit code, and the scheduled script uses
+ * that to keep going and publish the news rather than aborting the run.
+ */
+export class SchwabAuthError extends Error {
+  readonly expired: boolean;
+
+  constructor(message: string, options: { expired?: boolean } = {}) {
+    super(message);
+    this.expired = options.expired ?? false;
+  }
+}
+
+/**
+ * Whether a token-endpoint refusal means "log in again" rather than "try later".
+ *
+ * Matched against the whole body rather than a parsed field on purpose. Schwab
+ * wraps the real answer in an outer envelope whose own `error` is misleading:
+ * a dead refresh token comes back as
+ *   {"error":"unsupported_token_type","error_description":"400 Bad Request: \"{
+ *     \"error_description\":\"Refresh token is invalid, expired or revoked\",
+ *     \"error\":\"invalid_grant\"}\""}
+ * so reading `error` at the top level says `unsupported_token_type`, and the
+ * fact we want is a JSON string inside a JSON string.
+ */
+export function isExpiredRefreshToken(status: number, body: string): boolean {
+  if (status !== 400 && status !== 401) {
+    return false;
+  }
+  return /invalid_grant|expired or revoked/i.test(body);
+}
 
 interface TokenState {
   accessToken: string;
@@ -135,13 +168,15 @@ export class SchwabAuth {
 
     this.state = tokenStateFromResponse((await response.json()) as TokenResponse, obtainedAt);
     this.saveTokenState();
+    clearAuthExpired(this.tokenPath);
   }
 
   private async refresh(): Promise<void> {
     if (!this.state) {
+      // Same remedy as an expired refresh token, so it reports the same way.
       throw new SchwabAuthError(
-        "No cached Schwab tokens found. Run authorizeInteractive() first " +
-          "(e.g. `equity-watch schwab-login`)."
+        "No cached Schwab tokens found. Run `equity-watch schwab-login` first.",
+        { expired: true }
       );
     }
 
@@ -158,20 +193,31 @@ export class SchwabAuth {
       }),
     });
     if (!response.ok) {
+      const body = await response.text();
+      const expired = isExpiredRefreshToken(response.status, body);
+      if (expired) {
+        // Leave a marker for the rest of the run: the dashboard publish is a
+        // separate process and would otherwise have no way to say why the
+        // check stopped producing news (src/providers/authState.ts).
+        markAuthExpired(this.tokenPath, new Date().toISOString());
+      }
       throw new SchwabAuthError(
-        `Token refresh failed (${response.status}): ${await response.text()}. ` +
-          "The refresh token may have expired (7 day lifetime) - re-run authorizeInteractive()."
+        `Token refresh failed (${response.status}): ${body}. ` +
+          "The refresh token may have expired (7 day lifetime) - re-run `equity-watch schwab-login`.",
+        { expired }
       );
     }
 
     this.state = tokenStateFromResponse((await response.json()) as TokenResponse, obtainedAt);
     this.saveTokenState();
+    clearAuthExpired(this.tokenPath);
   }
 
   async getAccessToken(): Promise<string> {
     if (!this.state) {
       throw new SchwabAuthError(
-        "No cached Schwab tokens found. Run authorizeInteractive() first " + "(e.g. `equity-watch schwab-login`)."
+        "No cached Schwab tokens found. Run `equity-watch schwab-login` first.",
+        { expired: true }
       );
     }
     if (Date.now() / 1000 >= this.state.accessTokenExpiresAt - ACCESS_TOKEN_SAFETY_MARGIN_SECONDS) {

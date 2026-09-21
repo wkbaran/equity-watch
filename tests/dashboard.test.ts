@@ -188,17 +188,38 @@ describe("siteDocument", () => {
   // publish on every run.
   it("carries the ops watermark and cadence without letting them move the fingerprint", () => {
     const off = { holdings: false };
-    const at4 = { results: [], processedThrough: "2026-09-16T04:00:00.000Z", intervalMinutes: 15, nextCheckAt: "2026-09-16T04:15:00.000Z", maxStaleMinutes: 30 };
+    const at4 = { results: [], processedThrough: "2026-09-16T04:00:00.000Z", intervalMinutes: 15, nextCheckAt: "2026-09-16T04:15:00.000Z", maxStaleMinutes: 30, authExpiredSince: null };
     const doc = siteDocument(held(), off, at4);
     expect(doc.opsProcessedThrough).toBe("2026-09-16T04:00:00.000Z");
     expect(doc.opsIntervalMinutes).toBe(15);
     expect(doc.opsNextCheckAt).toBe("2026-09-16T04:15:00.000Z");
     expect(doc.opsMaxStaleMinutes).toBe(30);
-    const at5 = { results: [], processedThrough: "2026-09-16T05:00:00.000Z", intervalMinutes: 16, nextCheckAt: "2026-09-16T05:15:00.000Z", maxStaleMinutes: 30 };
+    const at5 = { results: [], processedThrough: "2026-09-16T05:00:00.000Z", intervalMinutes: 16, nextCheckAt: "2026-09-16T05:15:00.000Z", maxStaleMinutes: 30, authExpiredSince: null };
     expect(dashboardFingerprint(doc)).toBe(dashboardFingerprint(siteDocument(held(), off, at5)));
     expect(siteDocument(held(), off).opsProcessedThrough).toBeNull();
     expect(siteDocument(held(), off).opsIntervalMinutes).toBeNull();
     expect(siteDocument(held(), off).opsNextCheckAt).toBeNull();
+  });
+
+  // The opposite rule to the watermark above: this one MUST publish, or the
+  // page never learns the machine stopped checking. It is safe to hash because
+  // it holds the first failure's time, so it changes twice per expiry rather
+  // than every run (see markAuthExpired).
+  it("publishes an expired Schwab login, and holds still while it stays expired", () => {
+    const off = { holdings: false };
+    const healthy = siteDocument(held(), off, NO_OPS);
+    const expired = { ...NO_OPS, authExpiredSince: "2026-09-19T08:00:00.000Z" };
+    expect(healthy.opsAuthExpiredSince).toBeNull();
+    expect(siteDocument(held(), off, expired).opsAuthExpiredSince).toBe("2026-09-19T08:00:00.000Z");
+    expect(dashboardFingerprint(siteDocument(held(), off, expired))).not.toBe(dashboardFingerprint(healthy));
+    // A second run while still expired must not publish again.
+    expect(dashboardFingerprint(siteDocument(held(), off, expired))).toBe(
+      dashboardFingerprint(siteDocument(held(), off, expired))
+    );
+    // And recovery publishes too, so the banner comes down.
+    expect(dashboardFingerprint(siteDocument(held(), off, { ...NO_OPS, authExpiredSince: null }))).toBe(
+      dashboardFingerprint(healthy)
+    );
   });
 });
 

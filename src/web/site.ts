@@ -84,9 +84,24 @@ export interface OpsPublishState {
    * "no check since" for the whole time the publisher is choosing to skip.
    */
   maxStaleMinutes: number | null;
+  /**
+   * When the Schwab login expired, or null while it is healthy.
+   *
+   * Schwab refresh tokens last 7 days and only a browser login renews one, so
+   * this happens about weekly and the machine cannot fix itself. Until it is
+   * fixed, `alert check` evaluates nothing and queued adds and level edits stay
+   * queued (both need a live quote to place a level against price), so the page
+   * must say so outright: the symptom otherwise is a document that quietly
+   * stops changing, which looks exactly like a quiet market.
+   *
+   * Deliberately NOT in VOLATILE_KEYS - the whole point is that it publishes.
+   * It is safe there because it holds the *first* failure's timestamp, so it
+   * changes twice per expiry (on and off) rather than every run.
+   */
+  authExpiredSince: string | null;
 }
 
-export const NO_OPS: OpsPublishState = { results: [], processedThrough: null, intervalMinutes: null, nextCheckAt: null, maxStaleMinutes: null };
+export const NO_OPS: OpsPublishState = { results: [], processedThrough: null, intervalMinutes: null, nextCheckAt: null, maxStaleMinutes: null, authExpiredSince: null };
 
 export type SiteDocument = Dashboard & {
   site: SiteOptions;
@@ -95,6 +110,7 @@ export type SiteDocument = Dashboard & {
   opsIntervalMinutes: number | null;
   opsNextCheckAt: string | null;
   opsMaxStaleMinutes: number | null;
+  opsAuthExpiredSince: string | null;
 };
 
 /**
@@ -114,6 +130,7 @@ export function siteDocument(dashboard: Dashboard, options: SiteOptions, ops: Op
     opsIntervalMinutes: ops.intervalMinutes,
     opsNextCheckAt: ops.nextCheckAt,
     opsMaxStaleMinutes: ops.maxStaleMinutes,
+    opsAuthExpiredSince: ops.authExpiredSince,
   };
 }
 

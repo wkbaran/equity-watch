@@ -17,8 +17,8 @@ const positionRow = (page: Page, symbol: string) => page.locator("#holdings > tb
 const detail = (page: Page) => page.locator("#holdings tr.detail-row");
 
 async function expand(page: Page, symbol: string) {
-  // Click a numeric cell: the symbol itself is a chart link.
-  await positionRow(page, symbol).locator("td").nth(1).click();
+  // Click the shares cell: the symbol itself is a chart link.
+  await positionRow(page, symbol).locator("td").nth(2).click();
   await expect(detail(page)).toBeVisible();
 }
 
@@ -72,7 +72,7 @@ test("unlocking shows positions, and a position expands to its lots and stops", 
   await expect(page.locator("#tiles")).toContainText("positions held");
 
   await page.locator("#nav-holdings").click();
-  await expect(positionRow(page, "AA").locator("td").nth(1)).toHaveText("15");
+  await expect(positionRow(page, "AA").locator("td").nth(2)).toHaveText("15");
   await expect(positionRow(page, "AA")).toContainText("stop 38");
   await expand(page, "AA");
   const lots = detail(page).locator("table.lots > tbody > tr:not(.lot-edit)");
@@ -81,8 +81,45 @@ test("unlocking shows positions, and a position expands to its lots and stops", 
   await expect(lots.nth(1)).toContainText("margin");
   await expect(detail(page).locator(".stop-list")).toContainText("38.00 · all shares");
 
-  await positionRow(page, "AA").locator("td").nth(1).click();
+  await positionRow(page, "AA").locator("td").nth(2).click();
   await expect(detail(page)).toHaveCount(0);
+});
+
+test("the account column lists every account a position sits in, and filters to one", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  // AA is held in two accounts, so the row names both; TSLA's lot names none.
+  await expect(positionRow(page, "AA").locator("td").nth(1)).toHaveText("margin, roth");
+  await expect(positionRow(page, "TSLA").locator("td").nth(1)).toHaveText("—");
+
+  const select = page.locator("#holdings-account");
+  await expect(page.locator("#holdings-toolbar")).toBeVisible();
+  await expect(select.locator("option")).toHaveText(["All accounts (2)", "margin (1)", "roth (1)", "No account (1)"]);
+
+  await select.selectOption("roth");
+  await expect(positionRow(page, "AA")).toBeVisible();
+  await expect(positionRow(page, "TSLA")).toHaveCount(0);
+  await expect(page.locator("#holdings-count")).toHaveText("(1 of 2)");
+
+  // The unlabeled bucket is its own choice, not a way of showing everything.
+  await select.selectOption({ label: "No account (1)" });
+  await expect(positionRow(page, "TSLA")).toBeVisible();
+  await expect(positionRow(page, "AA")).toHaveCount(0);
+
+  await select.selectOption("all");
+  await expect(page.locator("#holdings > tbody > tr")).toHaveCount(2);
+  await expect(page.locator("#holdings-count")).toHaveText("(2)");
+});
+
+test("sorting by account puts the unlabeled position last either way", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  const account = page.locator("#holdings thead th", { hasText: "Account" });
+  const symbols = page.locator("#holdings > tbody > tr a.sym");
+  await account.click();
+  await expect(symbols).toHaveText(["AA", "TSLA"]);
+  await account.click();
+  await expect(symbols).toHaveText(["AA", "TSLA"]);
 });
 
 test("adds a lot", async ({ page }) => {

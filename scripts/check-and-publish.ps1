@@ -136,25 +136,52 @@ if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir "dist\cli.js"))) {
 
 $cli = Join-Path $ProjectDir "dist\cli.js"
 
+# Exit code 3 from any command means the Schwab login expired: the 7-day
+# refresh token ran out and only a browser sign-in on this machine renews it.
+# It is not an ordinary failure. Nothing the task can do will fix it, every
+# later step that needs a quote will hit the same wall, and the one useful
+# action left is to publish a dashboard that says so - otherwise the page just
+# stops changing, which looks exactly like a quiet market.
+$EXIT_LOGIN_EXPIRED = 3
+$loginExpired = $false
+
 # Apply alert changes queued from the dashboard first, so the check evaluates
 # them. A failure is logged but doesn't stop the check; failed ops stay queued.
 # Without OPS_QUEUE_URL in .env this prints "Ops disabled" and exits 0.
 $code = Invoke-Logged "ops pull" "node" @($cli, "ops", "pull")
-if ($code -ne 0) {
+if ($code -eq $EXIT_LOGIN_EXPIRED) {
+    $loginExpired = $true
+} elseif ($code -ne 0) {
     Write-Log "Continuing with the check anyway."
 }
 
 # Give any position that has no alert a starting one, so a lot added from the
 # dashboard, an import, or the CLI is all handled the same way. It costs nothing
 # when every position is already covered: it exits before fetching any quote.
-$code = Invoke-Logged "holdings cover" "node" @($cli, "holdings", "cover")
-if ($code -ne 0) {
-    Write-Log "Continuing with the check anyway."
+if (-not $loginExpired) {
+    $code = Invoke-Logged "holdings cover" "node" @($cli, "holdings", "cover")
+    if ($code -eq $EXIT_LOGIN_EXPIRED) {
+        $loginExpired = $true
+    } elseif ($code -ne 0) {
+        Write-Log "Continuing with the check anyway."
+    }
 }
 
-$code = Invoke-Logged "alert check" "node" @($cli, "alert", "check")
-if ($code -ne 0) {
-    Stop-Run $code
+# Skipped rather than attempted once the login is known to be gone: it would
+# fail on its first quote, and the log should say why the run did nothing.
+if (-not $loginExpired) {
+    $code = Invoke-Logged "alert check" "node" @($cli, "alert", "check")
+    if ($code -eq $EXIT_LOGIN_EXPIRED) {
+        $loginExpired = $true
+    } elseif ($code -ne 0) {
+        Stop-Run $code
+    }
+}
+
+if ($loginExpired) {
+    Write-Log "*** Schwab login expired. No alerts were checked and queued changes stay queued."
+    Write-Log "*** Fix it on this machine with: node dist\cli.js schwab-login"
+    Write-Log "Publishing anyway so the dashboard reports it."
 }
 
 $publishArgs = @($cli, "dashboard", "--site", "site", "--publish", "--skip-unchanged", "--quiet")
@@ -162,5 +189,14 @@ $nextCheck = Get-NextCheckTime
 if ($nextCheck) {
     $publishArgs += @("--next-check", $nextCheck)
 }
+# dashboard survives a dead login on its own: it catches the quote failure and
+# renders without live prices (cmdDashboard in src/cli.ts), and the document it
+# publishes carries opsAuthExpiredSince for the page to report.
 $code = Invoke-Logged "dashboard publish" "node" $publishArgs
+
+# A run that published the bad news still failed as a check, and the healthcheck
+# ping must reflect that or the expiry looks like a healthy week.
+if ($loginExpired -and $code -eq 0) {
+    Stop-Run $EXIT_LOGIN_EXPIRED
+}
 Stop-Run $code
