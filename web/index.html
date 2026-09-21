@@ -137,6 +137,12 @@
   a.tag:hover { text-decoration: none; background: var(--surface2); }
   .tag.reversed { border-color: var(--peach); color: var(--peach); }
   .reversal-note { color: var(--peach); }
+  /* Something changed since this fire was queued: the alert re-levelled or
+     removed, more crossings folded on. Marked, because a row that has moved on
+     reads differently from one that hasn't. */
+  .update-note { color: var(--yellow); }
+  /* Only ever rendered from the decrypted vault, never from dashboard.json. */
+  .position-note { color: var(--subtext); }
   ol.timeline { margin: 0; padding-left: 18px; }
   ol.timeline li { margin-bottom: 2px; }
   ol.timeline li.reversal { color: var(--peach); }

@@ -95,6 +95,19 @@ export interface RevisitRow extends CrossingDetails {
   daysOpen: number | null;
   why: string | null;
   heldPosition: boolean;
+  /**
+   * What has changed about this fire since it joined the queue, as sentences
+   * to print verbatim: the alert re-levelled or removed, further crossings
+   * folded on. Template text, like src/narrative.ts.
+   *
+   * Everything here is something a person or the engine *did*, never anything
+   * that merely moved with the quote — that is `sinceTrigger`, which is
+   * volatile. Keep it that way: these strings are fingerprinted, so a note
+   * that drifted with price would publish on every check.
+   */
+  updates: string[];
+  /** Where price is now against where it fired. Moves with the quote. */
+  sinceTrigger: string | null;
   chartUrl: string;
 }
 
@@ -248,6 +261,46 @@ function round(n: number, places = 2): number {
   return Math.round(n * f) / f;
 }
 
+/**
+ * What has happened to this fire since it landed in the queue.
+ *
+ * Only a **static** alert's level is compared. A trailing alert's level and a
+ * moving average's are recomputed against price on every check, so "the level
+ * moved" would be true every run — and these strings are fingerprinted, so the
+ * page would republish every check. A person editing a static level is exactly
+ * the kind of thing this is for.
+ */
+function revisitUpdates(e: RevisitEntry, alert: Alert | undefined, reversal: ReversalSummary | null): string[] {
+  const updates: string[] = [];
+  if (alert === undefined || alert.status === "cancelled") {
+    updates.push("The alert behind this has since been removed.");
+  } else if (alert.kind === "static" && e.levelAtTrigger !== null && alert.level !== e.levelAtTrigger) {
+    updates.push(`Level moved ${e.levelAtTrigger} → ${alert.level} since this fired.`);
+  }
+  // The reversal already has its own line on the row, so only count past it.
+  const extra = (e.followUps ?? []).length - (reversal === null ? 0 : 1);
+  if (extra > 0) {
+    updates.push(`Crossed the level ${extra} more time${extra === 1 ? "" : "s"}${reversal === null ? " since" : " after that"}.`);
+  }
+  return updates;
+}
+
+/**
+ * Where price is now against where it fired - the queue's own "has this move
+ * held?". Distinct from `sinceWatching`, which measures from when the symbol
+ * was first watched, often months earlier.
+ */
+function sinceTriggerNote(triggerPrice: number, price: number | null): string | null {
+  if (price === null || !(triggerPrice > 0)) {
+    return null;
+  }
+  const move = ((price - triggerPrice) / triggerPrice) * 100;
+  if (Math.abs(move) < 0.05) {
+    return `Price ${round(price)}, unchanged since it fired.`;
+  }
+  return `Price ${round(price)}, ${move > 0 ? "+" : ""}${round(move, 1)}% since it fired.`;
+}
+
 export function crossingDetails(e: RevisitEntry): CrossingDetails {
   const reversal = reversalOf(e);
   return {
@@ -283,17 +336,26 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
   const heldSymbols = new Set(holdings.lots.map((l) => l.symbol.toUpperCase()));
 
   const narrativeCtx: NarrativeContext = { heldSymbols };
+  // Every alert, not just the live ones: a queue row needs to say when the
+  // alert behind it has since been cancelled.
+  const alertsById = new Map(alerts.map((a) => [a.id, a]));
   const open = revisits.filter((e) => e.status === "open" && !isIgnored(e.symbol));
   const revisitQueue: RevisitRow[] = [...open]
     .sort((a, b) => (b.priority ?? -1) - (a.priority ?? -1))
     .slice(0, limit)
-    .map((e) => ({
+    .map((e) => {
+      const alert = alertsById.get(e.alertId);
+      const crossing = crossingDetails(e);
+      const currentLevel = alert !== undefined && alert.kind === "static" ? alert.level : null;
+      return {
       id: e.id,
       alertId: e.alertId,
       symbol: e.symbol,
       priority: e.priority,
       headline: triggerHeadline(e, narrativeCtx),
-      action: triggerAction(e),
+      // Given the current level so it stops saying "still stands" about a
+      // level that has since been edited.
+      action: triggerAction(e, currentLevel),
       sinceWatching: sinceWatchingNote(
         e.watchingSince ?? null,
         e.priceAtWatchStart ?? null,
@@ -310,9 +372,12 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       daysOpen: e.signals?.daysOpen ?? null,
       why: e.signals ? explainPriority(e.signals) : null,
       heldPosition: heldSymbols.has(e.symbol.toUpperCase()),
+      updates: revisitUpdates(e, alert, crossing.reversal),
+      sinceTrigger: sinceTriggerNote(e.triggerPrice, quotes.get(e.symbol)?.lastPrice ?? null),
       chartUrl: chartUrl(e.symbol),
-      ...crossingDetails(e),
-    }));
+      ...crossing,
+      };
+    });
 
   const includeApproaching = inputs.includeApproaching ?? false;
   let quotesUnavailable = 0;
@@ -431,7 +496,6 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
 
   // Capped well above the queue limit: a consumer diffing for new firings
   // only misses one if more than this many fire between two of its polls.
-  const alertsById = new Map(alerts.map((a) => [a.id, a]));
   const recentTriggers: TriggerRow[] = revisits
     .filter((e) => !isIgnored(e.symbol))
     .filter((e) => e.status === "open" || new Date(e.triggeredAt).getTime() >= windowStart)

@@ -550,3 +550,75 @@ describe("approaching is off by default", () => {
     expect(renderDashboard(d)).toContain("APPROACHING");
   });
 });
+
+/**
+ * What a queue row says has changed since the fire joined it. These are
+ * fingerprinted (unlike sinceTrigger), so every one of them has to be
+ * something a person or the engine did, never something that drifted.
+ */
+describe("revisit queue updates", () => {
+  it("says nothing while the alert is untouched", () => {
+    const d = base({ alerts: [staticAlert()], revisits: [revisit()] });
+    expect(d.revisitQueue[0].updates).toEqual([]);
+    expect(d.revisitQueue[0].action).toBe("Level 110 still stands.");
+  });
+
+  it("reports a level edited since the fire, and stops saying it still stands", () => {
+    const d = base({ alerts: [staticAlert({ level: 118 })], revisits: [revisit()] });
+    expect(d.revisitQueue[0].updates).toEqual(["Level moved 110 → 118 since this fired."]);
+    // "Level 110 still stands" would be plainly false, and a suggestion
+    // measured from 110 is advice about a level that no longer exists.
+    expect(d.revisitQueue[0].action).toBeNull();
+  });
+
+  it("drops a suggestion that was measured against the old level", () => {
+    const moved = base({ alerts: [staticAlert({ level: 118 })], revisits: [revisit({ suggestedLevel: 115 })] });
+    expect(moved.revisitQueue[0].action).toBeNull();
+    const still = base({ alerts: [staticAlert()], revisits: [revisit({ suggestedLevel: 115 })] });
+    expect(still.revisitQueue[0].action).toBe("Suggest moving 110 to 115.");
+  });
+
+  it("reports the alert being removed, and a cancelled one counts as removed", () => {
+    const gone = base({ alerts: [], revisits: [revisit()] });
+    expect(gone.revisitQueue[0].updates).toEqual(["The alert behind this has since been removed."]);
+    const cancelled = base({ alerts: [staticAlert({ status: "cancelled" })], revisits: [revisit()] });
+    expect(cancelled.revisitQueue[0].updates).toEqual(["The alert behind this has since been removed."]);
+  });
+
+  it("ignores a trailing or moving-average level, which moves on its own", () => {
+    // Its level is recomputed against price every check, so "the level moved"
+    // would be true on every run - and these strings are fingerprinted.
+    const d = base({
+      alerts: [{ ...staticAlert(), kind: "trailing", near: 100, trailType: "percent", trailValue: 3, extremePrice: 120, extremeAt: NOW.toISOString() } as Alert],
+      revisits: [revisit({ kind: "trailing" })],
+    });
+    expect(d.revisitQueue[0].updates).toEqual([]);
+  });
+
+  it("counts crossings folded on since, past the reversal that has its own line", () => {
+    const followUps = [
+      { at: "2026-09-10T15:00:00.000Z", price: 108, direction: "down" as const, session: null },
+      { at: "2026-09-11T15:00:00.000Z", price: 113, direction: "up" as const, session: null },
+    ];
+    const d = base({ alerts: [staticAlert()], revisits: [revisit({ followUps })] });
+    expect(d.revisitQueue[0].reversal).not.toBeNull();
+    expect(d.revisitQueue[0].updates).toEqual(["Crossed the level 1 more time after that."]);
+  });
+
+  it("reports price against where it fired, and keeps it out of the fingerprint", () => {
+    const withQuote = base({ alerts: [staticAlert()], revisits: [revisit()], quotes: quotes({ AAPL: 117.6 }) });
+    // Fired at 112.
+    expect(withQuote.revisitQueue[0].sinceTrigger).toBe("Price 117.6, +5% since it fired.");
+    const flat = base({ alerts: [staticAlert()], revisits: [revisit()], quotes: quotes({ AAPL: 112 }) });
+    expect(flat.revisitQueue[0].sinceTrigger).toBe("Price 112, unchanged since it fired.");
+    const none = base({ alerts: [staticAlert()], revisits: [revisit()] });
+    expect(none.revisitQueue[0].sinceTrigger).toBeNull();
+
+    // A quote-less build must fingerprint the same as the real one, or every
+    // scheduled run publishes.
+    expect(dashboardFingerprint(withQuote)).toBe(dashboardFingerprint(none));
+    // But an edit behind a queue row must publish.
+    const edited = base({ alerts: [staticAlert({ level: 118 })], revisits: [revisit()] });
+    expect(dashboardFingerprint(edited)).not.toBe(dashboardFingerprint(none));
+  });
+});

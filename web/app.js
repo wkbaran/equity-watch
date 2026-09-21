@@ -1235,6 +1235,30 @@
     $("tiles").replaceChildren(...tiles);
   }
 
+  /**
+   * The position behind a held row, for the queue.
+   *
+   * Assembled here out of holdingRows() rather than read off RevisitRow, for
+   * the reason the details drawer's Position row is: share counts, basis and
+   * value may not travel in a published document. On the public page
+   * holdingRows() is null and this is simply absent, leaving the `held` tag,
+   * which is the one holdings fact a document may carry.
+   */
+  function positionNote(symbol) {
+    if (!symbol) return null;
+    const rows = holdingRows();
+    if (rows === null) return null;
+    const r = rows.find((x) => x.symbol === symbol);
+    if (!r) return null;
+    const parts = [
+      `Holding ${r.shares} @ ${money(r.basis)}`,
+      r.pctFromBasis !== null ? `${pct(r.pctFromBasis)} vs basis` : null,
+      r.marketValue !== null ? `value ${money(r.marketValue)}` : null,
+      r.stops.length ? `stop ${r.stops.map(money).join(", ")}` : null,
+    ].filter(Boolean);
+    return h("div", { class: "sub position-note", text: parts.join(" · ") });
+  }
+
   function renderQueue(rows) {
     $("queue-count").textContent = rows.length ? `(${rows.length})` : "";
     if (rows.length === 0) {
@@ -1272,6 +1296,12 @@
               r.action ? `. ${r.action}` : ""
             ),
             r.reversal ? h("div", { class: "sub reversal-note", text: `Reversed: ${reversalText(r)}` }) : null,
+            // What has changed since this fire joined the queue. Read straight
+            // off the document: the builder writes the sentence, the page only
+            // decides it goes here (src/narrative.ts's rule).
+            ...(r.updates ?? []).map((text) => h("div", { class: "sub update-note", text })),
+            r.sinceTrigger ? h("div", { class: "sub", text: r.sinceTrigger }) : null,
+            positionNote(r.symbol),
             r.sinceWatching ? h("div", { class: "sub", text: r.sinceWatching }) : null,
             r.why ? h("div", { class: "why", text: r.why }) : null,
             h(

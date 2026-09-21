@@ -180,3 +180,53 @@ test("the alert's edit form says saving takes its open fire off the queue", asyn
   await page.goto(`/#/alert/${STATIC.id}`);
   await expect(page.locator("#drawer-body .note", { hasText: "revisit queue" })).toHaveText("Saving an edit also takes this alert's open fire off the revisit queue.");
 });
+
+// The revisit queue's own version of the same line: what changed since the
+// fire was queued may be published, what the position is worth may not.
+test.describe("the revisit queue", () => {
+  const queueRow = (page: Page, headline: string) => page.locator("#queue .queue-row", { hasText: headline });
+
+  test("a held row shows the position only once unlocked, and never from the document", async ({ page }) => {
+    await page.goto("/#/queue");
+    const aa = queueRow(page, AA_FIRE);
+    await expect(heldTag(aa)).toHaveText("held");
+    await expect(aa.locator(".position-note")).toHaveCount(0);
+    // The public document must not carry the numbers in the first place.
+    const doc = await (await page.request.get("/dashboard.json")).text();
+    expect(doc).not.toContain("position-note");
+    for (const key of ["shares", "basis", "marketValue"]) expect(doc).not.toContain(`"${key}"`);
+
+    await storeToken(page);
+    await page.reload();
+    // AA is 15 shares blended across two lots at 40 and 44, with a stop at 38.
+    await expect(queueRow(page, AA_FIRE).locator(".position-note")).toContainText("Holding 15 @ 41.33");
+    await expect(queueRow(page, AA_FIRE).locator(".position-note")).toContainText("stop 38.00");
+    // MSFT isn't held, so it gets neither the tag nor the line.
+    await expect(queueRow(page, MSFT_FIRE).locator(".position-note")).toHaveCount(0);
+  });
+
+  test("prints what changed since the fire was queued", async ({ page }) => {
+    await page.route("**/dashboard.json", async (route) => {
+      const response = await route.fetch();
+      const doc = await response.json();
+      const row = doc.revisitQueue.find((r: any) => r.headline.includes(MSFT_FIRE));
+      row.updates = ["Level moved 400 → 390 since this fired.", "Crossed the level 2 more times since."];
+      row.sinceTrigger = "Price 420, +6% since it fired.";
+      // What the builder really produces alongside a level move: "Level 400
+      // still stands" is exactly the claim the move disproves.
+      row.action = null;
+      await route.fulfill({ response, json: doc });
+    });
+    await page.goto("/#/queue");
+    const msft = queueRow(page, MSFT_FIRE);
+    await expect(msft.locator(".update-note")).toHaveCount(2);
+    await expect(msft.locator(".update-note").first()).toHaveText("Level moved 400 → 390 since this fired.");
+    await expect(msft).toContainText("Price 420, +6% since it fired.");
+    await expect(msft).not.toContainText("still stands");
+  });
+
+  test("an untouched row carries no update lines", async ({ page }) => {
+    await page.goto("/#/queue");
+    await expect(page.locator("#queue .update-note")).toHaveCount(0);
+  });
+});

@@ -274,8 +274,21 @@ export function quietWatchNote(
 }
 
 /** The action the entry is waiting on, as a sentence rather than a field. */
-export function triggerAction(entry: RevisitEntry): string | null {
+/**
+ * What this fire is waiting on.
+ *
+ * `currentLevel` is the alert's level now, when it has one and it cannot move
+ * on its own (a static alert). Both sentences below are measured from
+ * `levelAtTrigger`, so once the alert has been re-levelled "still stands" is
+ * simply false and a suggestion computed against the old level is advice about
+ * a level that no longer exists. Say nothing instead; the row's `updates`
+ * reports the move.
+ */
+export function triggerAction(entry: RevisitEntry, currentLevel: number | null = null): string | null {
   if (entry.status === "dismissed") {
+    return null;
+  }
+  if (currentLevel !== null && entry.levelAtTrigger !== null && currentLevel !== entry.levelAtTrigger) {
     return null;
   }
   if (entry.suggestedLevel === null) {

@@ -174,6 +174,10 @@ const VOLATILE_KEYS = new Set([
   "pctFromBasis",
   "marketValue",
   "sinceWatching",
+  // A queue row's "price is +2% since it fired": the same kind of thing as
+  // sinceWatching. Its sibling `updates` is deliberately NOT here — those
+  // sentences record edits and crossings, and must publish.
+  "sinceTrigger",
   "distancePct",
   "quotesUnavailable",
   "approaching",

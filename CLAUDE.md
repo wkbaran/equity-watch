@@ -564,6 +564,36 @@ because the first failure of this kind (2026-09-19) looked like nothing at all:
   expiry no checks run at all and a partial drain would publish some results
   and not others.
 
+## A queue row says what changed since it was queued, and the split is the fingerprint
+
+`RevisitRow` carries two of these, and which is which matters:
+
+- **`updates`** is what a person or the engine *did* since the fire landed in
+  the queue: the alert re-levelled, the alert removed or cancelled, further
+  crossings folded on past the reversal. These strings are **fingerprinted**, so
+  every one of them must be caused by an event, never by the clock or a quote.
+  That is why only a **static** alert's level is compared: a trailing alert's
+  level and a moving average's are recomputed against price on every check, so
+  "the level moved" would be true every run and the page would republish every
+  run. (Same reason `movingLevel` is separate from `level`.)
+- **`sinceTrigger`** is "price is +6% since it fired", and is in
+  `VOLATILE_KEYS` alongside `sinceWatching`. Distinct from `sinceWatching`,
+  which measures from when the symbol was first watched, often months earlier.
+
+`triggerAction` now takes the alert's current level, because both sentences it
+produces are measured from `levelAtTrigger`: once the alert has been
+re-levelled, "Level 50 still stands" is simply false and "Suggest moving 50 to
+61" is advice about a level that no longer exists. It returns null in that case
+and the `updates` line reports the move. Passing nothing keeps the old
+behaviour, which is what the other callers want.
+
+**The position line on a queue row is assembled in the browser**
+(`positionNote` in `web/app.js`) out of `holdingRows()`, for exactly the reason
+the details drawer's Position row is: share counts, basis, value and stops may
+not travel in a published document. On the public page `holdingRows()` is null
+and the line is simply absent, leaving the `held` tag — the one holdings fact a
+document may carry. Don't "simplify" it by hanging the numbers on `RevisitRow`.
+
 ## Trigger details before 2026-09-13 are incomplete, and can't be backfilled
 
 `RevisitEntry.condition` and `RevisitEntry.volume` are recorded by the engine
