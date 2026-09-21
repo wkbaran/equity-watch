@@ -535,6 +535,31 @@ Things that look simplifiable and aren't:
     the fixtures) or kill whatever is listening on 4178 and re-run. Editing
     `web/` alone is safe: those files are read per request.
 
+## README screenshots are generated, and nothing tells you when they rot
+
+`docs/images/*.png` are the fragments embedded in README.md's worked example and
+its Alerts-view bullet. They are produced by `playwright/screenshots.ts` against
+the same fixture server the e2e suite uses, so they contain only invented
+symbols, levels and positions — **never screenshot the real dashboard for docs**,
+which would put share counts and basis into git. Regenerate with
+`npx tsx playwright/server.ts` in one shell and `npx tsx playwright/screenshots.ts`
+in another; the script writes all seven and prints each one's size.
+
+Nothing checks them. A change to `web/app.js`'s row markup, the drawer's fields,
+or `narrative.ts`'s wording leaves the README showing the old page with no test
+failing, so re-run the script after changing any of those and look at what comes
+out. Two things that cost time the first time:
+
+- **`addInitScript` never runs on a hash-only `goto`.** Unlocking editing by
+  seeding `localStorage` and then navigating `#/stories` → `#/alert/<id>` leaves
+  the page unlocked-but-never-reloaded, and the edit form simply isn't in the
+  DOM. The script does an explicit `page.reload()` for that reason.
+- **The element you want is usually not the one you named.** `#ops-pending`
+  lives inside `view-alerts`, so it is hidden on the overview; the edit form sits
+  below the drawer's facts, story and recent triggers, so a shot of
+  `#drawer-body` misses it entirely. Both were silent — a hidden element and a
+  clipped one, not an error.
+
 ## The Schwab login expires weekly, and the whole run has to cope with it
 
 Schwab refresh tokens last **7 days** and only the interactive browser flow
