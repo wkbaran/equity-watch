@@ -287,29 +287,32 @@ the revisit queue and its scoring, `alert seed`) is in
 ## Deploying the dashboard (optional)
 
 `infra/cloudformation.yaml` creates a private S3 bucket, a CloudFront distribution,
-and a publish-only IAM user. Deploy in `us-east-1`, then copy the outputs into `.env`
-(`S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`):
+and a publish-only IAM user. Put the stack's settings in `.env` (see
+[`.env.example`](.env.example) for the full list) and deploy with the script:
 
 ```bash
-aws cloudformation deploy --region us-east-1 --stack-name equity-watch-dashboard \
-  --template-file infra/cloudformation.yaml --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides BucketName=equity-watch-yourname
-aws cloudformation describe-stacks --region us-east-1 --stack-name equity-watch-dashboard --query 'Stacks[0].Outputs'
+./scripts/deploy-stack.sh              # or: .\scripts\deploy-stack.ps1
+./scripts/deploy-stack.sh --dry-run    # print the resolved parameters, deploy nothing
 ```
 
-That serves the site from the distribution's `*.cloudfront.net` URL. To use a domain
-of your own, pass both `CustomDomain` and the **public** Route 53 `HostedZoneId` for
-it — the template then requests a certificate and adds the alias record, and the
-first deploy waits a few minutes on DNS validation:
+It reads every parameter from `.env` — bucket, region, ops token, custom domain,
+hosted zone, basic auth — and a `Key=Value` argument overrides one for that run.
+Then copy the stack outputs into `.env` (`S3_BUCKET`, `AWS_REGION`,
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
 
-```bash
-  --parameter-overrides BucketName=equity-watch-yourname \
-    CustomDomain=dashboard.example.com HostedZoneId=Z0XXXXXXXXXXXXXXXXXX
-```
+**Use the script rather than `aws cloudformation deploy` by hand.** Every parameter
+in the template defaults to empty or false, so a deploy that omits one *clears it on
+the live stack*: leave `EnableOps` out and the Lambda, the queue and `/api/*` are
+deleted; leave `CustomDomain` out and the alias and its certificate go with it.
+Nothing warns you, and the site looks fine until the next queued edit vanishes. The
+script passes all of them every time, and refuses to deploy if a value the live
+stack has set would resolve to empty here.
 
-**Pass them on every later deploy too.** They have no defaults, so omitting them on a
-redeploy of a stack that had a custom domain removes the alias and the certificate,
-and the site stops answering on that name.
+A custom domain is optional — leave `CUSTOM_DOMAIN` empty and the site serves from
+the distribution's `*.cloudfront.net` URL. With one set, the template requests a
+certificate and adds the alias record, and the first deploy waits a few minutes on
+DNS validation. `HOSTED_ZONE_ID` must be the **public** Route 53 zone; a private zone
+of the same name is easy to pick by mistake and works for neither.
 
 - **Preview locally first:** `node dist/cli.js dashboard --site site`, then serve
   `site/` with any static server.
