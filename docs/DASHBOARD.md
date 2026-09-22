@@ -115,9 +115,23 @@ notifications keep running on any of them.
   moving-average and trailing rows show their level as **moving**, and the volume
   alert has no level or direction to show at all.
 - **Holdings** — positions, lots, and stops, decrypted from `vault.json` in the
-  browser. Only present once editing is unlocked. A position with no live alert
-  offers **Cover with an alert** (a `holdings.cover` op), and each stop has *Edit*
-  and *Remove*.
+  browser. Only present once editing is unlocked. Each stop has *Edit* and
+  *Remove*.
+
+  A row carries an **alert pill** for every live alert on the symbol —
+  `alert ↑ 55`, or `alert ↑ 55 · 1.5x` when it also has a volume condition. It
+  is abbreviated on purpose: which way it fires, the level, and the volume, with
+  the full sentence as the pill's tooltip. A `~` marks a level that moves on its
+  own (a trailing trigger, a moving average), since that is the value as of the
+  last check rather than a number anyone typed. Above and below alerts coexist on
+  a symbol, so a row can carry more than one pill.
+
+  Expanding a position puts the two decisions it asks for side by side: the
+  **stop form on the left, the alert's edit form on the right**. A position with
+  no live alert shows **Cover with an alert** (a `holdings.cover` op) in the
+  alert column instead. Several positions can be expanded at once, and each keeps
+  its own form — what you type in one survives opening another and the
+  every-minute poll.
 
   Rows also carry what `holdings check` would say about them — `+10% over basis`,
   `stagnant` — worked out **in the browser** from the decrypted rows rather than

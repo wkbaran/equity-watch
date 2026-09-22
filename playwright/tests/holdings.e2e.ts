@@ -240,6 +240,59 @@ test("adds a stop", async ({ page }) => {
   expect(op).toMatchObject({ type: "stop.add", params: { symbol: "TSLA", stopPrice: 230, count: 1 } });
 });
 
+test.describe("the alert on a position", () => {
+  test("shows as a pill on the row, abbreviated, with the full condition as its title", async ({ page }) => {
+    await storeToken(page);
+    await openHoldings(page);
+    const pill = positionRow(page, "AA").locator(".tag.alert");
+    await expect(pill).toHaveText("alert ↑ 55");
+    await expect(pill).toHaveAttribute("title", "price crosses above 55");
+    // A level that moves on its own is marked, since it is the value as of the
+    // last check rather than a number anybody typed.
+    await expect(positionRow(page, "TSLA").locator(".tag.alert")).toContainText("~");
+  });
+
+  test("puts its edit form beside the stop form, and queues an edit from there", async ({ page }) => {
+    await storeToken(page);
+    await openHoldings(page);
+    await expand(page, "AA");
+    // Stops left, alert right, in one two-column row.
+    const cols = detail(page).locator(".detail-cols");
+    await expect(cols.locator("> .stops")).toBeVisible();
+    await expect(cols.locator("> .alert-col")).toBeVisible();
+    const stopsBox = await cols.locator("> .stops").boundingBox();
+    const alertBox = await cols.locator("> .alert-col").boundingBox();
+    expect(stopsBox!.x).toBeLessThan(alertBox!.x);
+
+    const form = cols.locator("> .alert-col form");
+    await expect(form.getByLabel("Level")).toHaveValue("55");
+    await form.getByLabel("Level").fill("61");
+    await form.locator("button[type=submit]").click();
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.edit", target: { alertId: "st000001" }, params: { level: 61 } });
+  });
+
+  // One shared form slot would let each rendered row steal the element out of
+  // the last, wiping what was typed into it.
+  test("keeps a form per expanded position rather than one shared between them", async ({ page }) => {
+    await storeToken(page);
+    await openHoldings(page);
+    // Not expand(), which asserts a single detail row.
+    await positionRow(page, "AA").locator("td").nth(2).click();
+    await positionRow(page, "TSLA").locator("td").nth(2).click();
+    await expect(detail(page)).toHaveCount(2);
+    await expect(page.locator("#holdings .alert-col form")).toHaveCount(2);
+
+    // Both hold their own state, and a re-render keeps what was typed.
+    const aaLevel = detail(page).first().locator(".alert-col").getByLabel("Level");
+    await aaLevel.fill("62");
+    await poll(page);
+    await expect(aaLevel).toHaveValue("62");
+    // TSLA's is a trailing alert, so it is a different form, not the same one moved.
+    await expect(detail(page).nth(1).locator(".alert-col")).toContainText("Trail");
+  });
+});
+
 // Moving a stop used to be Remove then Add: two ops, either of which could
 // land alone, leaving the position with no stop recorded or two.
 test("moves a stop in one guarded op, prefilled with what is set", async ({ page }) => {

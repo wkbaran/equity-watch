@@ -334,7 +334,17 @@
   const canEdit = () => opsEnabled() && Boolean(opsToken);
   // Forms are built once and reused, so a poll re-rendering the view doesn't wipe what's typed.
   let addFormEl = null;
-  let editForm = null; // { alertId, condition, el }
+  /**
+   * Edit forms in use, slot -> { alertId, condition, revisitId, el }.
+   *
+   * A slot holds one form, so "drawer" behaves exactly as the single variable
+   * this replaced: one form at a time, rebuilt when a different alert opens.
+   * An expanded holdings row takes a slot per alert instead, because several
+   * positions can be expanded at once and a DOM element lives in one place -
+   * one shared slot would let each newly rendered row steal the form out of
+   * the last, wiping whatever was typed in it.
+   */
+  const editForms = new Map();
 
   function rerenderOps() {
     renderOpsControls();
@@ -661,7 +671,7 @@
    * alert, so the op never names one. It is part of the reuse key, so the same
    * alert's form is rebuilt when it is opened from the other drawer.
    */
-  function editSection(a, revisitId = null) {
+  function editSection(a, revisitId = null, slot = "drawer") {
     if (!canEdit()) return null;
     const queued = pendingFor(a.id);
     const pending = queued.map((p) => h("p", { class: "note" }, h("span", { class: "tag pending", text: "pending" }), ` ${p.summary}, queued ${ago(p.queuedAt)}`));
@@ -674,15 +684,17 @@
       return [...pending, h("p", { class: "note", text: "This alert was published before the page could edit moving averages. Use alert edit in the CLI, or wait for the next publish." })];
     }
     // Reuse the form while the alert is unchanged; rebuild it once an edit has landed.
-    if (editForm?.alertId !== a.id || editForm.condition !== a.condition || editForm.revisitId !== revisitId) {
-      editForm = { alertId: a.id, condition: a.condition, revisitId, el: buildEditForm(a, revisitId) };
+    let form = editForms.get(slot);
+    if (form?.alertId !== a.id || form.condition !== a.condition || form.revisitId !== revisitId) {
+      form = { alertId: a.id, condition: a.condition, revisitId, el: buildEditForm(a, revisitId) };
+      editForms.set(slot, form);
     }
     // Any edit takes the alert's open fires off the queue (closeRevisitsForEdit
     // in the worker), wherever it is made. Say so before it happens.
     const open = (current?.revisitQueue ?? []).filter((r) => r.alertId === a.id).length;
     const closes =
       open === 0 ? null : h("p", { class: "note", text: `Saving an edit also takes ${open === 1 ? "this alert's open fire" : `this alert's ${open} open fires`} off the revisit queue.` });
-    return [...pending, ...(closes ? [closes] : []), editForm.el];
+    return [...pending, ...(closes ? [closes] : []), form.el];
   }
 
   const VOLUME_WINDOW_RE = /^\d+(\.\d+)?[smhd]$/;
@@ -1555,12 +1567,72 @@
     return new Set((holdingRows() ?? []).map((r) => r.symbol).filter((s) => !covered.has(s)));
   }
 
+  /**
+   * The live alerts on a symbol, or [] before the book has been fetched. A
+   * list, not one alert: above and below coexist on a symbol, and a standalone
+   * volume alert sits outside that rule entirely.
+   */
+  const alertsForSymbol = (symbol) => (alertsDoc?.alerts ?? []).filter((a) => a.symbol === symbol);
+
+  const DIRECTION_MARK = { up: "↑", down: "↓", either: "↕" };
+
+  /**
+   * An alert in a few characters, for the pill on a holdings row: which way it
+   * fires, the level, and the volume condition if it has one. `~` marks a level
+   * that moves on its own (a trailing trigger, a moving average) - that is the
+   * value as of the last check, not a number anybody typed. The pill carries
+   * the full sentence as its title, so abbreviating hides nothing.
+   */
+  function alertPillText(a) {
+    const level = a.level ?? a.movingLevel;
+    const parts = [];
+    if (level !== null) {
+      const mark = DIRECTION_MARK[a.direction] ?? "";
+      parts.push(`${mark ? `${mark} ` : ""}${a.level === null ? "~" : ""}${level}`);
+    }
+    if (a.volume) {
+      parts.push(a.volume.ratio !== undefined ? `${a.volume.ratio}x` : formatVolume(a.volume.threshold));
+    }
+    // A kind with neither (nothing does today) still says something.
+    return parts.join(" · ") || a.kind;
+  }
+
+  /**
+   * The alert side of an expanded position: an edit form per live alert on the
+   * symbol, or the Cover button when it has none. It sits beside the stop form
+   * (`.detail-cols`) so the two things a position asks you to decide - where to
+   * get out, and where to be told - are answered side by side instead of one
+   * scrolled under the other.
+   */
+  function alertColumn(symbol) {
+    const alerts = alertsForSymbol(symbol);
+    const body =
+      alerts.length > 0
+        ? alerts.flatMap((a) => editSection(a, null, `holdings:${a.id}`) ?? [])
+        : [
+            h("p", { class: "note", text: alertsDoc === null ? "Loading the alert book…" : "No live alert on this symbol." }),
+            coverButton(symbol),
+          ];
+    return h("div", { class: "alert-col" }, h("strong", { class: "form-title", text: "Alert" }), ...body);
+  }
+
   function positionDetail(symbol) {
     const lots = vaultData.lots.filter((l) => l.symbol === symbol);
     const stops = vaultData.stops.filter((s) => s.symbol === symbol);
+    const alerts = alertsForSymbol(symbol);
     // Coverage is in the signature because Cover appears and disappears with
-    // it, and the alert book arrives after the first render of this panel.
-    const sig = JSON.stringify([lots, stops, uncoveredSymbols()?.has(symbol) ?? null, coverPending(symbol)]);
+    // it, and the alert book arrives after the first render of this panel. So
+    // are the alerts themselves and anything queued against them: the edit form
+    // and its pending notes are built from those, and a cached panel would
+    // otherwise keep showing an alert that has since been edited.
+    const sig = JSON.stringify([
+      lots,
+      stops,
+      uncoveredSymbols()?.has(symbol) ?? null,
+      coverPending(symbol),
+      alerts.map((a) => [a.id, a.condition]),
+      alerts.flatMap((a) => pendingFor(a.id).map((p) => p.id)),
+    ]);
     const cached = detailCache.get(symbol);
     if (cached?.sig === sig) return cached.el;
     const el = h(
@@ -1576,11 +1648,10 @@
           h("tbody", {}, ...lots.flatMap(lotRows))
         )
       ),
-      stopsBlock(symbol, stops),
+      h("div", { class: "detail-cols" }, stopsBlock(symbol, stops), alertColumn(symbol)),
       h(
         "div",
         { class: "actions" },
-        coverButton(symbol),
         confirmButton(`Remove the ${symbol} position`, () =>
           submitOp(
             { type: "position.remove", target: { symbol }, expect: { lotIds: lots.map((l) => l.id) }, params: {} },
@@ -1992,6 +2063,7 @@
           "td",
           {},
           symbolLink(r.symbol),
+          ...alertsForSymbol(r.symbol).map((a) => h("span", { class: "tag alert", title: a.condition, text: `alert ${alertPillText(a)}` })),
           r.stops.length ? h("span", { class: "tag", text: `stop ${r.stops.join(", ")}` }) : null,
           // What `holdings check` would report, worked out in the browser so
           // nothing basis-derived has to be published to say it.

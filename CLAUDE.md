@@ -550,6 +550,16 @@ Things that look simplifiable and aren't:
     from the CLI can hold `45s`; the select grows an extra option for it, so
     opening an alert's form to read it and saving doesn't quietly re-window it.
     The CLI itself still accepts any `Nunit`, including the ones that fail.
+- **Edit forms live in named slots (`editForms`), not one variable.** A slot
+  holds one form, so `"drawer"` behaves as the single variable it replaced. An
+  expanded holdings row takes `holdings:<alertId>` instead, because several
+  positions can be expanded at once and **a DOM element exists in one place**:
+  with one shared slot, rendering the second row moves the form out of the
+  first, wiping whatever was typed. That is also why `positionDetail`'s cache
+  signature includes the symbol's alerts and anything queued against them —
+  a cached panel would otherwise keep showing an alert that has since been
+  edited. The holdings row's alert pill and its edit form both come from
+  `alertsDoc`, which the holdings view already fetches for `uncoveredSymbols`.
 - **Both drawers fetch `alerts.json`.** The trigger drawer needs the alert's
   *current* level and direction for the edit form, and `TriggerRow` carries
   neither (it records what fired, not what is set now). `RevisitRow.alertId`
