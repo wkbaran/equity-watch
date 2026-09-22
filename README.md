@@ -6,8 +6,8 @@ averages against Schwab market data. When an alert fires it never disarms: the
 firing lands in a **revisit queue**, a durable to-do list of levels that got taken
 out and now need a decision.
 
-A browser dashboard at **https://watch.billbaran.us** shows that queue, recent
-triggers, your holdings, and every live alert — and acts on them: propose a new
+A browser dashboard shows that queue, recent triggers, your holdings, and every
+live alert — and acts on them: propose a new
 level for a fired alert and apply it, add or edit any kind of alert, manage lots and
 stops. Everything that holds state (alerts, positions, queue) lives in flat JSON
 files on one machine. The cloud only holds a rendered copy of what that machine
@@ -286,19 +286,30 @@ the revisit queue and its scoring, `alert seed`) is in
 
 ## Deploying the dashboard (optional)
 
-`infra/cloudformation.yaml` creates a private S3 bucket, a CloudFront distribution
-served at **https://watch.billbaran.us** (certificate and DNS record in the public
-`billbaran.us` Route 53 zone), and a publish-only IAM user. The first deploy waits on
-DNS validation of the certificate, which usually takes a few minutes. Deploy in
-`us-east-1`, then copy the outputs into `.env` (`S3_BUCKET`, `AWS_REGION`,
-`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`):
+`infra/cloudformation.yaml` creates a private S3 bucket, a CloudFront distribution,
+and a publish-only IAM user. Deploy in `us-east-1`, then copy the outputs into `.env`
+(`S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`):
 
 ```bash
 aws cloudformation deploy --region us-east-1 --stack-name equity-watch-dashboard \
   --template-file infra/cloudformation.yaml --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides BucketName=equity-watch-billbaran
+  --parameter-overrides BucketName=equity-watch-yourname
 aws cloudformation describe-stacks --region us-east-1 --stack-name equity-watch-dashboard --query 'Stacks[0].Outputs'
 ```
+
+That serves the site from the distribution's `*.cloudfront.net` URL. To use a domain
+of your own, pass both `CustomDomain` and the **public** Route 53 `HostedZoneId` for
+it — the template then requests a certificate and adds the alias record, and the
+first deploy waits a few minutes on DNS validation:
+
+```bash
+  --parameter-overrides BucketName=equity-watch-yourname \
+    CustomDomain=dashboard.example.com HostedZoneId=Z0XXXXXXXXXXXXXXXXXX
+```
+
+**Pass them on every later deploy too.** They have no defaults, so omitting them on a
+redeploy of a stack that had a custom domain removes the alias and the certificate,
+and the site stops answering on that name.
 
 - **Preview locally first:** `node dist/cli.js dashboard --site site`, then serve
   `site/` with any static server.

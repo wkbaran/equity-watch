@@ -196,7 +196,7 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -Multipl
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType S4U
 
 Register-ScheduledTask -TaskName "equity-watch check" -Action $action -Trigger $trigger -Settings $settings `
-  -Principal $principal -Description "Poll equity-watch alerts and publish watch.billbaran.us"
+  -Principal $principal -Description "Poll equity-watch alerts and publish the dashboard"
 ```
 
 - **Regular hours only:** use `-At 7:25AM` and `-RepetitionDuration (New-TimeSpan -Hours 6 -Minutes 50)`.

@@ -67,16 +67,21 @@ Parameters:
 
   CustomDomain:
     Type: String
-    Default: watch.billbaran.us
-    Description: Custom domain to serve from. Pass '' to use the cloudfront.net URL instead.
+    Default: ''
+    Description: >
+      Custom domain to serve from, e.g. dashboard.example.com. Empty (the default)
+      serves from the distribution's cloudfront.net URL instead. Deliberately
+      undefaulted: a template in a public repo should not carry anyone's domain.
+      Pass it on EVERY deploy once a stack has one - omitting it on a later deploy
+      removes the alias and the certificate.
 
   HostedZoneId:
     Type: String
-    # The PUBLIC billbaran.us zone. There is also a private zone with the same
-    # name (Z09836011VGZMT65Q2977); certificate validation and the alias record
-    # must go in the public one or nothing outside the VPC can resolve them.
-    Default: Z0927352H55TBS393ZU1
-    Description: Route 53 public Hosted Zone ID for CustomDomain.
+    Default: ''
+    # Must be the PUBLIC hosted zone. A private zone of the same name is easy to
+    # pick by mistake, and certificate validation and the alias record both have
+    # to go in the public one or nothing outside the VPC can resolve them.
+    Description: Route 53 public Hosted Zone ID for CustomDomain. Required when CustomDomain is set.
 
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomain, '']]
