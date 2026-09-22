@@ -7,11 +7,15 @@
  * the details from its own record of what it sent.
  */
 
+import { describeAlertCondition } from "../alerts/describe.js";
+import { addAlert, type MarketData } from "../alerts/engine.js";
+import { loadAlerts } from "../alerts/store.js";
+import { coverCandidates, coverLevel } from "../holdings/cover.js";
 import { addLot, addStop, editLot, removeLot, removePosition, replaceStop } from "../holdings/engine.js";
-import type { Lot } from "../holdings/models.js";
+import { computeBasis, type Lot } from "../holdings/models.js";
 import { loadHoldingsStore, removeStop } from "../holdings/store.js";
 import type { Op, Outcome } from "./apply.js";
-import { parseLotEdit, parseLotInput, parseStopInput, stringField } from "./validate.js";
+import { parseLotEdit, parseLotInput, parseStopEdit, parseStopInput, stringField } from "./validate.js";
 
 const ok = (symbol: string, message: string): Outcome => ({ symbol, alertId: null, ok: true, message });
 const reject = (symbol: string | null, message: string): Outcome => ({ symbol, alertId: null, ok: false, message });
@@ -115,23 +119,107 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       return ok(symbol, `Added a stop for ${symbol}.`);
     }
 
+    case "stop.edit":
     case "stop.remove": {
+      const verb = op.type === "stop.edit" ? "edit" : "removal";
       const stopId = stringField(op.target, "stopId");
       if (!stopId) {
-        return reject(null, "A stop removal needs target.stopId.");
+        return reject(null, `A stop ${verb} needs target.stopId.`);
       }
       const stop = loadHoldingsStore(holdingsFile).stops.find((s) => s.id === stopId);
       if (stop === undefined) {
         return reject(null, "That stop no longer exists. It may have been removed.");
       }
       if (field(op.expect, "stopPrice") !== stop.stopPrice) {
-        return reject(stop.symbol, `Not removed: that ${stop.symbol} stop changed since the page loaded.`);
+        return reject(stop.symbol, `Not changed: that ${stop.symbol} stop changed since the page loaded.`);
       }
+      if (op.type === "stop.remove") {
+        removeStop(holdingsFile, stopId);
+        return ok(stop.symbol, `Removed a stop for ${stop.symbol}.`);
+      }
+      const parsed = parseStopEdit(op.params);
+      if (!parsed.ok) {
+        return reject(stop.symbol, parsed.error);
+      }
+      // Remove-then-add rather than mutate in place, so the edit goes through
+      // the same `addStop` validation a new stop does and lands with a fresh
+      // id — a stop is a record of a decision, and this is a new decision.
       removeStop(holdingsFile, stopId);
-      return ok(stop.symbol, `Removed a stop for ${stop.symbol}.`);
+      addStop(holdingsFile, {
+        symbol: stop.symbol,
+        stopPrice: parsed.value.stopPrice,
+        count: parsed.value.count === undefined ? stop.count : parsed.value.count,
+      });
+      return ok(stop.symbol, `Moved the stop for ${stop.symbol}.`);
     }
 
     default:
       return reject(null, `${op.type} is not a holdings op.`);
   }
+}
+
+/**
+ * `holdings.cover`: gives one held position with no live alert a starting
+ * level, the atomic unit of the `holdings cover` batch pass.
+ *
+ * Lives here with the other holdings ops but writes to `alerts.json`, which is
+ * why it takes both files. It reuses `coverCandidates` so "who qualifies" is
+ * decided in exactly one place: re-checking that rule *is* the conflict guard,
+ * and there is nothing an `expect` could assert that it doesn't already cover.
+ *
+ * Unlike every other message in this file, this one names a number. The level
+ * it creates goes straight into the public alert book, so withholding it from
+ * the result would hide nothing — and the caller needs to see what it got. The
+ * basis and the share count are still never named. Note that on an *underwater*
+ * position the level is basis + 10%, so the published alert implies the basis;
+ * that is true of the scheduled `holdings cover` too and is documented in
+ * docs/ARCHITECTURE.md.
+ */
+export async function applyCoverOp(
+  op: Op,
+  holdingsFile: string,
+  alertsFile: string,
+  market: MarketData,
+  ignored: Set<string> = new Set()
+): Promise<Outcome> {
+  const symbol = stringField(op.target, "symbol")?.trim().toUpperCase();
+  if (!symbol) {
+    return reject(null, "A cover needs target.symbol.");
+  }
+  const store = loadHoldingsStore(holdingsFile);
+  const alerts = loadAlerts(alertsFile);
+  if (!store.lots.some((l) => l.symbol.toUpperCase() === symbol)) {
+    return reject(symbol, `No ${symbol} position to cover.`);
+  }
+  if (ignored.has(symbol)) {
+    return reject(symbol, `${symbol} is on the ignore list, so it is deliberately not alerted.`);
+  }
+  if (!coverCandidates(store, alerts, ignored).includes(symbol)) {
+    const live = alerts.find((a) => a.status === "live" && a.symbol.toUpperCase() === symbol);
+    return reject(symbol, `${symbol} already has a live alert (${live ? describeAlertCondition(live) : "unknown"}).`);
+  }
+
+  const info = computeBasis(store.lots, symbol);
+  if (info === null) {
+    return reject(symbol, `No basis on record for ${symbol}.`);
+  }
+  const quotes = await market.getQuotes([symbol]);
+  const quote = quotes.get(symbol);
+  if (quote === undefined) {
+    return reject(symbol, `No quote available for ${symbol}.`);
+  }
+  const { level } = coverLevel(info.blendedBasis, quote.lastPrice);
+
+  // The default "keep-closest", not "replace": nothing here is a level anyone
+  // typed, and a candidate has no live alert to conflict with anyway.
+  const result = await addAlert(alertsFile, { kind: "static", symbol, level }, market);
+  if (result.rejectedReason !== null || result.added === null) {
+    return reject(symbol, `Not covered: ${result.rejectedReason ?? "unknown reason"}`);
+  }
+  return {
+    symbol,
+    alertId: result.added.id,
+    ok: true,
+    message: `Covered ${symbol} with alert ${result.added.id}: ${describeAlertCondition(result.added)}.`,
+  };
 }

@@ -22,7 +22,9 @@
  * side to fire on and `addAlert` rejects it outright.
  */
 
+import type { Alert } from "../alerts/models.js";
 import { round } from "../round.js";
+import type { HoldingsStore } from "./models.js";
 
 /** Fraction above the reference (the higher of price and basis) used as the starting target. */
 export const COVER_ABOVE_PRICE = 0.1;
@@ -38,4 +40,25 @@ export function coverLevel(blendedBasis: number, currentPrice: number): CoverLev
     level: round(Math.max(currentPrice, blendedBasis) * (1 + COVER_ABOVE_PRICE)),
     pctFromBasis: blendedBasis > 0 ? ((currentPrice - blendedBasis) / blendedBasis) * 100 : 0,
   };
+}
+
+/** Symbols with a live alert, upper-cased: the set `coverCandidates` subtracts. */
+export function coveredSymbols(alerts: Alert[]): Set<string> {
+  return new Set(alerts.filter((a) => a.status === "live").map((a) => a.symbol.toUpperCase()));
+}
+
+/**
+ * Held symbols that have no live alert and are not on the ignore list, sorted.
+ *
+ * The selection half of `holdings cover`, separated from the creation half so
+ * both callers agree on who is a candidate: the CLI covers the whole list, and
+ * the dashboard's `holdings.cover` op covers one symbol and uses this to check
+ * that it still qualifies. "Has no live alert" is the op's whole conflict
+ * guard - there is nothing an `expect` could add that this doesn't already say.
+ */
+export function coverCandidates(store: HoldingsStore, alerts: Alert[], ignored: Set<string>): string[] {
+  const covered = coveredSymbols(alerts);
+  return [...new Set(store.lots.map((l) => l.symbol))]
+    .filter((s) => !covered.has(s.toUpperCase()) && !ignored.has(s.toUpperCase()))
+    .sort();
 }

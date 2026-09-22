@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MarketData } from "../src/alerts/engine.js";
 import type { StaticAlert } from "../src/alerts/models.js";
-import { newRevisitEntry, type RevisitEntry } from "../src/alerts/revisit.js";
-import { loadRevisits, saveRevisits } from "../src/alerts/revisitStore.js";
+import type { RelevelPatch } from "../src/alerts/relevel.js";
+import { newRevisitEntry, scoreRevisit, type RevisitEntry } from "../src/alerts/revisit.js";
+import { applyRevisitLevel, loadRevisits, saveRevisits } from "../src/alerts/revisitStore.js";
 import { loadAlerts, saveAlerts } from "../src/alerts/store.js";
 import { applyOp, loadOpLog, parseOp, recentOpResults, type Op, type OpResult } from "../src/ops/apply.js";
 import { pullOps, type OpsQueue, type QueueMessage } from "../src/ops/pull.js";
@@ -362,6 +363,208 @@ describe("applyOp", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toContain(message);
     expect(loadRevisits(revisitsFile)).toEqual(before);
+  });
+
+  // The shared function under both `alert revisit apply` and revisit.apply.
+  // The CLI prints these reasons and exits 1; the op logs them as rejections.
+  describe("applyRevisitLevel", () => {
+    it("refuses an entry that is already closed", () => {
+      saveAlerts(alertsFile, [makeStatic()]);
+      seedRevisit({ status: "applied", suggestedLevel: 118 });
+      const r = applyRevisitLevel(alertsFile, revisitsFile, "rv000001");
+      expect(r).toEqual({ ok: false, reason: "Revisit rv000001 is already applied." });
+      expect(loadAlerts(alertsFile)[0]).toMatchObject({ level: 100 });
+    });
+
+    it("refuses a follow-up crossing and names the fire to use instead", () => {
+      saveAlerts(alertsFile, [makeStatic()]);
+      seedRevisit({ followUpOf: "rv000000", suggestedLevel: 118 });
+      const r = applyRevisitLevel(alertsFile, revisitsFile, "rv000001");
+      expect(r.ok).toBe(false);
+      expect(!r.ok && r.reason).toContain("is a later crossing of revisit rv000000; apply that one instead");
+    });
+
+    it("names the command that would produce a suggestion when there is none", () => {
+      saveAlerts(alertsFile, [makeStatic()]);
+      seedRevisit();
+      const r = applyRevisitLevel(alertsFile, revisitsFile, "rv000001");
+      expect(!r.ok && r.reason).toContain("run 'alert revisit relevel' first");
+    });
+
+    it("refuses anything but a static alert, which is the only kind with a level to move", () => {
+      saveAlerts(alertsFile, []);
+      seedRevisit({ suggestedLevel: 118 });
+      const r = applyRevisitLevel(alertsFile, revisitsFile, "rv000001");
+      expect(!r.ok && r.reason).toContain("an alert that no longer exists");
+    });
+
+    it("re-seeds the baseline above the new level when the trigger was above it", () => {
+      saveAlerts(alertsFile, [makeStatic()]);
+      seedRevisit({ suggestedLevel: 95 });
+      const r = applyRevisitLevel(alertsFile, revisitsFile, "rv000001");
+      expect(r.ok).toBe(true);
+      // Trigger was 101, the new level is 95, so price sits above it.
+      expect(loadAlerts(alertsFile)[0]).toMatchObject({ level: 95, lastKnownSide: "above" });
+    });
+  });
+
+  // ---- revisit.relevel ------------------------------------------------------
+
+  const relevelOp = (target: Record<string, unknown>, id = "op-relv-0001"): Op => {
+    const r = parseOp({ id, type: "revisit.relevel", target, params: {} });
+    if (!r.ok) throw new Error(r.error);
+    return r.op;
+  };
+  /** Stands in for the bars fetch + relevelEntry the CLI supplies. */
+  const fakeRelevel = (patch: Partial<RelevelPatch> = {}) => {
+    const calls: string[] = [];
+    const fn = (entry: RevisitEntry): Promise<RelevelPatch> => {
+      calls.push(entry.id);
+      return Promise.resolve({
+        suggestedLevel: 118,
+        suggestionBasis: "60d high",
+        suggestedAt: "2026-09-15T15:00:00.000Z",
+        priority: 62.5,
+        signals: scoreRevisit({ verdict: "CONFIRMED_BREAKOUT", pctMovePastLevel: 6, daysOpen: 1, heldPosition: false }).signals,
+        ...patch,
+      });
+    };
+    return Object.assign(fn, { calls });
+  };
+
+  it("re-levels one open entry and writes only the five fields a relevel owns", async () => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    const before = seedRevisit();
+    const relevel = fakeRelevel();
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}), relevel, now: NOW };
+    const { result } = await applyOp(relevelOp({ revisitId: "rv000001" }), ctx);
+
+    expect(result).toMatchObject({ ok: true, type: "revisit.relevel", symbol: "TEST", alertId: "s1abcdef" });
+    expect(result.message).toBe("Re-levelled revisit rv000001 (TEST): suggest 118 (60d high). Priority 62.5.");
+    expect(relevel.calls).toEqual(["rv000001"]);
+    const after = loadRevisits(revisitsFile)[0];
+    expect(after).toMatchObject({ suggestedLevel: 118, suggestionBasis: "60d high", priority: 62.5, status: "open" });
+    // Proposing only: nothing that decides anything moved.
+    expect(after.levelAtTrigger).toBe(before.levelAtTrigger);
+    expect(after.appliedFrom).toBeNull();
+    expect(loadAlerts(alertsFile)[0]).toMatchObject({ level: 100 });
+  });
+
+  it("reports a null suggestion with the reason rather than failing", async () => {
+    seedRevisit();
+    const relevel = fakeRelevel({ suggestedLevel: null, suggestionBasis: "moving-average alert: its level moves with the average" });
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}), relevel };
+    const { result } = await applyOp(relevelOp({ revisitId: "rv000001" }), ctx);
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("no new level (moving-average alert: its level moves with the average)");
+  });
+
+  // The difference from ensureProfile: an absent callback is an answer of
+  // "no", not a silent success. Someone asked for a suggestion.
+  it("rejects a re-level when no market data is configured", async () => {
+    seedRevisit();
+    const { result } = await applyOp(relevelOp({ revisitId: "rv000001" }), {
+      alertsFile,
+      revisitsFile,
+      opLogFile,
+      market: fakeMarket({}),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("Re-levelling needs daily bars, and no market data is configured.");
+    expect(loadRevisits(revisitsFile)[0].suggestedLevel).toBeNull();
+  });
+
+  it.each([
+    [{}, (): void => void seedRevisit(), "needs target.revisitId"],
+    [{ revisitId: "rv-gone1" }, (): void => void seedRevisit(), "No revisit entry with id rv-gone1"],
+    [{ revisitId: "rv000001" }, (): void => void seedRevisit({ status: "applied" }), "is already applied"],
+    [{ revisitId: "rv000001" }, (): void => void seedRevisit({ followUpOf: "rv000000" }), "re-level that one instead"],
+  ])("rejects re-levelling %j", async (target, seed, message) => {
+    seed();
+    const before = loadRevisits(revisitsFile);
+    const relevel = fakeRelevel();
+    const { result } = await applyOp(relevelOp(target), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}), relevel });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain(message);
+    expect(relevel.calls).toEqual([]);
+    expect(loadRevisits(revisitsFile)).toEqual(before);
+  });
+
+  // ---- revisit.apply --------------------------------------------------------
+
+  const applyOpFor = (
+    target: Record<string, unknown>,
+    expectField: Record<string, unknown>,
+    params: Record<string, unknown> = {},
+    id = "op-aply-0001"
+  ): Op => {
+    const r = parseOp({ id, type: "revisit.apply", target, expect: expectField, params });
+    if (!r.ok) throw new Error(r.error);
+    return r.op;
+  };
+  const SUGGESTED = { suggestedLevel: 118, condition: "price crosses above 100" };
+
+  it("applies the suggested level, re-seeds the crossing baseline, and closes the entry", async () => {
+    saveAlerts(alertsFile, [makeStatic({ mutedUntil: "2026-09-16T00:00:00.000Z" })]);
+    seedRevisit({ suggestedLevel: 118, suggestionBasis: "60d high" });
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}), now: NOW };
+    const { result } = await applyOp(applyOpFor({ revisitId: "rv000001", alertId: "s1abcdef" }, SUGGESTED), ctx);
+
+    expect(result).toMatchObject({ ok: true, type: "revisit.apply", symbol: "TEST", alertId: "s1abcdef" });
+    expect(result.message).toBe("TEST: alert s1abcdef re-levelled 100 → 118. Revisit rv000001 marked applied.");
+    // The trigger was at 101, under the new 118, so the alert is armed below it
+    // rather than instantly re-firing because the level moved.
+    expect(loadAlerts(alertsFile)[0]).toMatchObject({ level: 118, lastKnownSide: "below", mutedUntil: null });
+    expect(loadRevisits(revisitsFile)[0]).toMatchObject({ status: "applied", appliedFrom: 100, appliedTo: 118 });
+  });
+
+  it("applies an edited level instead of the suggestion", async () => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    seedRevisit({ suggestedLevel: 118 });
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}) };
+    const { result } = await applyOp(applyOpFor({ revisitId: "rv000001" }, SUGGESTED, { level: 125 }), ctx);
+    expect(result.ok).toBe(true);
+    expect(loadAlerts(alertsFile)[0]).toMatchObject({ level: 125 });
+    expect(loadRevisits(revisitsFile)[0]).toMatchObject({ appliedFrom: 100, appliedTo: 125 });
+  });
+
+  // The guard the other alert-changing ops don't need. expect.condition alone
+  // catches the alert moving but not the suggestion moving, so a relevel
+  // landing between render and click would apply a number nobody saw.
+  it("rejects an apply when the suggestion changed since the page loaded", async () => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    seedRevisit({ suggestedLevel: 118 });
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}) };
+    const op = applyOpFor({ revisitId: "rv000001" }, { suggestedLevel: 110, condition: "price crosses above 100" });
+    const { result } = await applyOp(op, ctx);
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("Not applied: the suggestion changed since the page loaded. It is now 118.");
+    expect(loadAlerts(alertsFile)[0]).toMatchObject({ level: 100 });
+    expect(loadRevisits(revisitsFile)[0]).toMatchObject({ status: "open" });
+  });
+
+  it("rejects an apply when the alert changed since the page loaded", async () => {
+    saveAlerts(alertsFile, [makeStatic({ level: 105 })]);
+    seedRevisit({ suggestedLevel: 118 });
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}) };
+    const { result } = await applyOp(applyOpFor({ revisitId: "rv000001" }, SUGGESTED), ctx);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('It is now "price crosses above 105"');
+    expect(loadRevisits(revisitsFile)[0]).toMatchObject({ status: "open" });
+  });
+
+  it.each([
+    [{ revisitId: "rv000001", alertId: "other123" }, {}, "belongs to alert s1abcdef"],
+    [{ revisitId: "rv000001" }, { suggestedLevel: null }, "has no suggested level yet"],
+  ])("rejects applying %j", async (target, overrides, message) => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    const seeded = seedRevisit({ suggestedLevel: 118, ...overrides });
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}) };
+    const op = applyOpFor(target, { suggestedLevel: seeded.suggestedLevel, condition: "price crosses above 100" });
+    const { result } = await applyOp(op, ctx);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain(message);
+    expect(loadAlerts(alertsFile)[0]).toMatchObject({ level: 100 });
   });
 
   // An edit made anywhere is the decision the alert's open fires were waiting

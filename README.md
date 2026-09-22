@@ -7,10 +7,11 @@ firing lands in a **revisit queue**, a durable to-do list of levels that got tak
 out and now need a decision.
 
 A browser dashboard at **https://watch.billbaran.us** shows that queue, recent
-triggers, your holdings, and every live alert, and lets you edit alerts from the
-page. Everything that holds state (alerts, positions, queue) lives in flat JSON
+triggers, your holdings, and every live alert — and acts on them: propose a new
+level for a fired alert and apply it, add or edit any kind of alert, manage lots and
+stops. Everything that holds state (alerts, positions, queue) lives in flat JSON
 files on one machine. The cloud only holds a rendered copy of what that machine
-published, plus a mailbox of edits waiting to be collected.
+published, plus a mailbox of changes waiting to be collected.
 
 **You need:** Node.js, and a Schwab developer app with the Market Data product
 ([`docs/SETUP.md`](docs/SETUP.md)). **Optional:** an AWS account for the browser
@@ -147,23 +148,25 @@ published, so an open tab toasts it. If AA crossed back under 43 within the next
 `holdDays` trading days, that crossing would be **folded onto this same entry** as the
 reversal rather than queued separately.
 
-**4. You ask what to do about it.** `alert revisit relevel` pulls daily bars for every
-open entry, proposes a level, and scores the queue. It suggests 55. You take it:
+**4. You ask what to do about it.** Nothing re-levels itself, so the queue waits for
+you. *Suggest level* on the row pulls daily bars for that entry, proposes a level and
+scores it; *Apply → 55* takes it. The same thing over the whole queue, from the CLI:
 
 ```bash
 node dist/cli.js alert revisit relevel
 node dist/cli.js alert revisit apply rv0000a1
 ```
 
-The alert moves to 55, its crossing baseline is re-seeded so it doesn't fire just
-because the level moved, and the entry closes as `applied` with the move recorded.
+Either way the alert moves to 55, its crossing baseline is re-seeded so it doesn't
+fire just because the level moved, and the entry closes as `applied` with the move
+recorded. Both run the same code, so both propose the same level.
 
 **5. It fires again, and this one needs a decision.** AA takes out 55 too, at 55.60.
 The queue row is the whole verdict in one place: priority, the English headline, the
 `held` tag because AA is in `holdings.json`, what has happened since, and the signal
 breakdown behind the score:
 
-![A revisit queue row: priority 47, the headline, the held tag, the fired line with a suggested level, price since the fire, and the signal breakdown](docs/images/queue-row.png)
+![A revisit queue row: priority 47, the headline, the held tag, the fired line with a suggested level, price since the fire, the position, what the suggestion was read off, the signal breakdown, and the Details, Chart, Re-suggest, Apply and Dismiss actions](docs/images/queue-row.png)
 
 The score is not a recommendation to buy. It ranks what most deserves your attention,
 and `held position (15pt)` is part of why this one is at the top.
@@ -172,7 +175,7 @@ and `held position (15pt)` is part of why this one is at the top.
 Everything here except the current price was recorded when it fired, so it stays true
 even after you move or delete the alert:
 
-![The trigger details drawer: when it fired and in which session, status, the condition at trigger time, price and level at trigger, direction, the breakout verdict, move past level, volume vs normal, the priority breakdown, the suggested level, and the watch-history line](docs/images/trigger-details.png)
+![The trigger details drawer: when it fired and in which session, status, the condition at trigger time, price and level at trigger, direction, the breakout verdict, move past level, volume vs normal, the priority breakdown, the suggested level, the watch-history line, and the position](docs/images/trigger-details.png)
 
 **7. The story is the part a flat list hides.** Two fires with the re-level between
 them, which is the chase the queue exists to make visible:
@@ -180,7 +183,9 @@ them, which is the chase the queue exists to make visible:
 ![A story: AA has fired 2 times since Sep 16, walking its level from 43 up to 55, with 1 still open, followed by the dated sequence of fires and re-levels](docs/images/story.png)
 
 **8. You decide, from the page this time.** With editing unlocked, the alert's drawer
-carries an edit form, price and volume together:
+carries an edit form, price and volume together. (The queue row's *Suggest level* and
+*Apply* from step 4 are the shortcut when you agree with what it proposes; this is
+for when you don't.)
 
 ![The alert edit form: a Level field, a Fires on select, a Volume mode select, a volume amount field, a window select, a Queue edit button, and a note that the edit is applied at the next scheduled check and rejected if the alert changes before then](docs/images/alert-edit.png)
 
@@ -222,9 +227,9 @@ that would need Web Push, which nothing sends yet).
 |---|---|
 | `schwab-login` | **weekly.** Schwab's refresh token lives 7 days and only an interactive browser flow renews it |
 | `npm run build` | after any change under `src/`. The scheduled task runs `dist/`, not `src/` |
-| `alert revisit relevel` | when you want proposed levels and priority scores. The scheduled run does **not** do this: an entry has no `suggestedLevel` or priority until you run it |
-| `alert revisit apply` / `dismiss`, or an edit from the page | deciding what to do about a queue entry. Nothing ever re-levels itself |
-| `holdings check` | the three basis-relative conditions; not in the scheduled run, and daily is plenty |
+| `alert revisit relevel`, or *Suggest level* on a queue row | when you want proposed levels and priority scores. The scheduled run does **not** do this: an entry has no `suggestedLevel` or priority until you ask, per entry from the page or over the whole queue from the CLI |
+| `alert revisit apply` / `dismiss`, or *Apply* / *Dismiss* on the page | deciding what to do about a queue entry. Nothing ever re-levels itself |
+| `holdings check` | the three basis-relative conditions; not in the scheduled run, and daily is plenty. The page shows the two of them that are state rather than events |
 | `analyze` | breakout-confirming a batch of triggers, once or twice a day at most |
 | `profile fetch` | topping up the sector/exchange cache (250/day free tier) |
 | `holdings import` / `add-lot` | when positions change; there is no brokerage sync |
@@ -271,6 +276,9 @@ Three rules that surprise people:
   whichever is closer to the price.
 - **Prefer `--volume-ratio` to an absolute volume.** A fixed threshold rots silently as
   liquidity changes; an imported one fired on 82 of 82 sessions.
+
+All four kinds can also be added and edited from the dashboard, with the same
+validation: the New alert form takes a kind and shows only the fields it needs.
 
 Everything else (volume windows and baselines, moving-average semantics, market hours,
 the revisit queue and its scoring, `alert seed`) is in

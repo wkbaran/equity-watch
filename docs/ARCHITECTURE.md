@@ -51,10 +51,11 @@ a wrong token fails the decrypt, and the page says so and clears it before a sin
 op is queued. Opening the vault **is** the token check.
 
 Unlocking turns on two things at once: holdings become visible (they are otherwise
-absent, not hidden), and the editing controls appear — add and edit alerts, remove
-alerts, dismiss queue entries, add/edit/remove lots, remove a position, add and
-remove stops. **Lock editing** drops the token and the decrypted holdings from
-memory.
+absent, not hidden), and the editing controls appear — add, edit and remove alerts
+of any kind; suggest a new level for a queue entry, apply it, or dismiss the entry;
+add, edit and remove lots; remove a position; add, edit and remove stops; and give
+an uncovered position a starting alert. **Lock editing** drops the token and the
+decrypted holdings from memory.
 
 ## Holdings are encrypted in the browser, not hidden by the page
 
@@ -93,11 +94,40 @@ id of 8–64 `[A-Za-z0-9-]`, a known op type, the target key that type requires,
 before `timingSafeEqual`, so it is constant-time whatever the lengths. Then it sends
 one SQS message and returns `202`.
 
-The op types are `alert.add`, `alert.edit`, `alert.remove`, `revisit.dismiss`,
-`lot.add`, `lot.edit`, `lot.remove`, `position.remove`, `stop.add`, and `stop.remove`.
+The op types are `alert.add`, `alert.edit`, `alert.remove`, `revisit.relevel`,
+`revisit.apply`, `revisit.dismiss`, `lot.add`, `lot.edit`, `lot.remove`,
+`position.remove`, `stop.add`, `stop.edit`, `stop.remove`, and `holdings.cover`.
 Adding another means updating the Lambda's inline `TARGET_KEY` and redeploying the
 stack, or the page gets "Unknown op type"; `tests/lambdaContract.test.ts` asserts the
 template and `OP_TYPES` agree.
+
+Three of them are the atomic unit of a command that is otherwise a whole-store
+batch pass, so a decision can be made one row at a time from the page:
+
+| op | the batch it comes from | needs a quote |
+|---|---|---|
+| `revisit.relevel` | `alert revisit relevel`, over every open entry | yes — daily bars |
+| `revisit.apply` | `alert revisit apply <id>`, already per-entry | no |
+| `holdings.cover` | `holdings cover`, over every uncovered position | yes — the last price |
+
+Each runs the *same* function the CLI does (`relevelEntry`, `applyRevisitLevel`,
+`coverCandidates`), which is why the level the page proposes is the level the CLI
+proposes. A second implementation would diverge on the cases those functions exist
+to get right — a moving average has no level to re-point, a downward fire would
+invert the alert — and nothing would catch it.
+
+Their guards differ from the rest on purpose:
+
+- **`revisit.apply` checks `expect.suggestedLevel` as well as `expect.condition`.**
+  The condition alone is the guard every other alert-changing op uses, and it is not
+  enough here: it catches the alert moving but not the *suggestion* moving, so a
+  `revisit.relevel` landing between the page rendering and the click would apply a
+  number nobody saw. `params.level` overrides the suggestion, for editing it first.
+- **`revisit.relevel` has no `expect` at all.** It overwrites only the five fields a
+  relevel owns and changes no decision, so a stale page costs nothing.
+- **`holdings.cover` is self-guarding.** The rule *is* "this symbol has no live
+  alert", so the worker re-checks it; there is nothing an `expect` could assert that
+  the rule doesn't already say.
 
 Nothing semantic is checked in the Lambda — whether the alert exists, whether the
 level makes sense against a live quote, whether the lot still looks the way the page
@@ -266,6 +296,14 @@ decide what this is allowed to hold:
   likewise embedded in the CloudFront Function's source.
 - **The bucket is not versioned.** A bad publish overwrites the good one; the fix is to
   publish again, since every document is regenerated from local state.
+- **A cover level on an underwater position implies its basis.** `holdings cover`
+  puts the level 10% above the *higher* of the live price and the basis, so on a
+  position trading below cost the published alert is `basis × 1.1` — and the alert
+  book is public. This is not new: the scheduled `holdings cover` has always worked
+  this way, and the button added in 2026-09-21 only makes it reachable sooner. It is
+  the one place a published number is a function of a private one. Turn on basic auth
+  if that matters; nothing else about the position (size, value, cost) is exposed
+  either way.
 - **Queued ops are not encrypted end-to-end.** A message carries symbols, levels, and —
   for a lot — share counts and basis, readable by anyone with queue access in your AWS
   account. None of that reaches the public site: a holdings op *result* names the

@@ -37,9 +37,18 @@ async function main() {
   const page = await ctx.newPage();
   await page.request.get(`${BASE}/__reset`);
 
-  // 1. The open queue row: headline, held tag, priority, actions.
+  // Editing unlocked for every shot: the queue row's Suggest/Apply and the
+  // alert's edit form are the point of half of them, and a locked row shows
+  // only Details and Chart. The init script runs on a real load, and a
+  // hash-only goto doesn't reload - hence the explicit reload after seeding.
+  await ctx.addInitScript((t) => localStorage.setItem("equity-watch.opsToken", t), OPS_TOKEN);
+
+  // 1. The open queue row: headline, held tag, priority, and the whole
+  // decision - Suggest level, Apply, Dismiss.
   await page.goto(`${BASE}/#/queue`);
+  await page.reload();
   await page.locator("#queue .queue-row").first().waitFor({ state: "visible" });
+  await page.locator("#queue .queue-row button").first().waitFor({ state: "visible" });
   await shot(page, "#queue .queue-row", "queue-row");
 
   // 2. The trigger drawer's facts for that same fire. Just the kv-list: the
@@ -51,11 +60,7 @@ async function main() {
   await page.goto(`${BASE}/#/stories`);
   await shot(page, "#stories .story", "story");
 
-  // 4. The alert's edit form, which needs editing unlocked. The init script
-  // only runs on a real load, and a hash-only goto doesn't reload - hence the
-  // explicit reload before the drawer route.
-  await ctx.addInitScript((t) => localStorage.setItem("equity-watch.opsToken", t), OPS_TOKEN);
-  await page.reload();
+  // 4. The alert's edit form.
   await page.goto(`${BASE}/#/alert/${STATIC.id}`);
   const editForm = page.locator("#drawer-body form");
   await editForm.waitFor({ state: "visible" });

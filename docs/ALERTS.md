@@ -153,7 +153,9 @@ node dist/cli.js alert add --symbol AAPL --ma sma9@1D --touch 0.5 --from above
 (`1m 2m 5m 15m 1D 1W`).
 
 - **The level moves with the average.** Nothing to re-level: `revisit relevel`
-  proposes no new level for these, and `apply` doesn't apply to them.
+  proposes no new level for these, and `apply` doesn't apply to them. The queue row
+  says so in place of a level ("No new level — moving-average alert: its level moves
+  with the average"), rather than leaving you wondering why there's no Apply.
 - **Completed bars only.** The average in force at any moment is taken over bars
   that had already closed, so a daily or weekly average holds still all day and an
   intraday one steps once per bar. That's what a chart shows for any bar but the one
@@ -260,8 +262,13 @@ node dist/cli.js alert revisit dismiss <id> # close the entry, leave the alert a
 ```
 
 `relevel` is the pass that makes the queue useful, and it is **not** part of the
-scheduled run — until you run it, an entry has no suggested level and no priority
-score. For each open entry it pulls daily bars and:
+scheduled run — until you ask for it, an entry has no suggested level and no
+priority score. Asking can be this command, over the whole queue, or the
+**Suggest level** button on a single row of the browser dashboard, which queues a
+`revisit.relevel` op for that one entry. Both run the same `relevelEntry`, so they
+propose the same level for the same bars.
+
+For each open entry it pulls daily bars and:
 
 - **proposes a new level** if price has pushed past the old one — the highest high
   over `recentHighLookbackDays` if there's resistance overhead, or that high plus
@@ -286,6 +293,13 @@ score. For each open entry it pulls daily bars and:
 Suggestions are only ever *proposed*. **Nothing re-levels itself** — `apply` is the
 only thing that moves an alert, and it re-seeds the crossing baseline against the
 new level so the alert doesn't immediately fire just because the level moved.
+`--level` takes a number of your own instead of the suggestion, which is what the
+dashboard's Apply sends when you edit the level before taking it.
+
+Applying is refused on an entry that is already closed, on a later crossing folded
+onto an earlier fire (apply that fire instead), and on anything but a static alert —
+a trailing alert's level and a moving average's are recomputed on every check, so
+there is nothing to re-point.
 
 Entries carry the alert's **condition and observed volume as recorded at trigger
 time**, so they stay true after the alert is edited or removed. Entries written

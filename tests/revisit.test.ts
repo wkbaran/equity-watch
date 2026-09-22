@@ -9,7 +9,8 @@ import {
   verdictScore,
   volumeScore,
 } from "../src/alerts/revisit.js";
-import { suggestLevel } from "../src/alerts/relevel.js";
+import type { RevisitEntry } from "../src/alerts/revisit.js";
+import { applyRelevelPatch, relevelEntry, suggestLevel } from "../src/alerts/relevel.js";
 import { DEFAULT_ANALYSIS_PARAMS } from "../src/analysis.js";
 import type { PriceBar } from "../src/models.js";
 
@@ -195,5 +196,98 @@ describe("suggestLevel", () => {
     const highs = [900, ...Array(60).fill(100), 106];
     const result = suggestLevel(bars(closes, highs), 100, params);
     expect(result.suggestedLevel).not.toBe(900);
+  });
+});
+
+/**
+ * The unit of work `alert revisit relevel` repeats over the queue and the
+ * dashboard's `revisit.relevel` op queues for one row. Both run exactly this,
+ * so the rules below are the page's rules too.
+ */
+describe("relevelEntry", () => {
+  const params = DEFAULT_ANALYSIS_PARAMS;
+  const NOW = new Date("2026-09-20T15:00:00.000Z");
+
+  const entry = (overrides: Partial<RevisitEntry> = {}): RevisitEntry => ({
+    id: "rv000001",
+    alertId: "st000001",
+    symbol: "AA",
+    kind: "static",
+    triggeredAt: "2026-09-16T14:00:00.000Z",
+    triggerPrice: 44.1,
+    levelAtTrigger: 43,
+    session: "regular",
+    watchingSince: "2026-09-01T00:00:00.000Z",
+    watchingSinceApprox: false,
+    priceAtWatchStart: 38,
+    status: "open",
+    appliedFrom: null,
+    appliedTo: null,
+    suggestedLevel: null,
+    suggestedAt: null,
+    suggestionBasis: null,
+    resolvedAt: null,
+    priority: null,
+    signals: null,
+    direction: "up",
+    ...overrides,
+  });
+
+  it("proposes the lookback high and scores the entry", () => {
+    const patch = relevelEntry(entry(), bars([43, 48, 50], [43, 52, 55]), params, new Set(), NOW);
+    expect(patch.suggestedLevel).toBe(55);
+    expect(patch.suggestionBasis).toBe(`${params.recentHighLookbackDays}d high`);
+    expect(patch.suggestedAt).toBe("2026-09-20T15:00:00.000Z");
+    expect(patch.priority).toBeGreaterThan(0);
+    expect(patch.signals.daysOpen).toBe(4);
+  });
+
+  // A moving average IS the level, so there is nothing to re-point it to. The
+  // move past it still scores.
+  it("proposes nothing for a moving-average entry, and says why", () => {
+    const patch = relevelEntry(entry({ kind: "ma" }), bars([43, 48, 50], [43, 52, 55]), params, new Set(), NOW);
+    expect(patch.suggestedLevel).toBeNull();
+    expect(patch.suggestionBasis).toBe("moving-average alert: its level moves with the average");
+    expect(patch.priority).toBeGreaterThan(0);
+  });
+
+  // suggestLevel only ever looks up, so proposing for a downward fire would
+  // invert the alert into a breakout target.
+  it("proposes nothing for a downward fire, and says why", () => {
+    const patch = relevelEntry(entry({ direction: "down" }), bars([50, 45, 40], [55, 48, 42]), params, new Set(), NOW);
+    expect(patch.suggestedLevel).toBeNull();
+    expect(patch.suggestionBasis).toBe("downward fire: re-levelling only proposes levels above price");
+    expect(patch.signals.moveDirection).toBe("down");
+  });
+
+  it("still scores a volume-only entry, which has no bars to fetch against", () => {
+    const patch = relevelEntry(entry({ kind: "volume", levelAtTrigger: null }), [], params, new Set(), NOW);
+    expect(patch.suggestedLevel).toBeNull();
+    expect(patch.signals.verdict).toBeNull();
+    expect(patch.signals.stalenessScore).toBeGreaterThan(0);
+  });
+
+  it("scores a held position higher than the same entry unheld", () => {
+    const b = bars([43, 48, 50], [43, 52, 55]);
+    const unheld = relevelEntry(entry(), b, params, new Set(), NOW);
+    const held = relevelEntry(entry(), b, params, new Set(["AA"]), NOW);
+    expect(held.priority).toBeGreaterThan(unheld.priority);
+    expect(held.signals.heldPosition).toBe(true);
+  });
+
+  it("matches the symbol case-insensitively against the held set", () => {
+    const patch = relevelEntry(entry({ symbol: "aa" }), [], params, new Set(["AA"]), NOW);
+    expect(patch.signals.heldPosition).toBe(true);
+  });
+
+  it("writes exactly the five fields it owns, and nothing else", () => {
+    const e = entry();
+    const before = { ...e };
+    applyRelevelPatch(e, relevelEntry(e, bars([43, 48, 50], [43, 52, 55]), params, new Set(), NOW));
+    expect(e.suggestedLevel).toBe(55);
+    expect(e.priority).not.toBeNull();
+    for (const key of ["id", "alertId", "symbol", "status", "levelAtTrigger", "triggerPrice", "appliedFrom", "appliedTo"] as const) {
+      expect(e[key]).toEqual(before[key]);
+    }
   });
 });

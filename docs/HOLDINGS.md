@@ -62,6 +62,12 @@ one cycle. It exits before fetching a single quote when every held symbol alread
 has an alert, so a quiet run costs nothing. Run it **after** `alert seed`, or every
 position will look uncovered. Symbols in `ignoreSymbols` are skipped.
 
+A single position can also be covered from the browser dashboard — **Cover with an
+alert** on a position that has none, which queues a `holdings.cover` op for that one
+symbol. It runs the same selection rule, so it refuses a symbol that has since
+gained a live alert (naming what it has) and one on the ignore list. Useful when you
+don't want to wait for the next scheduled pass, or right after removing an alert.
+
 ## Importing from Webull
 
 `holdings import` reads Webull's holdings export, one `--csv account=path` per
@@ -105,3 +111,24 @@ something fires — a third distinct prefix alongside `breakout_report_*` and
 `alert_triggers_*`. None of these three conditions need 5–15-minute resolution the
 way trailing and volume alerts do, so a coarser cadence (daily) is reasonable, which
 is why **it is not part of the scheduled run**.
+
+The browser dashboard shows the first two as *state* on each holdings row
+(`+10% over basis`, `stagnant`) without running this command at all: they are pure
+functions of the position, so the page works them out from the decrypted rows. The
+third is an event — it depends on which bands have already been reported, which is
+recorded in `holdings.json` and never leaves the machine — so only this command can
+tell you about it.
+
+## In the browser
+
+With editing unlocked, `#/holdings` shows the same positions, lots and stops, and
+can change them: add, edit and remove lots, add, edit and remove stops, remove a
+whole position, and cover one that has no alert. Everything here is queued and
+applied by the next scheduled `ops pull`, exactly like an alert edit.
+
+None of it is in the published document. The site has no login by default, so
+`dashboard.json` carries no share count, basis, market value or stop; the page reads
+them from `vault.json`, which is AES-256-GCM sealed under the ops token and
+decrypted in the browser after unlocking. The one holdings fact allowed to travel in
+the clear is *that* a symbol is held, which is what the `held` tag rides on. The
+full model is in [ARCHITECTURE.md](ARCHITECTURE.md#holdings-are-encrypted-in-the-browser-not-hidden-by-the-page).

@@ -135,6 +135,87 @@ export function resolveRevisit(
 }
 
 /**
+ * Moves an alert onto a queue entry's suggested level and closes the entry.
+ *
+ * The body of `alert revisit apply`, lifted out of the CLI so the dashboard's
+ * queued `revisit.apply` op runs exactly this and not a second copy of it. The
+ * CLI used to inline it with `process.exit(1)` on each refusal, which a worker
+ * cannot use; every refusal is a returned reason now, and the CLI prints it.
+ *
+ * `level` overrides the entry's own suggestion - the page lets you edit the
+ * number before taking it. Without one the suggestion must exist: an entry
+ * that has never been re-levelled has nothing to apply.
+ */
+export interface ApplyRevisitResult {
+  entry: RevisitEntry;
+  alertId: string;
+  from: number;
+  to: number;
+}
+
+export function applyRevisitLevel(
+  alertsPath: string,
+  revisitsPath: string,
+  id: string,
+  level?: number
+): { ok: true; value: ApplyRevisitResult } | { ok: false; reason: string } {
+  const entries = loadRevisits(revisitsPath);
+  const entry = entries.find((e) => e.id === id);
+  if (entry === undefined) {
+    return { ok: false, reason: `No revisit entry with id ${id}.` };
+  }
+  if (entry.status !== "open") {
+    return { ok: false, reason: `Revisit ${id} is already ${entry.status}.` };
+  }
+  // A follow-up is a later crossing of the same level, not a fire of its own.
+  // Its anchor carries the level and the suggestion.
+  if (entry.followUpOf !== undefined) {
+    return {
+      ok: false,
+      reason: `Revisit ${id} (${entry.symbol}) is a later crossing of revisit ${entry.followUpOf}; apply that one instead.`,
+    };
+  }
+
+  const target = level ?? entry.suggestedLevel;
+  if (target === null) {
+    return {
+      ok: false,
+      reason:
+        `Revisit ${id} (${entry.symbol}) has no suggested level yet — run 'alert revisit relevel' first, ` +
+        `or set the level yourself with 'alert add --symbol ${entry.symbol} --level <price>'.`,
+    };
+  }
+
+  const alerts = loadAlerts(alertsPath);
+  const alert = alerts.find((a) => a.id === entry.alertId);
+  if (alert === undefined || alert.kind !== "static") {
+    return {
+      ok: false,
+      reason:
+        `Revisit ${id} points at ${alert === undefined ? "an alert that no longer exists" : `a ${alert.kind} alert`}; ` +
+        `only static alerts carry a level that can be re-pointed.`,
+    };
+  }
+
+  // Only the level moves. `direction` is left as it is: re-levelling says
+  // where to watch, not which crossing matters.
+  const previous = alert.level;
+  alert.level = target;
+  // Record the move on the entry itself so the ticker story can say what you
+  // did, not just that you did something.
+  entry.appliedFrom = previous;
+  entry.appliedTo = alert.level;
+  saveRevisits(revisitsPath, entries);
+  // Re-seed the crossing baseline against the new level so the alert doesn't
+  // immediately fire (or immediately go quiet) purely because the level moved.
+  alert.lastKnownSide = entry.triggerPrice > alert.level ? "above" : "below";
+  alert.mutedUntil = null;
+  saveAlerts(alertsPath, alerts);
+  resolveRevisit(revisitsPath, id, "applied");
+  return { ok: true, value: { entry, alertId: alert.id, from: previous, to: alert.level } };
+}
+
+/**
  * Closes every open entry for one alert after that alert was edited, from
  * anywhere: the CLI, the alert's own panel, or a trigger's panel. Editing the
  * alert is the decision an open fire was waiting on, so the queue shouldn't

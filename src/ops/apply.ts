@@ -18,17 +18,26 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { describeAlertCondition } from "../alerts/describe.js";
 import { addAlert, editAlert, type MarketData } from "../alerts/engine.js";
-import { closeRevisitsForEdit, loadRevisits, resolveRevisit } from "../alerts/revisitStore.js";
+import { applyRelevelPatch, type RelevelPatch } from "../alerts/relevel.js";
+import type { RevisitEntry } from "../alerts/revisit.js";
+import { applyRevisitLevel, closeRevisitsForEdit, loadRevisits, resolveRevisit, saveRevisits } from "../alerts/revisitStore.js";
 import { loadAlerts, saveAlerts } from "../alerts/store.js";
 import type { Alert } from "../alerts/models.js";
-import { applyHoldingsOp } from "./holdings.js";
-import { addFieldsFromJson, editFieldsFromJson, parseAddInput, parseAlertEdit, stringField } from "./validate.js";
+import { applyHoldingsOp, applyCoverOp } from "./holdings.js";
+import {
+  addFieldsFromJson,
+  editFieldsFromJson,
+  parseAddInput,
+  parseAlertEdit,
+  parseRevisitApply,
+  stringField,
+} from "./validate.js";
 
 export const DEFAULT_OP_LOG = "ops.log.jsonl";
 export const DEFAULT_HOLDINGS_FILE = "holdings.json";
 export const DEFAULT_REVISITS_FILE = "revisits.json";
 
-export const OP_TYPES = ["alert.add", "alert.edit", "alert.remove", "revisit.dismiss", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.remove"] as const;
+export const OP_TYPES = ["alert.add", "alert.edit", "alert.remove", "revisit.relevel", "revisit.apply", "revisit.dismiss", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.edit", "stop.remove", "holdings.cover"] as const;
 export type OpType = (typeof OP_TYPES)[number];
 
 /**
@@ -140,6 +149,25 @@ export interface ApplyContext {
    * knowledge and tests need no network. It must never throw: see the call.
    */
   ensureProfile?: (symbol: string) => Promise<void>;
+  /**
+   * Re-levels and re-scores one open queue entry: fetch its symbol's daily
+   * bars, then `relevelEntry`. A callback for the same reason `ensureProfile`
+   * is one — this module stays free of provider knowledge and tests need no
+   * network.
+   *
+   * **But absent means reject, not skip.** `ensureProfile` swallows everything
+   * because a chart link is cosmetic and its op has already landed. This *is*
+   * the op: someone asked for a suggestion and has to get an answer, so with no
+   * market data configured `applyRelevel` returns a rejection saying so. Don't
+   * copy the swallow from the call below this one.
+   */
+  relevel?: (entry: RevisitEntry) => Promise<RelevelPatch>;
+  /**
+   * Symbols the config says to leave alone (TuningConfig.ignoreSymbols), so a
+   * queued `holdings.cover` refuses the same names the batch pass skips. A set
+   * rather than a config path: this module reads stores, not settings.
+   */
+  ignored?: Set<string>;
 }
 
 export interface ApplyOutcome {
@@ -159,16 +187,7 @@ export async function applyOp(op: Op, ctx: ApplyContext): Promise<ApplyOutcome> 
   if (prior !== undefined) {
     return { result: prior, duplicate: true };
   }
-  const outcome =
-    op.type === "alert.add"
-      ? await applyAdd(op, ctx)
-      : op.type === "alert.edit"
-        ? await applyEdit(op, ctx)
-        : op.type === "alert.remove"
-          ? applyRemove(op, ctx)
-          : op.type === "revisit.dismiss"
-            ? applyDismiss(op, ctx)
-            : applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
+  const outcome = await applyByType(op, ctx);
   const result: OpResult = { id: op.id, type: op.type, ...outcome, appliedAt: (ctx.now?.() ?? new Date()).toISOString() };
   appendOpResult(ctx.opLogFile, result);
   // After the result is logged, and swallowing everything. A chart link is
@@ -183,6 +202,33 @@ export async function applyOp(op: Op, ctx: ApplyContext): Promise<ApplyOutcome> 
     }
   }
   return { result, duplicate: false };
+}
+
+/**
+ * The one place an op type picks its handler. A chain of ternaries stopped
+ * being readable at ten types, and this has to stay exhaustive: a type in
+ * OP_TYPES with no case here is accepted by `parseOp` and the Lambda and then
+ * falls through to a rejection nobody expects.
+ */
+async function applyByType(op: Op, ctx: ApplyContext): Promise<Outcome> {
+  switch (op.type) {
+    case "alert.add":
+      return applyAdd(op, ctx);
+    case "alert.edit":
+      return applyEdit(op, ctx);
+    case "alert.remove":
+      return applyRemove(op, ctx);
+    case "revisit.relevel":
+      return applyRelevel(op, ctx);
+    case "revisit.apply":
+      return applyApply(op, ctx);
+    case "revisit.dismiss":
+      return applyDismiss(op, ctx);
+    case "holdings.cover":
+      return applyCover(op, ctx);
+    default:
+      return applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
+  }
 }
 
 const reject = (symbol: string | null, alertId: string | null, message: string): Outcome => ({ symbol, alertId, ok: false, message });
@@ -319,6 +365,142 @@ function applyRemove(op: Op, ctx: ApplyContext): Outcome {
   const alertId = alert.id;
   saveAlerts(ctx.alertsFile, alerts.filter((a) => a.id !== alertId));
   return { symbol: alert.symbol, alertId, ok: true, message: `Removed ${alert.kind} alert ${alertId} (${alert.symbol}: ${now}).` };
+}
+
+/**
+ * Re-levels and re-scores one open queue entry, as `alert revisit relevel`
+ * does for the whole queue. Proposes only: the entry's `suggestedLevel` and
+ * `priority` change and nothing else does, which is why this takes no
+ * `expect`. A stale page costs nothing here — re-scoring an entry decides
+ * nothing, and the answer is whatever the bars say now.
+ */
+async function applyRelevel(op: Op, ctx: ApplyContext): Promise<Outcome> {
+  const revisitId = stringField(op.target, "revisitId");
+  if (revisitId === null || revisitId === "") {
+    return reject(null, null, "A re-level needs target.revisitId.");
+  }
+  const revisitsFile = ctx.revisitsFile ?? DEFAULT_REVISITS_FILE;
+  const entries = loadRevisits(revisitsFile);
+  const entry = entries.find((e) => e.id === revisitId);
+  if (entry === undefined) {
+    return reject(null, null, `No revisit entry with id ${revisitId}.`);
+  }
+  if (entry.status !== "open") {
+    return reject(entry.symbol, entry.alertId, `Revisit ${revisitId} is already ${entry.status}.`);
+  }
+  // A follow-up is a later crossing folded onto the fire it follows; that fire
+  // carries the level, so it is the one with something to propose.
+  if (entry.followUpOf !== undefined) {
+    return reject(
+      entry.symbol,
+      entry.alertId,
+      `Revisit ${revisitId} is a later crossing of revisit ${entry.followUpOf}; re-level that one instead.`
+    );
+  }
+  // Absent callback is a rejection, not a skip: see ApplyContext.relevel.
+  if (ctx.relevel === undefined) {
+    return reject(entry.symbol, entry.alertId, "Re-levelling needs daily bars, and no market data is configured.");
+  }
+
+  const patch = await ctx.relevel(entry);
+  applyRelevelPatch(entry, patch);
+  saveRevisits(revisitsFile, entries);
+  const proposal =
+    patch.suggestedLevel === null
+      ? `no new level (${patch.suggestionBasis})`
+      : `suggest ${patch.suggestedLevel} (${patch.suggestionBasis})`;
+  return {
+    symbol: entry.symbol,
+    alertId: entry.alertId,
+    ok: true,
+    message: `Re-levelled revisit ${revisitId} (${entry.symbol}): ${proposal}. Priority ${patch.priority}.`,
+  };
+}
+
+/**
+ * Moves the alert onto the entry's suggested level and closes the entry, as
+ * `alert revisit apply` does.
+ *
+ * Guarded on **both** `expect.condition` and `expect.suggestedLevel`. The
+ * condition alone is the guard every other alert-changing op uses, and it is
+ * not enough here: it catches the alert moving but not the *suggestion*
+ * moving, so a `revisit.relevel` landing between the page rendering and the
+ * click would apply a number nobody saw. `params.level` overrides the
+ * suggestion, for editing it before taking it — the guard still covers what
+ * was on screen either way.
+ */
+function applyApply(op: Op, ctx: ApplyContext): Outcome {
+  const revisitId = stringField(op.target, "revisitId");
+  if (revisitId === null || revisitId === "") {
+    return reject(null, null, "An apply needs target.revisitId.");
+  }
+  const revisitsFile = ctx.revisitsFile ?? DEFAULT_REVISITS_FILE;
+  const entry = loadRevisits(revisitsFile).find((e) => e.id === revisitId);
+  if (entry === undefined) {
+    return reject(null, null, `No revisit entry with id ${revisitId}.`);
+  }
+  const alertId = stringField(op.target, "alertId");
+  if (alertId !== null && alertId !== "" && entry.alertId !== alertId) {
+    return reject(entry.symbol, alertId, `Revisit ${revisitId} belongs to alert ${entry.alertId}, not ${alertId}.`);
+  }
+
+  const expected = op.expect;
+  if (expected === null || typeof expected !== "object") {
+    return reject(entry.symbol, entry.alertId, "An apply needs expect.condition and expect.suggestedLevel.");
+  }
+  const expectedLevel = (expected as Record<string, unknown>).suggestedLevel;
+  if (expectedLevel !== entry.suggestedLevel) {
+    return reject(
+      entry.symbol,
+      entry.alertId,
+      `Not applied: the suggestion changed since the page loaded. It is now ${entry.suggestedLevel ?? "none"}.`
+    );
+  }
+  const expectedCondition = stringField(expected, "condition");
+  if (expectedCondition === null) {
+    return reject(entry.symbol, entry.alertId, "An apply needs expect.condition.");
+  }
+  const alert = loadAlerts(ctx.alertsFile).find((a) => a.id === entry.alertId);
+  if (alert === undefined) {
+    return reject(entry.symbol, entry.alertId, `No alert with id ${entry.alertId}. It may have been removed.`);
+  }
+  const condition = describeAlertCondition(alert);
+  if (condition !== expectedCondition) {
+    return reject(entry.symbol, entry.alertId, `Not applied: the alert changed since the page loaded. It is now "${condition}".`);
+  }
+
+  const parsed = parseRevisitApply(op.params);
+  if (!parsed.ok) {
+    return reject(entry.symbol, entry.alertId, parsed.error);
+  }
+  const result = applyRevisitLevel(ctx.alertsFile, revisitsFile, revisitId, parsed.value.level);
+  if (!result.ok) {
+    return reject(entry.symbol, entry.alertId, `Not applied: ${result.reason}`);
+  }
+  const { from, to } = result.value;
+  return {
+    symbol: entry.symbol,
+    alertId: entry.alertId,
+    ok: true,
+    message: `${entry.symbol}: alert ${entry.alertId} re-levelled ${from} → ${to}. Revisit ${revisitId} marked applied.`,
+  };
+}
+
+/**
+ * Gives one held position with no live alert a starting level, the atomic unit
+ * of `holdings cover`.
+ *
+ * Self-guarding, and takes no `expect`: the rule *is* "this symbol has no live
+ * alert", so re-checking the rule is a better conflict guard than anything the
+ * page could assert about what it saw.
+ *
+ * Its message names the level, as an alert op's does rather than a holdings
+ * op's — the alert it creates is published in the public alert book anyway, so
+ * withholding the number here would hide nothing. What it never names is the
+ * basis or the share count.
+ */
+function applyCover(op: Op, ctx: ApplyContext): Promise<Outcome> {
+  return applyCoverOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE, ctx.alertsFile, ctx.market, ctx.ignored ?? new Set());
 }
 
 /**

@@ -8,7 +8,7 @@ import { Command } from "commander";
 import { stringify } from "csv-stringify/sync";
 import { analyzeAlert, AnalysisParams } from "./analysis.js";
 import { revisitsToBreakoutAlerts } from "./alerts/bridge.js";
-import { suggestLevel } from "./alerts/relevel.js";
+import { applyRelevelPatch, relevelEntry, suggestLevel, type RelevelPatch } from "./alerts/relevel.js";
 import { buildSeedPlan, closeOnOrAfter, resolveLevel, seedDirection } from "./alerts/seed.js";
 import {
   addAlert,
@@ -30,14 +30,9 @@ import { describeAlertCondition, describeVolumeCondition } from "./alerts/descri
 import { liveAlertsFor, normalizeSymbolQuery, renderSymbolAlerts } from "./alerts/symbolView.js";
 import { ConsoleNotifier } from "./alerts/notify.js";
 import { writeAlertTriggerReport } from "./alerts/report.js";
+import { explainPriority, type RevisitEntry } from "./alerts/revisit.js";
 import {
-  DEFAULT_REVISIT_WEIGHTS,
-  daysBetween,
-  explainPriority,
-  scoreRevisit,
-  type RevisitEntry,
-} from "./alerts/revisit.js";
-import {
+  applyRevisitLevel,
   closeRevisitsForEdit,
   listRevisits,
   loadRevisits,
@@ -48,7 +43,7 @@ import {
 } from "./alerts/revisitStore.js";
 import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.js";
 import { addLot, addStop, checkHoldings } from "./holdings/engine.js";
-import { coverLevel } from "./holdings/cover.js";
+import { coverCandidates, coverLevel } from "./holdings/cover.js";
 import { computeBasis, heldSymbolsOf } from "./holdings/models.js";
 import { ConsoleHoldingsNotifier } from "./holdings/notify.js";
 import { writeHoldingsAlertReport } from "./holdings/report.js";
@@ -64,7 +59,7 @@ import { localDateString, pad2 } from "./timezone.js";
 import { isEntryPoint } from "./entrypoint.js";
 import { publishSite } from "./web/publish.js";
 import { buildAlertRows } from "./web/alertsPage.js";
-import { applyOp, DEFAULT_OP_LOG, levelMove, loadOpLog, parseOp, recentOpResults } from "./ops/apply.js";
+import { applyOp, DEFAULT_OP_LOG, levelMove, loadOpLog, parseOp, recentOpResults, type ApplyContext } from "./ops/apply.js";
 import { pullOps, sqsOpsQueue } from "./ops/pull.js";
 import { drainIntervalMinutes, recordDrain, type OpsPullState } from "./ops/schedule.js";
 import { parseAddInput, parseAlertEdit } from "./ops/validate.js";
@@ -91,7 +86,7 @@ import { DEFAULT_MAX_REQUESTS_PER_MINUTE, SchwabAuth, SchwabAuthError, SchwabPro
 import { readAuthState } from "./providers/authState.js";
 import type { PriceDataProvider } from "./providers/types.js";
 import { DailyBudget } from "./profiles/budget.js";
-import { loadCachedProfile, listCachedProfiles, profileNeedsFetch, saveCachedProfile } from "./profiles/store.js";
+import { companyInfoFromProfiles, loadCachedProfile, listCachedProfiles, profileNeedsFetch, saveCachedProfile } from "./profiles/store.js";
 import { exchangesFromProfiles } from "./tradingview.js";
 import { gatherKnownSymbols } from "./profiles/universe.js";
 import { ignoredSymbols, isIgnored, loadTuningConfig, resolveParamsForSymbol, type TuningConfig } from "./tuning.js";
@@ -525,6 +520,11 @@ async function cmdAnalyze(opts: AnalyzeOpts): Promise<void> {
 interface AlertCommonOpts extends CommonOpts {
   alertsFile: string;
   revisitsFile: string;
+}
+
+interface RevisitApplyOpts extends AlertCommonOpts {
+  /** Overrides the entry's own suggestion, as the dashboard's edit-before-applying does. */
+  level?: number;
 }
 
 interface AlertAddOpts extends AlertCommonOpts {
@@ -1187,46 +1187,10 @@ async function cmdRevisitRelevel(opts: RevisitRelevelOpts): Promise<void> {
 
     for (const entry of symbolEntries) {
       const target = all.find((e) => e.id === entry.id)!;
-      const levelled = suggestLevel(bars, entry.levelAtTrigger, params);
-      const direction = entryDirection(entry);
-      // A moving-average alert's level is the average itself. There's nothing
-      // to re-level it to, but the move past it still counts toward priority.
-      // suggestLevel only proposes levels overhead (the lookback high), so for
-      // a downward fire it would invert the alert; `alert seed` skips downside
-      // candidates for the same reason. The move still scores, relative to
-      // the fire's direction.
-      const suggestion =
-        entry.kind === "ma"
-          ? { ...levelled, suggestedLevel: null, basis: "moving-average alert: its level moves with the average" }
-          : direction === "down"
-            ? { ...levelled, suggestedLevel: null, basis: "downward fire: re-levelling only proposes levels above price" }
-            : levelled;
-
-      // Reuse the full breakout pipeline for the verdict and volume signals
-      // rather than recomputing a second, subtly different version here.
-      const bridged = revisitsToBreakoutAlerts([entry])[0];
-      const verdict = bridged !== undefined && bars.length > 0 ? analyzeAlert(bridged, bars, params) : null;
-
-      const { priority, signals } = scoreRevisit(
-        {
-          verdict: verdict?.verdict ?? null,
-          pctMovePastLevel: suggestion.pctMovePastLevel,
-          daysOpen: daysBetween(entry.triggeredAt, now),
-          heldPosition: heldSymbols.has(symbol.toUpperCase()),
-          volumeRatio: verdict?.volumeRatio ?? null,
-          volumeTrendRatio: verdict?.volumeTrendRatio ?? null,
-          direction,
-        },
-        DEFAULT_REVISIT_WEIGHTS
-      );
-
-      target.suggestedLevel = suggestion.suggestedLevel;
-      target.suggestionBasis = suggestion.basis;
-      target.suggestedAt = now.toISOString();
-      target.priority = priority;
-      target.signals = signals;
+      const patch = relevelEntry(entry, bars, params, heldSymbols, now);
+      applyRelevelPatch(target, patch);
       scored++;
-      if (suggestion.suggestedLevel !== null) {
+      if (patch.suggestedLevel !== null) {
         suggested++;
       }
     }
@@ -1240,58 +1204,27 @@ async function cmdRevisitRelevel(opts: RevisitRelevelOpts): Promise<void> {
   console.log("'alert revisit list' to review, highest priority first.");
 }
 
-function cmdRevisitResolve(id: string, action: "applied" | "dismissed", opts: AlertCommonOpts): void {
-  const entries = loadRevisits(opts.revisitsFile);
-  const entry = entries.find((e) => e.id === id);
-  if (entry === undefined) {
-    console.error(`No revisit entry with id ${id}.`);
-    process.exit(1);
-  }
+function cmdRevisitResolve(id: string, action: "applied" | "dismissed", opts: RevisitApplyOpts): void {
   if (action === "dismissed") {
+    const entry = loadRevisits(opts.revisitsFile).find((e) => e.id === id);
+    if (entry === undefined) {
+      console.error(`No revisit entry with id ${id}.`);
+      process.exit(1);
+    }
     resolveRevisit(opts.revisitsFile, id, "dismissed");
     console.log(`Dismissed revisit ${id} (${entry.symbol}). The alert itself is untouched and still live.`);
     return;
   }
 
-  if (entry.followUpOf !== undefined) {
-    console.error(`Revisit ${id} (${entry.symbol}) is a later crossing of revisit ${entry.followUpOf}; apply that one instead.`);
+  // Every refusal below is the shared function's, so `alert revisit apply` and
+  // the dashboard's queued revisit.apply reject the same cases in the same words.
+  const result = applyRevisitLevel(opts.alertsFile, opts.revisitsFile, id, opts.level);
+  if (!result.ok) {
+    console.error(result.reason);
     process.exit(1);
   }
-
-  if (entry.suggestedLevel === null) {
-    console.error(
-      `Revisit ${id} (${entry.symbol}) has no suggested level yet — run 'alert relevel' first, ` +
-        `or set the level yourself with 'alert add --symbol ${entry.symbol} --level <price>'.`
-    );
-    process.exit(1);
-  }
-
-  const alerts = loadAlerts(opts.alertsFile);
-  const alert = alerts.find((a) => a.id === entry.alertId);
-  if (alert === undefined || alert.kind !== "static") {
-    console.error(
-      `Revisit ${id} points at ${alert === undefined ? "an alert that no longer exists" : `a ${alert.kind} alert`}; ` +
-        `only static alerts carry a level that can be re-pointed.`
-    );
-    process.exit(1);
-  }
-
-  // Only the level moves. `direction` is left as it is: re-levelling says
-  // where to watch, not which crossing matters.
-  const previous = alert.level;
-  alert.level = entry.suggestedLevel;
-  // Record the move on the entry itself so the ticker story can say what you
-  // did, not just that you did something.
-  entry.appliedFrom = previous;
-  entry.appliedTo = alert.level;
-  saveRevisits(opts.revisitsFile, entries);
-  // Re-seed the crossing baseline against the new level so the alert doesn't
-  // immediately fire (or immediately go quiet) purely because the level moved.
-  alert.lastKnownSide = entry.triggerPrice > alert.level ? "above" : "below";
-  alert.mutedUntil = null;
-  saveAlerts(opts.alertsFile, alerts);
-  resolveRevisit(opts.revisitsFile, id, "applied");
-  console.log(`${entry.symbol}: alert ${alert.id} re-levelled ${previous} → ${alert.level}. Revisit ${id} marked applied.`);
+  const { entry, alertId, from, to } = result.value;
+  console.log(`${entry.symbol}: alert ${alertId} re-levelled ${from} → ${to}. Revisit ${id} marked applied.`);
 }
 
 interface MigrateDirectionsOpts extends AlertCommonOpts {
@@ -1554,14 +1487,8 @@ async function cmdHoldingsCover(opts: HoldingsCoverOpts): Promise<void> {
   // higher, so nothing here is volatility-scaled.
   const ignored = ignoredSymbols(loadTuningConfig(opts.config));
 
-  const covered = new Set(
-    loadAlerts(opts.alertsFile)
-      .filter((a) => a.status === "live")
-      .map((a) => a.symbol.toUpperCase())
-  );
-
   const held = [...new Set(store.lots.map((l) => l.symbol))].sort();
-  const candidates = held.filter((s) => !covered.has(s.toUpperCase()) && !isIgnored(s, ignored));
+  const candidates = coverCandidates(store, loadAlerts(opts.alertsFile), ignored);
   const skippedIgnored = held.filter((s) => isIgnored(s, ignored));
 
   if (candidates.length === 0) {
@@ -1782,8 +1709,10 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     // the run, and this build may legitimately fetch no quotes at all.
     authExpiredSince: readAuthState(opts.tokenPath).expiredSince,
   };
+  // Read once: the same cache supplies the chart prefix and the company name.
+  const cachedProfiles = listCachedProfiles(opts.profileCacheDir);
   // Chart links need each symbol's exchange; a bare symbol can open a foreign listing.
-  const exchanges = exchangesFromProfiles(listCachedProfiles(opts.profileCacheDir));
+  const exchanges = exchangesFromProfiles(cachedProfiles);
   const unlisted = new Set(alerts.filter((a) => a.status === "live" && !exchanges.has(a.symbol)).map((a) => a.symbol));
   if (unlisted.size > 0 && !opts.quiet) {
     console.log(`${unlisted.size} symbols have no cached exchange, so their chart links are unprefixed. Run: profile fetch --all-known`);
@@ -1802,8 +1731,18 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
       approachingWithinPct: opts.withinPct,
       windowDays: opts.windowDays,
       ignoredSymbols: ignored,
-      includeApproaching: opts.approaching,
+      // Always on for the site, which renders it as a collapsed section, and
+      // off by default in the terminal, where `--approaching` opts in. On a
+      // 500-alert book a hundred names sit within a few percent of firing at
+      // any moment: that is a wall of text to print and a fold to open.
+      //
+      // Safe for --skip-unchanged only because `approaching` and
+      // `approachingTotal` are both in VOLATILE_KEYS. List *membership* moves
+      // with the quote, so without them a quote-less build and a real one
+      // would fingerprint differently and every run would publish.
+      includeApproaching: opts.approaching || siteDir !== undefined,
       exchanges,
+      profiles: companyInfoFromProfiles(cachedProfiles),
     });
 
   // The fingerprint ignores price-derived fields, so it can be taken from a
@@ -1878,6 +1817,10 @@ interface OpsCommonOpts extends AlertCommonOpts {
   /** For caching a newly-seen symbol's profile as its op is applied (profileFiller). */
   fmpApiKey?: string;
   profileCacheDir: string;
+  /** A queued revisit.relevel fetches daily bars, and holdings.cover needs ignoreSymbols. */
+  cacheDir: string;
+  noCache?: boolean;
+  config: string;
 }
 
 interface OpsApplyOpts extends OpsCommonOpts {
@@ -1932,6 +1875,39 @@ function profileFiller(opts: { fmpApiKey?: string; profileCacheDir: string }): (
   };
 }
 
+/**
+ * Re-levels one queue entry for a queued `revisit.relevel`: fetch that
+ * symbol's daily bars, then the same `relevelEntry` the batch pass runs.
+ *
+ * Returns undefined with no Schwab credentials, which `applyRelevel` turns
+ * into a rejection rather than a silent skip — unlike `profileFiller`, whose
+ * absence is merely a cosmetic loss. Everything is built lazily for the same
+ * reason `lazyMarketData` is: a drain of removes and dismisses must still work
+ * with no Schwab set up at all.
+ */
+function relevelFiller(opts: OpsCommonOpts): ((entry: RevisitEntry) => Promise<RelevelPatch>) | undefined {
+  if (schwabCredentials(opts) === null) {
+    return undefined;
+  }
+  let provider: PriceDataProvider | null = null;
+  let getBeta: ((symbol: string) => Promise<number | null>) | null = null;
+  return async (entry: RevisitEntry) => {
+    const rawConfig = loadTuningConfig(opts.config);
+    const params = await resolveParamsForSymbol(entry.symbol, rawConfig ?? {}, rawConfig !== null, (getBeta ??= buildBetaFetcher(opts)));
+    // A volume-only entry bridges to nothing, so there is no date range to
+    // fetch against - relevelEntry handles an empty array and scores it on
+    // staleness and position alone.
+    const bridged = revisitsToBreakoutAlerts([entry]);
+    let bars: PriceBar[] = [];
+    if (bridged.length > 0) {
+      const { start, end } = calendarRangeForSymbol(bridged, params);
+      bars = await (provider ??= buildSchwabProvider(opts)).getDailyBars(entry.symbol, start, end);
+    }
+    const held = heldSymbolsOf(loadHoldingsStore(opts.holdingsFile));
+    return relevelEntry(entry, bars, params, held, new Date());
+  };
+}
+
 /** Builds the Schwab client on first use, so an op that needs no quote works without a login. */
 function lazyMarketData(opts: CommonOpts): MarketData {
   let market: MarketData | null = null;
@@ -1940,6 +1916,24 @@ function lazyMarketData(opts: CommonOpts): MarketData {
     getQuotes: (symbols) => get().getQuotes(symbols),
     getIntradayBars: (symbol, daysBack) => get().getIntradayBars(symbol, daysBack),
     getDailyBars: (symbol, start, end) => get().getDailyBars(symbol, start, end),
+  };
+}
+
+/**
+ * Everything the worker needs to apply an op, built once so `ops pull` and
+ * `ops apply` cannot drift. Both callbacks are optional by design: a drain of
+ * removes, dismisses and holdings ops runs with no Schwab and no FMP at all.
+ */
+function applyContext(opts: OpsCommonOpts): ApplyContext {
+  return {
+    alertsFile: opts.alertsFile,
+    holdingsFile: opts.holdingsFile,
+    revisitsFile: opts.revisitsFile,
+    opLogFile: opts.opLog,
+    market: lazyMarketData(opts),
+    ensureProfile: profileFiller(opts),
+    relevel: relevelFiller(opts),
+    ignored: ignoredSymbols(loadTuningConfig(opts.config)),
   };
 }
 
@@ -1956,14 +1950,7 @@ async function cmdOpsApply(opts: OpsApplyOpts): Promise<void> {
     console.error(`Invalid op: ${parsed.error}`);
     process.exit(1);
   }
-  const { result, duplicate } = await applyOp(parsed.op, {
-    alertsFile: opts.alertsFile,
-    holdingsFile: opts.holdingsFile,
-    revisitsFile: opts.revisitsFile,
-    opLogFile: opts.opLog,
-    market: lazyMarketData(opts),
-    ensureProfile: profileFiller(opts),
-  });
+  const { result, duplicate } = await applyOp(parsed.op, applyContext(opts));
   if (duplicate) {
     console.log(`Already applied at ${result.appliedAt}, so nothing changed. It was: ${result.message}`);
     return;
@@ -2020,14 +2007,7 @@ async function cmdOpsPull(opts: OpsPullOpts): Promise<void> {
   const queue = sqsOpsQueue(queueUrl, process.env.AWS_REGION ?? "us-east-1");
   const summary = await pullOps(
     queue,
-    {
-      alertsFile: opts.alertsFile,
-      holdingsFile: opts.holdingsFile,
-      revisitsFile: opts.revisitsFile,
-      opLogFile: opts.opLog,
-      market: lazyMarketData(opts),
-      ensureProfile: profileFiller(opts),
-    },
+    applyContext(opts),
     {
       max: opts.max ?? Number.POSITIVE_INFINITY,
       waitSeconds: opts.wait,
@@ -2296,11 +2276,12 @@ function buildProgram(): Command {
 
   withAlertCommon(revisitCmd.command("apply <id>"))
     .description("Move the alert to the entry's suggested level and close the entry")
-    .action((id: string, opts: AlertCommonOpts) => cmdRevisitResolve(id, "applied", opts));
+    .option("--level <price>", "Use this level instead of the entry's suggestion", (v) => parseFloat(v))
+    .action((id: string, opts: RevisitApplyOpts) => cmdRevisitResolve(id, "applied", opts));
 
   withAlertCommon(revisitCmd.command("dismiss <id>"))
     .description("Close the entry without touching the alert")
-    .action((id: string, opts: AlertCommonOpts) => cmdRevisitResolve(id, "dismissed", opts));
+    .action((id: string, opts: RevisitApplyOpts) => cmdRevisitResolve(id, "dismissed", opts));
 
   withAlertCommon(alertCmd.command("check"))
     .description("Check all live alerts against live Schwab quotes (run this from cron every ~15 min)")
@@ -2319,7 +2300,12 @@ function buildProgram(): Command {
       // An op that brings in a new symbol caches its profile as it lands, so
       // the symbol's chart links get the right exchange without a manual fetch.
       .option(...FMP_API_KEY_OPTION)
-      .option(...PROFILE_CACHE_DIR_OPTION);
+      .option(...PROFILE_CACHE_DIR_OPTION)
+      // A queued revisit.relevel fetches daily bars through the same cache the
+      // batch pass uses, and holdings.cover reads ignoreSymbols from the config.
+      .option(...NO_CACHE_OPTION)
+      .option(...CACHE_DIR_OPTION)
+      .option(...configOption());
 
   withOpsCommon(opsCmd.command("pull"))
     .description("Apply changes queued from the dashboard (OPS_QUEUE_URL in .env); does nothing when that's unset")

@@ -230,3 +230,85 @@ test.describe("the revisit queue", () => {
     await expect(page.locator("#queue .update-note")).toHaveCount(0);
   });
 });
+
+/**
+ * `buildDashboard` has always computed the Approaching list and the terminal
+ * view has always printed it, but the page had no renderer at all — so the one
+ * place a person actually reads this document silently dropped it.
+ */
+test.describe("the approaching list", () => {
+  const section = (page: Page) => page.locator("#approaching-section");
+
+  test("is on the overview, collapsed, and says how many are in range", async ({ page }) => {
+    await page.goto("/#/");
+    await expect(section(page)).toBeVisible();
+    // Collapsed: a hundred names within a few percent of firing is market
+    // noise, not a to-do list.
+    await expect(section(page).locator("details")).not.toHaveAttribute("open", "");
+    await expect(page.locator("#approaching-summary")).toContainText("within range of firing");
+  });
+
+  test("carries the side in the arrow, so a downside alert reads unambiguously", async ({ page }) => {
+    await page.goto("/#/");
+    await section(page).locator("summary").click();
+    // MSFT's alert is below-side at 400 with price 420: it needs price to fall.
+    const msft = page.locator(".approach-row", { hasText: "MSFT" });
+    await expect(msft).toContainText("↓");
+    await expect(msft).toContainText("+vol");
+  });
+
+  test("a row links to its alert", async ({ page }) => {
+    await page.goto("/#/");
+    await section(page).locator("summary").click();
+    await page.locator(".approach-row", { hasText: "MSFT" }).locator("a.plain").click();
+    await expect(page.locator("#drawer-body")).toContainText("price crosses");
+  });
+});
+
+/**
+ * The FMP profile cache has held company names and sectors all along, and only
+ * `exchange` was ever read — which is why every ticker on the page was a bare
+ * symbol with nothing to say what it is.
+ */
+test.describe("company names and sectors", () => {
+  test("name the company in an alert drawer", async ({ page }) => {
+    await page.goto("/#/alert/st000002");
+    await expect(page.locator("#drawer-body .drawer-company")).toHaveText("Microsoft Corporation · Technology · Software — Infrastructure");
+  });
+
+  // A symbol with no cached profile is the common case until `profile fetch`
+  // runs, and must still render as a bare ticker rather than an empty line.
+  test("leave a symbol with no cached profile alone", async ({ page }) => {
+    await page.goto(`/#/alert/${STATIC.id}`);
+    await expect(page.locator("#drawer-body .drawer-title")).toContainText("AA");
+    await expect(page.locator("#drawer-body .drawer-company")).toHaveCount(0);
+  });
+
+  test("show what is known when a profile has a name but no sector", async ({ page }) => {
+    await page.goto("/#/alert/ma000001");
+    await expect(page.locator("#drawer-body .drawer-company")).toHaveText("SPDR S&P 500 ETF Trust");
+  });
+});
+
+/**
+ * The two `holdings check` conditions the browser can derive. They are
+ * computed here rather than published because both are basis-derived, and
+ * nothing basis-derived may travel in a public document.
+ */
+test.describe("holdings conditions", () => {
+  const row = (page: Page, symbol: string) => page.locator("#holdings > tbody > tr", { has: page.locator(`a.sym:text-is("${symbol}")`) });
+
+  test("tag a position that has cleared its cost by the threshold", async ({ page }) => {
+    await storeToken(page);
+    await page.goto("/#/holdings");
+    // AA: blended basis ~41.33 against 46.34, so comfortably past +10%.
+    await expect(row(page, "AA").locator(".tag.above-basis")).toHaveText("+10% over basis");
+    await expect(row(page, "TSLA").locator(".tag.above-basis")).toHaveCount(0);
+  });
+
+  test("say nothing about them in the published document", async ({ page }) => {
+    const doc = await (await page.request.get("/dashboard.json")).json();
+    expect(JSON.stringify(doc)).not.toContain("above-basis");
+    expect(JSON.stringify(doc)).not.toContain("stagnant");
+  });
+});

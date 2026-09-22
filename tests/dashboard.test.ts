@@ -249,6 +249,33 @@ describe("dashboardFingerprint", () => {
     dismissed.revisits[0].status = "dismissed";
     expect(dashboardFingerprint(base(dismissed))).not.toBe(before);
   });
+
+  /**
+   * The Approaching list is published now that the page renders it, and its
+   * *membership* moves with price (the withinPct filter), so a quote-less
+   * build has none and a real one has some. Only `approaching` and
+   * `approachingTotal` being in VOLATILE_KEYS keeps those two hashing alike —
+   * without it every single run would publish.
+   */
+  it("is unmoved by the approaching list, whose membership follows the quote", () => {
+    // 107 against the level of 110 is inside the 5% default, so the row exists
+    // with a quote and cannot exist without one.
+    const withQuotes = base({ ...inputs(), quotes: quotes({ AAPL: 107 }), includeApproaching: true });
+    const without = base({ ...inputs(), includeApproaching: true });
+    expect(withQuotes.approaching.length).toBeGreaterThan(0);
+    expect(without.approaching).toEqual([]);
+    expect(dashboardFingerprint(withQuotes)).toBe(dashboardFingerprint(without));
+  });
+
+  // Unlike the level, the alert's condition text changes only when someone
+  // edits it — which is an event the page has to learn about.
+  it("moves when the alert behind a queue row is edited", () => {
+    const before = dashboardFingerprint(base(inputs()));
+    const edited = inputs();
+    edited.alerts[0] = staticAlert({ level: 120 });
+    expect(base(edited).revisitQueue[0].alertCondition).toBe("price crosses above 120");
+    expect(dashboardFingerprint(base(edited))).not.toBe(before);
+  });
 });
 
 describe("buildDashboard", () => {

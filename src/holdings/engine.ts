@@ -5,9 +5,20 @@ import { loadHoldingsStore, saveHoldingsStore } from "./store.js";
 import type { HoldingsNotifier } from "./notify.js";
 import { localDateString } from "../timezone.js";
 
-const ABOVE_BASIS_THRESHOLD_PCT = 10;
-const STAGNANT_MIN_DAYS = 30;
-const STAGNANT_MAX_PROFIT_PCT = 2;
+/**
+ * Exported because web/app.js carries a hand-copy of the first three: the page
+ * shows the same two conditions as state on a holdings row, and it computes
+ * them in the browser rather than reading them off the document, because both
+ * are basis-derived and nothing basis-derived may be published (CLAUDE.md).
+ * `tests/holdings.test.ts` diffs the copy against these.
+ *
+ * APPRECIATION_BAND_PCT is not mirrored: that condition depends on
+ * `lastNotifiedAppreciationBand` in the store, which never leaves the machine,
+ * so it is an event the browser cannot derive.
+ */
+export const ABOVE_BASIS_THRESHOLD_PCT = 10;
+export const STAGNANT_MIN_DAYS = 30;
+export const STAGNANT_MAX_PROFIT_PCT = 2;
 const APPRECIATION_BAND_PCT = 3;
 
 export interface HoldingsTriggerEvent {

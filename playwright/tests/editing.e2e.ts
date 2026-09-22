@@ -271,11 +271,158 @@ test.describe("edit", () => {
     await expect(page.locator("#drawer-body form")).toHaveCount(0);
   });
 
-  test("a moving-average alert points to the CLI", async ({ page }) => {
+});
+
+/**
+ * ADD_KEYS and EDIT_KEYS have always accepted `near`, `trailPercent`, `ma`,
+ * `touch` and `from`, and so have the Lambda and the worker. Only these two
+ * forms didn't send them, so trailing and moving-average alerts could not be
+ * made or changed from the page at all.
+ */
+test.describe("trailing and moving-average alerts from the page", () => {
+  const addForm = (page: Page) => page.locator("#alert-add form");
+
+  test("the kind selector shows only the fields that kind needs", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    const kind = addForm(page).getByLabel("Kind");
+    await expect(addForm(page).getByLabel("Level")).toBeVisible();
+    await expect(addForm(page).getByLabel("Near")).toBeHidden();
+
+    await kind.selectOption("trailing");
+    await expect(addForm(page).getByLabel("Level")).toBeHidden();
+    await expect(addForm(page).getByLabel("Near")).toBeVisible();
+    await expect(addForm(page).getByLabel("Distance")).toBeVisible();
+
+    await kind.selectOption("ma");
+    await expect(addForm(page).getByLabel("Near")).toBeHidden();
+    await expect(addForm(page).getByLabel("Period")).toBeVisible();
+    // A cross watches a direction; a touch watches the side it came from.
+    await expect(addForm(page).getByLabel("Direction")).toBeVisible();
+    await expect(addForm(page).getByLabel("Approached")).toBeHidden();
+    await addForm(page).getByLabel("Fires when price").selectOption("touch");
+    await expect(addForm(page).getByLabel("Direction")).toBeHidden();
+    await expect(addForm(page).getByLabel("Approached")).toBeVisible();
+  });
+
+  test("adds a trailing alert", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    await addForm(page).getByLabel("Symbol").fill("tsla");
+    await addForm(page).getByLabel("Kind").selectOption("trailing");
+    await addForm(page).getByLabel("Near").fill("250");
+    await addForm(page).getByLabel("Distance").fill("3");
+    await addForm(page).locator("button[type=submit]").click();
+
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.add", params: { symbol: "TSLA", near: 250, trailPercent: 3 } });
+    await expect(page.locator("#ops-pending")).toContainText("add TSLA trailing 3% from 250");
+  });
+
+  test("adds a trailing alert in dollars, and can AND a volume condition onto it", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    await addForm(page).getByLabel("Symbol").fill("tsla");
+    await addForm(page).getByLabel("Kind").selectOption("trailing");
+    await addForm(page).getByLabel("Near").fill("250");
+    await addForm(page).getByLabel("Trail by").selectOption("amount");
+    await addForm(page).getByLabel("Distance").fill("8");
+    await addForm(page).getByLabel("Volume", { exact: true }).selectOption("ratio");
+    await addForm(page).getByLabel("Volume at least").fill("1.5");
+    await addForm(page).locator("button[type=submit]").click();
+
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.add", params: { symbol: "TSLA", near: 250, trailAmount: 8, volumeRatio: 1.5 } });
+  });
+
+  test("adds a moving-average cross, sending the spec the worker parses", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    await addForm(page).getByLabel("Symbol").fill("spy");
+    await addForm(page).getByLabel("Kind").selectOption("ma");
+    await addForm(page).getByLabel("Average").selectOption("ema");
+    await addForm(page).getByLabel("Period").fill("9");
+    await addForm(page).getByLabel("Bars").selectOption("5m");
+    await addForm(page).getByLabel("Direction").selectOption("down");
+    await addForm(page).locator("button[type=submit]").click();
+
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.add", params: { symbol: "SPY", ma: "ema9@5m", direction: "down" } });
+    expect(op.params).not.toHaveProperty("touch");
+  });
+
+  test("adds a moving-average touch, which carries a band and a side instead", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    await addForm(page).getByLabel("Symbol").fill("spy");
+    await addForm(page).getByLabel("Kind").selectOption("ma");
+    await addForm(page).getByLabel("Fires when price").selectOption("touch");
+    await addForm(page).getByLabel("Approached").selectOption("above");
+    await addForm(page).locator("button[type=submit]").click();
+
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.add", params: { symbol: "SPY", ma: "sma200@1D", touch: true, from: "above" } });
+    expect(op.params).not.toHaveProperty("direction");
+  });
+
+  test("rejects a bad period before anything is queued", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    await addForm(page).getByLabel("Symbol").fill("spy");
+    await addForm(page).getByLabel("Kind").selectOption("ma");
+    await addForm(page).getByLabel("Period").fill("2.5");
+    await addForm(page).locator("button[type=submit]").click();
+    await expect(addForm(page).locator(".form-error")).toHaveText("Enter a whole period above 0, e.g. 200.");
+    expect(await queuedOps(page)).toEqual([]);
+  });
+
+  // The edit form prefills from AlertRow.ma. Without that, opening it to read
+  // the spec and saving would rewrite it to whatever the controls defaulted to.
+  test("a moving-average alert's edit form is prefilled, and an untouched save changes nothing", async ({ page }) => {
     await storeToken(page);
     await page.goto(`/#/alert/${MOVING_AVERAGE.id}`);
-    await expect(page.locator("#drawer-body")).toContainText("can't be edited from the page yet");
-    await expect(page.locator("#drawer-body form")).toHaveCount(0);
+    const form = page.locator("#drawer-body form");
+    await expect(form.getByLabel("Average")).toHaveValue("sma");
+    await expect(form.getByLabel("Period")).toHaveValue("200");
+    await expect(form.getByLabel("Bars")).toHaveValue("1D");
+    await expect(form.getByLabel("Fires when price")).toHaveValue("cross");
+
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText("Nothing changed.");
+    expect(await queuedOps(page)).toEqual([]);
+  });
+
+  test("edits a moving average's period, sending only that", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${MOVING_AVERAGE.id}`);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Period").fill("50");
+    await form.locator("button[type=submit]").click();
+
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.edit", target: { alertId: MOVING_AVERAGE.id }, params: { ma: "sma50@1D" } });
+    expect(op.params).not.toHaveProperty("touch");
+    expect(op.params).not.toHaveProperty("from");
+    await expect(page.locator("#ops-pending")).toContainText("sma200@1D → sma50@1D");
+  });
+
+  test("turning a cross into a touch sends the band and the side together", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${MOVING_AVERAGE.id}`);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Fires when price").selectOption("touch");
+    await expect(form.getByLabel("Touch band %")).toBeVisible();
+    await form.getByLabel("Approached").selectOption("below");
+    await form.locator("button[type=submit]").click();
+
+    const [op] = await queuedOps(page);
+    expect(op.params).toMatchObject({ touch: MOVING_AVERAGE.marginPct, from: "below" });
+  });
+
+  test("a moving average has no volume controls, because it can't carry one", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${MOVING_AVERAGE.id}`);
+    await expect(page.locator("#drawer-body form").getByLabel("Volume", { exact: true })).toHaveCount(0);
   });
 });
 
@@ -549,6 +696,123 @@ test.describe("dismissing from the revisit queue", () => {
     await poll(page);
     await expect(page.locator("#toasts")).toContainText("Dismissed revisit rv0000a2");
     await expect(aaRow(page).locator(".tag.pending")).toHaveCount(0);
+  });
+});
+
+/**
+ * Suggest → Apply, the pair that replaced a copy-a-CLI-command button.
+ *
+ * Until these ops existed the page could not re-level an alert at all, so the
+ * queue - the whole point of which is to collect this decision - could only
+ * hand you the command to run yourself.
+ */
+test.describe("suggesting and applying a level from the revisit queue", () => {
+  // rv0000a2: open, suggested 61, on STATIC (currently at 55).
+  const aaRow = (page: Page) => page.locator("#queue .queue-row", { hasText: "crossed above 55" });
+  // rv0000m1: open, but a downward fire, so it carries no suggestion.
+  const msftRow = (page: Page) => page.locator("#queue .queue-row", { hasText: "MSFT" });
+
+  test("offers neither while locked, and no longer offers a command to copy", async ({ page }) => {
+    await page.goto("/#/queue");
+    await expect(aaRow(page)).toBeVisible();
+    await expect(aaRow(page).getByRole("button")).toHaveCount(0);
+    await expect(page.locator("#queue")).not.toContainText("Copy");
+    await expect(page.locator("#queue")).not.toContainText("dist/cli.js");
+  });
+
+  // "61" is a number; "61, off the 60d high" is a decision. The level itself
+  // is already on the row twice (the action line and the Apply button), so the
+  // basis line must not make it a third.
+  test("says what the suggestion was read off, without repeating the number", async ({ page }) => {
+    await page.goto("/#/queue");
+    await expect(aaRow(page)).toContainText("Basis: the trigger price plus its recent range.");
+    expect((await aaRow(page).textContent())!.match(/\b61\b/g)).toHaveLength(1);
+  });
+
+  test("says why there is no suggestion when a fire cannot have one", async ({ page }) => {
+    await page.goto("/#/queue");
+    // rv0000m1 has no basis recorded at all, so there is nothing to explain.
+    await expect(msftRow(page)).not.toContainText("Basis:");
+  });
+
+  test("queues a re-level of just that entry, and marks the row pending", async ({ page }) => {
+    await storeToken(page);
+    await page.goto("/#/queue");
+    const button = aaRow(page).getByRole("button", { name: "Re-suggest" });
+    await expect(button).toHaveAttribute("title", /Nothing is changed/);
+    await button.click();
+
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "revisit.relevel", target: { revisitId: "rv0000a2" }, params: {} });
+    await expect(aaRow(page).locator(".tag.pending")).toHaveText("suggestion pending");
+    // While one change to this entry is waiting, no second one is offered.
+    await expect(aaRow(page).getByRole("button")).toHaveCount(0);
+
+    // A re-level proposes; it does not change the alert, so the alert must not
+    // read as pending the way an edit does.
+    await openAlerts(page);
+    await expect(page.locator("#alerts-table .tag.pending")).toHaveCount(0);
+  });
+
+  test("an entry with no suggestion offers Suggest but no Apply, and says why not", async ({ page }) => {
+    await storeToken(page);
+    await page.goto("/#/queue");
+    await expect(msftRow(page).getByRole("button", { name: "Suggest level" })).toBeVisible();
+    await expect(msftRow(page).getByRole("button", { name: /^Apply/ })).toHaveCount(0);
+  });
+
+  // expect carries the suggestion as well as the condition: the condition
+  // alone would catch the alert moving but not the suggestion moving.
+  test("applies the suggested level, guarded on both the suggestion and the condition", async ({ page }) => {
+    await storeToken(page);
+    await page.goto("/#/queue");
+    const button = aaRow(page).getByRole("button", { name: "Apply → 61" });
+    await expect(button).toHaveAttribute("title", /keeps watching at the new level/);
+    await button.click();
+    expect(await queuedOps(page)).toEqual([]);
+    await aaRow(page).getByRole("button", { name: "Click again to confirm" }).click();
+
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({
+      type: "revisit.apply",
+      target: { revisitId: "rv0000a2", alertId: STATIC.id },
+      expect: { suggestedLevel: 61, condition: "price crosses above 55" },
+      params: {},
+    });
+    await expect(page.locator("#ops-pending")).toContainText("AA: move the alert from 55 to 61");
+
+    // Re-levelling IS a change to the alert, unlike a dismiss or a re-level.
+    await openAlerts(page);
+    await expect(page.locator("#alerts-table .tag.pending")).toHaveText("apply pending");
+  });
+
+  test("resolves from the published result", async ({ page }) => {
+    await storeToken(page);
+    await page.goto("/#/queue");
+    await aaRow(page).getByRole("button", { name: "Apply → 61" }).click();
+    await aaRow(page).getByRole("button", { name: "Click again to confirm" }).click();
+    await page.request.get("/__release");
+    await poll(page);
+    await expect(aaRow(page).locator(".tag.pending")).toHaveCount(0);
+  });
+
+  // Dismiss belongs on the queue row, where what it removes is the row you are
+  // looking at. The drawer gets the two that change the alert's future.
+  test("the trigger drawer offers Suggest and Apply but not Dismiss", async ({ page }) => {
+    await storeToken(page);
+    await page.goto("/#/trigger/rv0000a2");
+    const actions = page.locator("#drawer-body .actions").first();
+    await expect(actions.getByRole("button", { name: "Re-suggest" })).toBeVisible();
+    await expect(actions.getByRole("button", { name: "Apply → 61" })).toBeVisible();
+    await expect(actions.getByRole("button", { name: "Dismiss" })).toHaveCount(0);
+  });
+
+  // A closed trigger's decision was already made.
+  test("a closed trigger offers neither", async ({ page }) => {
+    await storeToken(page);
+    await page.goto("/#/trigger/rv0000a1");
+    const actions = page.locator("#drawer-body .actions").first();
+    await expect(actions.getByRole("button", { name: /Suggest|Apply/ })).toHaveCount(0);
   });
 });
 

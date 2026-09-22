@@ -23,7 +23,6 @@
   // Keys from before the project was renamed, read as a fallback so a browser
   // keeps its seen triggers and theme. index.html reads the old theme key too.
   const LEGACY_SEEN_KEY = "tva.seenTriggers";
-  const CLI = "node dist/cli.js";
 
   const $ = (id) => document.getElementById(id);
 
@@ -292,22 +291,6 @@
   const triggerHash = (id) => `#/trigger/${encodeURIComponent(id)}`;
   const alertHash = (id) => `#/alert/${encodeURIComponent(id)}`;
 
-  function copyButton(label, command) {
-    const btn = h("button", { title: command, text: label });
-    btn.addEventListener("click", async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      try {
-        await navigator.clipboard.writeText(command);
-        btn.textContent = "Copied";
-      } catch {
-        window.prompt("Copy this command:", command);
-      }
-      setTimeout(() => (btn.textContent = label), 1500);
-    });
-    return btn;
-  }
-
   // ---- editing (ops) --------------------------------------------------------
   //
   // The page can't write alerts.json: it lives on the machine that runs the
@@ -476,13 +459,28 @@
 
   // Changes to the alert itself. A pending dismiss names the alert too, but
   // leaves it untouched, so it must not read as "edit pending" on the alert.
-  const pendingFor = (alertId) => pendingOps.filter((p) => p.alertId === alertId && p.type.startsWith("alert."));
+  // A pending revisit.apply DOES change it - re-levelling is an edit by
+  // another name - so it belongs here and a dismiss still does not.
+  const CHANGES_ALERT = (p) => p.type.startsWith("alert.") || p.type === "revisit.apply" || p.type === "holdings.cover";
+  const pendingFor = (alertId) => pendingOps.filter((p) => p.alertId === alertId && CHANGES_ALERT(p));
   const pendingTag = (alertId) => {
     const queued = pendingFor(alertId);
     if (queued.length === 0) return null;
-    return h("span", { class: "tag pending", text: queued.some((p) => p.type === "alert.remove") ? "remove pending" : "edit pending" });
+    const label = queued.some((p) => p.type === "alert.remove")
+      ? "remove pending"
+      : queued.some((p) => p.type === "revisit.apply")
+        ? "apply pending"
+        : "edit pending";
+    return h("span", { class: "tag pending", text: label });
   };
   const dismissPending = (revisitId) => pendingOps.some((p) => p.type === "revisit.dismiss" && p.revisitId === revisitId);
+  // Matched by revisitId, like a dismiss: a re-level names the alert but
+  // changes only the entry's suggestion, so it is not an edit of the alert.
+  const relevelPending = (revisitId) => pendingOps.some((p) => p.type === "revisit.relevel" && p.revisitId === revisitId);
+  const applyPending = (revisitId) => pendingOps.some((p) => p.type === "revisit.apply" && p.revisitId === revisitId);
+  /** Any queued change to this entry: while one is waiting, no second one should be offered. */
+  const revisitBusy = (revisitId) => dismissPending(revisitId) || relevelPending(revisitId) || applyPending(revisitId);
+  const coverPending = (symbol) => pendingOps.some((p) => p.type === "holdings.cover" && p.symbol === symbol);
 
   function renderPending() {
     renderPendingList($("ops-pending"), pendingOps.filter((p) => !isHoldingsOp(p)));
@@ -557,7 +555,21 @@
     });
   }
 
-  const field = (label, input) => h("label", { class: "field" }, h("span", { text: label }), input);
+  /**
+   * A labelled form control.
+   *
+   * The label references the control by id rather than wrapping it. Wrapping
+   * associates them too, but then the label's *text* is its whole text
+   * content — which for a `<select>` includes every option. A "Kind" select
+   * offering "Price level" therefore answered to the name "Level" as well,
+   * colliding with the actual Level field (and with anything else matching by
+   * accessible name, screen readers included). Keep the control a sibling.
+   */
+  let fieldSeq = 0;
+  const field = (label, input) => {
+    if (!input.id) input.id = `field-${++fieldSeq}`;
+    return h("div", { class: "field" }, h("label", { for: input.id, text: label }), input);
+  };
   const numberInput = (value, attrs = {}) => h("input", { type: "number", step: "any", min: "0", inputmode: "decimal", value: value ?? "", ...attrs });
   function directionSelect(value) {
     const select = h("select", {}, ...["up", "down", "either"].map((d) => h("option", { value: d, text: DIRECTION_LABEL[d] })));
@@ -599,11 +611,9 @@
       return;
     }
     const symbol = h("input", { type: "text", placeholder: "GMED", autocapitalize: "characters", autocomplete: "off", spellcheck: "false", maxlength: "16" });
-    const level = numberInput(null, { placeholder: "80.50" });
-    const direction = directionSelect("up");
-    // The same three controls as the Edit form, so a new alert can carry an
-    // absolute share count ("2.5M") and a window, not only a ratio - and so
-    // both forms reject the same input with the same words.
+    // Both groups of controls are shared with the Edit form, so the two offer
+    // the same choices and reject the same input in the same words.
+    const kindFields = buildKindFields("static");
     const volumeFields = buildVolumeFields(null);
     const error = h("span", { class: "form-error" });
     const button = h("button", { type: "submit", text: "Add alert" });
@@ -615,30 +625,27 @@
           e.preventDefault();
           error.textContent = "";
           const sym = symbol.value.trim().toUpperCase();
-          const lvl = positive(level.value);
           if (!sym) return (error.textContent = "Enter a symbol.");
-          if (lvl === null) return (error.textContent = "Enter a level above 0.");
+          const kindRead = kindFields.read();
+          if (kindRead.error) return (error.textContent = kindRead.error);
           const read = volumeFields.read();
           if (read.error) return (error.textContent = read.error);
           const volume = read.volume;
-          const params = { symbol: sym, level: lvl, direction: direction.value, ...(volume === null ? {} : volumeParams(volume)) };
-          const summary =
-            `add ${sym} ${DIRECTION_LABEL[direction.value].toLowerCase()} ${lvl}` +
-            (volume === null ? "" : ` with volume ${volumeConditionText(volume)}`);
+          const params = { symbol: sym, ...kindRead.params, ...(volume === null ? {} : volumeParams(volume)) };
+          const summary = `add ${sym} ${kindRead.describe}` + (volume === null ? "" : ` with volume ${volumeConditionText(volume)}`);
           button.disabled = true;
           const queued = await submitOp({ type: "alert.add", params }, { symbol: sym, summary });
           button.disabled = false;
           if (queued) {
             symbol.value = "";
-            level.value = "";
+            kindFields.reset();
             volumeFields.reset();
           }
         },
       },
-      h("strong", { class: "form-title", text: "New price alert" }),
+      h("strong", { class: "form-title", text: "New alert" }),
       field("Symbol", symbol),
-      field("Level", level),
-      field("Fires on", direction),
+      ...kindFields.fields,
       ...volumeFields.fields,
       button,
       error,
@@ -661,8 +668,10 @@
     // The drawer is where a revisit-queue edit is made, so it is where "when
     // does this land?" gets asked first.
     if (queued.length > 0) pending.push(opsScheduleNote());
-    if (a.kind !== "static" && a.kind !== "trailing" && a.kind !== "volume") {
-      return [...pending, h("p", { class: "note", text: "This kind can't be edited from the page yet. Use alert edit in the CLI." })];
+    // An MA alert is editable now that AlertRow carries its parameters to
+    // prefill from; without them the form would rewrite the spec on save.
+    if (a.kind === "ma" && !a.ma) {
+      return [...pending, h("p", { class: "note", text: "This alert was published before the page could edit moving averages. Use alert edit in the CLI, or wait for the next publish." })];
     }
     // Reuse the form while the alert is unchanged; rebuild it once an edit has landed.
     if (editForm?.alertId !== a.id || editForm.condition !== a.condition || editForm.revisitId !== revisitId) {
@@ -782,6 +791,199 @@
     return { fields: [field("Volume", kind), field("Volume at least", amount), field("Over", windowSelect)], read, reset };
   }
 
+  // Kept in step with MA_TIMEFRAMES in src/indicators/movingAverage.ts; the
+  // worker's parseMaSpec is the authority and rejects anything else.
+  const MA_TIMEFRAMES = [
+    ["1D", "Daily"],
+    ["1W", "Weekly"],
+    ["15m", "15-minute"],
+    ["5m", "5-minute"],
+    ["2m", "2-minute"],
+    ["1m", "1-minute"],
+  ];
+
+  /**
+   * What kind of alert, and the fields that kind needs.
+   *
+   * The add form used to send only `{symbol, level, direction}`, so a trailing
+   * or moving-average alert could not be created from the page at all - even
+   * though `ADD_KEYS` (src/ops/validate.ts), the Lambda and the worker have
+   * always accepted every field for them. That was a gap in this form and
+   * nowhere else.
+   *
+   * Shared with the Edit form for the reason buildVolumeFields is shared: both
+   * have to offer the same choices and reject the same input in the same
+   * words, and it is this parse that decides what reaches the worker.
+   *
+   * `read()` returns { params, describe } or { error }. It never decides the
+   * conflict policy or validates against a live price; the worker does both.
+   */
+  function buildKindFields(existing) {
+    const kind = h(
+      "select",
+      {},
+      h("option", { value: "static", text: "Price level" }),
+      h("option", { value: "trailing", text: "Trailing from a high/low" }),
+      h("option", { value: "ma", text: "Moving average" })
+    );
+    kind.value = existing ?? "static";
+
+    const level = numberInput(null, { placeholder: "80.50" });
+    const direction = directionSelect("up");
+
+    const near = numberInput(null, { placeholder: "150" });
+    const trailType = h("select", {}, h("option", { value: "percent", text: "Percent" }), h("option", { value: "amount", text: "Dollars" }));
+    const trailValue = numberInput(null, { placeholder: "3" });
+
+    const maType = h("select", {}, h("option", { value: "sma", text: "SMA" }), h("option", { value: "ema", text: "EMA" }));
+    const maPeriod = numberInput(200, { placeholder: "200" });
+    const maTimeframe = h("select", {}, ...MA_TIMEFRAMES.map(([value, text]) => h("option", { value, text })));
+    const maTrigger = h("select", {}, h("option", { value: "cross", text: "Crosses it" }), h("option", { value: "touch", text: "Touches it" }));
+    // A cross watches a direction; a touch watches which side price came from.
+    // They are different questions, so the worker rejects the wrong one for
+    // the trigger ("--direction applies to crosses", "--from applies to
+    // touches") and the form shows only the one that applies.
+    const maFrom = h("select", {}, ...["above", "below", "either"].map((v) => h("option", { value: v, text: v === "either" ? "Either side" : `From ${v}` })));
+    maFrom.value = "either";
+    const maDirection = h("select", {}, h("option", { value: "up", text: "Crosses up" }), h("option", { value: "down", text: "Crosses down" }));
+
+    const groups = {
+      static: [field("Level", level), field("Fires on", direction)],
+      trailing: [field("Near", near), field("Trail by", trailType), field("Distance", trailValue)],
+      ma: [
+        field("Average", maType),
+        field("Period", maPeriod),
+        field("Bars", maTimeframe),
+        field("Fires when price", maTrigger),
+        field("Direction", maDirection),
+        field("Approached", maFrom),
+      ],
+    };
+
+    const sync = () => {
+      for (const [name, fields] of Object.entries(groups)) {
+        for (const f of fields) f.hidden = name !== kind.value;
+      }
+      // Within the MA group, one of Direction / Approached at a time.
+      groups.ma[4].hidden = kind.value !== "ma" || maTrigger.value !== "cross";
+      groups.ma[5].hidden = kind.value !== "ma" || maTrigger.value !== "touch";
+    };
+    kind.addEventListener("change", sync);
+    maTrigger.addEventListener("change", sync);
+    sync();
+
+    const read = () => {
+      if (kind.value === "static") {
+        const lvl = positive(level.value);
+        if (lvl === null) return { error: "Enter a level above 0." };
+        return { params: { level: lvl, direction: direction.value }, describe: `${DIRECTION_LABEL[direction.value].toLowerCase()} ${lvl}` };
+      }
+      if (kind.value === "trailing") {
+        const n = positive(near.value);
+        if (n === null) return { error: "Enter the price to watch from, above 0." };
+        const v = positive(trailValue.value);
+        if (v === null) return { error: "Enter a trail distance above 0." };
+        const isPct = trailType.value === "percent";
+        return {
+          params: { near: n, ...(isPct ? { trailPercent: v } : { trailAmount: v }) },
+          describe: `trailing ${isPct ? `${v}%` : `$${v}`} from ${n}`,
+        };
+      }
+      const period = positive(maPeriod.value);
+      if (period === null || !Number.isInteger(period)) return { error: "Enter a whole period above 0, e.g. 200." };
+      const spec = `${maType.value}${period}@${maTimeframe.value}`;
+      const isCross = maTrigger.value === "cross";
+      return {
+        params: { ma: spec, ...(isCross ? { direction: maDirection.value } : { touch: true, from: maFrom.value }) },
+        describe: `${spec} ${isCross ? `cross ${maDirection.value}` : `touch from ${maFrom.value}`}`,
+      };
+    };
+
+    const reset = () => {
+      level.value = "";
+      near.value = "";
+      trailValue.value = "";
+    };
+
+    return { fields: [field("Kind", kind), ...Object.values(groups).flat()], read, reset };
+  }
+
+  const MA_FROM_LABEL = { above: "From above", below: "From below", either: "Either side" };
+
+  /**
+   * The Edit form's moving-average controls, prefilled from `AlertRow.ma` and
+   * sending only what changed.
+   *
+   * Separate from `buildKindFields` because an edit is a different job from an
+   * add: an add states everything, while an edit must send nothing for a field
+   * left alone. The alternative — reusing the add controls and always sending
+   * the whole spec — would rewrite `marginPct` and `from` on any edit that
+   * only meant to change the period.
+   */
+  function buildMaFields(ma) {
+    const maType = h("select", {}, h("option", { value: "sma", text: "SMA" }), h("option", { value: "ema", text: "EMA" }));
+    maType.value = ma.maType;
+    const period = numberInput(ma.period);
+    const timeframe = h("select", {}, ...MA_TIMEFRAMES.map(([value, text]) => h("option", { value, text })));
+    timeframe.value = ma.timeframe;
+    const trigger = h("select", {}, h("option", { value: "cross", text: "Crosses it" }), h("option", { value: "touch", text: "Touches it" }));
+    trigger.value = ma.trigger;
+    const from = h("select", {}, ...["above", "below", "either"].map((v) => h("option", { value: v, text: MA_FROM_LABEL[v] })));
+    from.value = ma.from;
+    const margin = numberInput(ma.marginPct, { placeholder: "0.25" });
+
+    const fromField = field("Approached", from);
+    const marginField = field("Touch band %", margin);
+    const sync = () => {
+      const isTouch = trigger.value === "touch";
+      fromField.hidden = !isTouch;
+      marginField.hidden = !isTouch;
+    };
+    trigger.addEventListener("change", sync);
+    sync();
+
+    const collect = () => {
+      const params = {};
+      const changes = [];
+      const p = positive(period.value);
+      if (p === null || !Number.isInteger(p)) return { error: "Enter a whole period above 0, e.g. 200." };
+
+      const spec = `${maType.value}${p}@${timeframe.value}`;
+      const was = `${ma.maType}${ma.period}@${ma.timeframe}`;
+      if (spec !== was) {
+        params.ma = spec;
+        changes.push(`${was} → ${spec}`);
+      }
+
+      const isTouch = trigger.value === "touch";
+      const wasTouch = ma.trigger === "touch";
+      if (isTouch) {
+        const m = positive(margin.value);
+        if (m === null) return { error: "Enter a touch band above 0, e.g. 0.25." };
+        // `touch` carries the margin, so it is sent whenever either moved or
+        // the alert is becoming a touch.
+        if (!wasTouch || m !== ma.marginPct) {
+          params.touch = m;
+          changes.push(wasTouch ? `touch band ${ma.marginPct}% → ${m}%` : `cross → touch within ${m}%`);
+        }
+        if (!wasTouch || from.value !== ma.from) {
+          params.from = from.value;
+          changes.push(`approached ${MA_FROM_LABEL[from.value].toLowerCase()}`);
+        }
+      } else if (wasTouch) {
+        // Going the other way has no flag: `--direction` on an MA means a
+        // cross, so stating one is what turns a touch back into a cross.
+        return { error: "Changing a touch back to a cross isn't supported from the page yet. Use alert edit in the CLI." };
+      }
+      return { params, changes };
+    };
+
+    return {
+      fields: [field("Average", maType), field("Period", period), field("Bars", timeframe), field("Fires when price", trigger), fromField, marginField],
+      collect,
+    };
+  }
+
   /** An op's volume params, from what buildVolumeFields read. */
   function volumeParams(volume) {
     const params = volume.ratio !== undefined ? { volumeRatio: volume.ratio } : { volumeAtLeast: volume.threshold };
@@ -807,16 +1009,25 @@
     const direction = directionSelect(a.direction);
     const trailType = h("select", {}, h("option", { value: "percent", text: "Percent" }), h("option", { value: "amount", text: "Dollars" }));
     const trailValue = numberInput(null, { placeholder: "unchanged" });
-    if (hasLevel) fields.push(field("Level", level), field("Fires on", direction));
+    // Prefilled from AlertRow.ma, so opening the form to read it and saving is
+    // "Nothing changed." rather than a silent rewrite of the spec.
+    const maFields = a.kind === "ma" ? buildMaFields(a.ma) : null;
+    if (a.kind === "ma") fields.push(...maFields.fields);
+    else if (hasLevel) fields.push(field("Level", level), field("Fires on", direction));
     else fields.push(field("Trail by", trailType), field("Distance", trailValue));
 
+    // A moving average has no volume condition, and never has had one.
     const old = a.volume ?? null;
-    const volumeFields = buildVolumeFields(old);
-    fields.push(...volumeFields.fields);
+    const volumeFields = a.kind === "ma" ? null : buildVolumeFields(old);
+    if (volumeFields) fields.push(...volumeFields.fields);
 
     const collect = () => {
       const params = {};
       const changes = [];
+
+      if (maFields) {
+        return maFields.collect();
+      }
 
       const read = volumeFields.read();
       if (read.error) return { error: read.error };
@@ -1201,10 +1412,73 @@
     return [row, formRow];
   }
 
+  /**
+   * One stop, with Edit and Remove.
+   *
+   * Moving a stop used to mean Remove then Add — two ops, either of which
+   * could land alone, leaving a position briefly with no stop recorded or two.
+   * `stop.edit` is one guarded op on the same `expect.stopPrice` the removal
+   * sends. The price field prefills with what is set, so opening the form to
+   * look and closing it changes nothing.
+   *
+   * "Edit" rather than "Move" both because that is what a lot row calls the
+   * same control, and because "Move" is a substring of the "Remove" beside it,
+   * which makes the two ambiguous to anything matching by accessible name.
+   */
+  function stopTag(symbol, s) {
+    const price = numberInput(s.stopPrice, { placeholder: "price" });
+    const covered = numberInput(s.count, { placeholder: "all" });
+    const error = h("span", { class: "form-error" });
+    const form = h(
+      "form",
+      {
+        class: "ops-form stop-edit",
+        hidden: true,
+        onsubmit: async (e) => {
+          e.preventDefault();
+          error.textContent = "";
+          const p = positive(price.value);
+          const c = optionalPositive(covered);
+          if (p === null) return (error.textContent = "Enter a stop price above 0.");
+          if (c === null) return (error.textContent = COVERED_SHARES_ERROR);
+          await submitOp(
+            {
+              type: "stop.edit",
+              target: { stopId: s.id },
+              expect: { stopPrice: s.stopPrice },
+              params: { stopPrice: p, ...(c !== undefined ? { count: c } : {}) },
+            },
+            { symbol, summary: `move ${symbol} stop from ${s.stopPrice} to ${p}${c !== undefined ? ` for ${c} shares` : ""}` }
+          );
+        },
+      },
+      field("Stop price", price),
+      field("Shares covered", covered),
+      h("button", { type: "submit", text: "Queue move" }),
+      error
+    );
+    // The form is a sibling of the tag, not a child: `.stop-list` is an inline
+    // flex row, and a block form inside a tag would break it out of the row.
+    const tag = h(
+      "span",
+      { class: "tag stop-tag" },
+      `${money(s.stopPrice)} · ${s.count ?? "all"} shares`,
+      canEdit() ? h("button", { type: "button", text: "Edit", onclick: () => (form.hidden = !form.hidden) }) : null,
+      confirmButton("Remove", () =>
+        submitOp(
+          { type: "stop.remove", target: { stopId: s.id }, expect: { stopPrice: s.stopPrice }, params: {} },
+          { symbol, summary: `remove ${symbol} stop at ${s.stopPrice}` }
+        )
+      )
+    );
+    return { tag, form };
+  }
+
   function stopsBlock(symbol, stops) {
     const price = numberInput(null, { placeholder: "price" });
     const covered = numberInput(null, { placeholder: "all" });
     const error = h("span", { class: "form-error" });
+    const tags = stops.map((s) => stopTag(symbol, s));
     return h(
       "div",
       { class: "stops" },
@@ -1212,24 +1486,13 @@
         "div",
         { class: "stop-list" },
         h("span", { class: "muted", text: stops.length ? "Stops:" : "No stops." }),
-        ...stops.map((s) =>
-          h(
-            "span",
-            { class: "tag stop-tag" },
-            `${money(s.stopPrice)} · ${s.count ?? "all"} shares`,
-            confirmButton("Remove", () =>
-              submitOp(
-                { type: "stop.remove", target: { stopId: s.id }, expect: { stopPrice: s.stopPrice }, params: {} },
-                { symbol, summary: `remove ${symbol} stop at ${s.stopPrice}` }
-              )
-            )
-          )
-        )
+        ...tags.map((t) => t.tag)
       ),
+      ...tags.map((t) => t.form),
       h(
         "form",
         {
-          class: "ops-form",
+          class: "ops-form stop-add",
           onsubmit: async (e) => {
             e.preventDefault();
             error.textContent = "";
@@ -1256,10 +1519,48 @@
     );
   }
 
+  /**
+   * Gives this position a starting alert, if it has none.
+   *
+   * The atomic unit of `holdings cover`, which the scheduled script runs over
+   * everything uncovered. That pass is what normally covers a new lot within
+   * one cycle, so this is for the case you don't want to wait for, or for a
+   * position whose alert you just removed.
+   *
+   * The level is not computed here: the worker takes 10% above the higher of
+   * the live price and the basis, and it needs a live quote to know the first.
+   * The button says the rule and the result says the number.
+   */
+  function coverButton(symbol) {
+    if (!canEdit() || coverPending(symbol)) return null;
+    // The rule is "no live alert", and the worker re-checks it; this only
+    // keeps the button off a row where it would obviously be refused.
+    if (uncoveredSymbols() !== null && !uncoveredSymbols().has(symbol)) return null;
+    const btn = h("button", {
+      text: "Cover with an alert",
+      title: "Create a starting alert 10% above whichever is higher, the live price or your basis. Rejected if this symbol already has a live alert.",
+      onclick: () => submitOp({ type: "holdings.cover", target: { symbol }, params: {} }, { symbol, summary: `give ${symbol} a starting alert` }),
+    });
+    return btn;
+  }
+
+  /**
+   * Held symbols with no live alert, or null while the alert book hasn't been
+   * fetched — in which case the caller shows the button and lets the worker
+   * decide, rather than hiding an action on incomplete information.
+   */
+  function uncoveredSymbols() {
+    if (alertsDoc === null) return null;
+    const covered = new Set(alertsDoc.alerts.map((a) => a.symbol));
+    return new Set((holdingRows() ?? []).map((r) => r.symbol).filter((s) => !covered.has(s)));
+  }
+
   function positionDetail(symbol) {
     const lots = vaultData.lots.filter((l) => l.symbol === symbol);
     const stops = vaultData.stops.filter((s) => s.symbol === symbol);
-    const sig = JSON.stringify([lots, stops]);
+    // Coverage is in the signature because Cover appears and disappears with
+    // it, and the alert book arrives after the first render of this panel.
+    const sig = JSON.stringify([lots, stops, uncoveredSymbols()?.has(symbol) ?? null, coverPending(symbol)]);
     const cached = detailCache.get(symbol);
     if (cached?.sig === sig) return cached.el;
     const el = h(
@@ -1279,6 +1580,7 @@
       h(
         "div",
         { class: "actions" },
+        coverButton(symbol),
         confirmButton(`Remove the ${symbol} position`, () =>
           submitOp(
             { type: "position.remove", target: { symbol }, expect: { lotIds: lots.map((l) => l.id) }, params: {} },
@@ -1296,6 +1598,8 @@
   let current = null; // dashboard.json
   let alertsDoc = null; // alerts.json
   let alertsPromise = null;
+  /** One alert out of the book, or null before it has been fetched (drawers only). */
+  const alertById = (id) => alertsDoc?.alerts.find((a) => a.id === id) ?? null;
   let freshIds = new Set();
   let holdingsSort = { key: "pctFromBasis", dir: -1 };
   // The position #/holdings/<symbol> points at, and whether it still needs
@@ -1387,7 +1691,8 @@
               // until the next check runs; say so rather than leave the row
               // looking like nothing happened.
               pendingTag(r.alertId),
-              dismissPending(r.id) ? h("span", { class: "tag pending", text: "dismiss pending" }) : null
+              dismissPending(r.id) ? h("span", { class: "tag pending", text: "dismiss pending" }) : null,
+              relevelPending(r.id) ? h("span", { class: "tag pending", text: "suggestion pending" }) : null
             ),
             h(
               "div",
@@ -1404,19 +1709,110 @@
             r.sinceTrigger ? h("div", { class: "sub", text: r.sinceTrigger }) : null,
             positionNote(r.symbol),
             r.sinceWatching ? h("div", { class: "sub", text: r.sinceWatching }) : null,
+            suggestionNote(r),
             r.why ? h("div", { class: "why", text: r.why }) : null,
             h(
               "div",
               { class: "actions" },
               h("a", { href: triggerHash(r.id), text: "Details" }),
               h("a", { href: r.chartUrl, target: CHART_TARGET, text: "Chart" }),
-              r.suggestedLevel !== null ? copyButton(`Copy apply → ${r.suggestedLevel}`, `${CLI} alert revisit apply ${r.id}`) : null,
-              dismissButton(r)
+              ...revisitActions(r, r.alertCondition)
             )
           )
         )
       )
     );
+  }
+
+  /**
+   * What the suggestion was read off, and never the number again.
+   *
+   * The level is already on the row twice - in `action` ("Suggest moving 55 to
+   * 61") and on the Apply button - so repeating it here would be a third. What
+   * is missing is *why* 61: "61" is a number, "61, off the 60d high" is a
+   * decision you can disagree with.
+   *
+   * With no level, `suggestionBasis` instead carries the reason there is none
+   * (a moving average has no level to re-point; a downward fire would invert
+   * the alert), which is the only place the page can explain a missing Apply.
+   */
+  function suggestionNote(r) {
+    if (!r.suggestionBasis) return null;
+    return h("div", {
+      class: "sub",
+      text: r.suggestedLevel !== null ? `Basis: ${r.suggestionBasis}.` : `No new level — ${r.suggestionBasis}.`,
+    });
+  }
+
+  /**
+   * Suggest → Apply → Dismiss, the whole decision the queue exists to collect.
+   *
+   * Until 2026-09-21 the middle one was a copy-a-CLI-command button: nothing
+   * in the ops vocabulary could re-level an alert, so the page could only hand
+   * you the command to run yourself. `revisit.relevel` and `revisit.apply`
+   * close that, and both are queued exactly like every other change - applied
+   * by the next scheduled `ops pull`, not now.
+   *
+   * Only one at a time: while a change to this entry is waiting, offering a
+   * second one queues a decision made against a state that is about to change.
+   */
+  function revisitActions(r, condition, { dismiss = true } = {}) {
+    if (!canEdit() || revisitBusy(r.id)) return [];
+    return [relevelButton(r), applyButton(r, condition), dismiss ? dismissButton(r) : null].filter(Boolean);
+  }
+
+  /**
+   * Asks for a fresh level and priority for this one entry.
+   *
+   * `alert revisit relevel` does this for the whole queue and is deliberately
+   * not in the scheduled run - it spends a bars request per symbol - so most
+   * entries carry no suggestion until someone asks. This is the asking, per
+   * row, which is the unit a decision is actually made in.
+   */
+  function relevelButton(r) {
+    const btn = h("button", {
+      text: r.suggestedLevel === null && r.suggestionBasis === null ? "Suggest level" : "Re-suggest",
+      title: "Fetch this symbol's recent bars, propose a new level, and re-score the entry. Nothing is changed: the alert keeps its level either way.",
+      onclick: () =>
+        submitOp(
+          { type: "revisit.relevel", target: { revisitId: r.id }, params: {} },
+          { symbol: r.symbol, alertId: r.alertId, revisitId: r.id, summary: `${r.symbol}: suggest a new level for the ${when(r.triggeredAt)} fire` }
+        ),
+    });
+    return btn;
+  }
+
+  /**
+   * Moves the alert onto the suggested level and closes the entry.
+   *
+   * `expect` carries the suggestion as well as the condition. The condition
+   * alone is the guard every other alert-changing control sends, and it is not
+   * enough here: it catches the alert moving but not the suggestion moving, so
+   * a re-level landing between this render and the click would apply a number
+   * that was never on screen.
+   */
+  function applyButton(r, condition) {
+    // No suggestion is nothing to apply; no condition means the alert behind
+    // this fire is gone, which `updates` already says on the row.
+    if (r.suggestedLevel === null || !condition) return null;
+    const btn = confirmButton(`Apply → ${r.suggestedLevel}`, () =>
+      submitOp(
+        {
+          type: "revisit.apply",
+          target: { revisitId: r.id, alertId: r.alertId },
+          expect: { suggestedLevel: r.suggestedLevel, condition },
+          params: {},
+        },
+        {
+          symbol: r.symbol,
+          alertId: r.alertId,
+          revisitId: r.id,
+          summary: `${r.symbol}: move the alert${r.levelAtTrigger === null ? "" : ` from ${r.levelAtTrigger}`} to ${r.suggestedLevel}`,
+        }
+      )
+    );
+    btn.title = `Re-level alert ${r.alertId} to ${r.suggestedLevel} and close this entry. The alert keeps watching at the new level.`;
+    return btn;
   }
 
   /**
@@ -1426,7 +1822,6 @@
    * fire comes back here as a new entry.
    */
   function dismissButton(r) {
-    if (!canEdit() || dismissPending(r.id)) return null;
     const btn = confirmButton("Dismiss", () =>
       submitOp(
         { type: "revisit.dismiss", target: { revisitId: r.id, alertId: r.alertId }, params: {} },
@@ -1598,6 +1993,9 @@
           {},
           symbolLink(r.symbol),
           r.stops.length ? h("span", { class: "tag", text: `stop ${r.stops.join(", ")}` }) : null,
+          // What `holdings check` would report, worked out in the browser so
+          // nothing basis-derived has to be published to say it.
+          ...holdingFlags(r).map((f) => h("span", { class: `tag ${f.kind}`, title: f.title, text: f.label })),
           pendingSymbols.has(r.symbol) ? h("span", { class: "tag pending", text: "change pending" }) : null
         ),
         h("td", { text: accountsOf(r).join(", ") || "—" }),
@@ -1620,6 +2018,112 @@
     }
     $("holdings").replaceChildren(h("thead", {}, head), h("tbody", {}, ...body));
   }
+
+  /**
+   * Company name and sector for a symbol, or null when nothing is cached.
+   *
+   * The FMP profile cache has held these all along and only the exchange was
+   * ever read, so every ticker on the page was a bare symbol with nothing to
+   * say what it is. Absent means no cached profile, exactly as with
+   * `tradingViewPrefixes` — a renderer shows the ticker alone.
+   */
+  const companyOf = (symbol) => current?.profiles?.[symbol] ?? null;
+  function companyParts(symbol) {
+    const info = companyOf(symbol);
+    return info === null ? [] : [info.name, info.sector].filter(Boolean);
+  }
+  // ---- the src/holdings/engine.ts thresholds, mirrored ----------------------
+  //
+  // `holdings check` reports these three conditions to a CSV and nothing else,
+  // and it isn't in the scheduled run, so the page never saw them.
+  //
+  // They are computed here rather than published because every one of them is
+  // basis-derived: `pctAboveBasis` plus a price gives the basis away, so
+  // putting them in dashboard.json would need them sealed in the vault. The
+  // decrypted rows already carry `pctFromBasis` and `lastPurchaseDate`, so the
+  // browser can just work them out - which makes the privacy rule structural
+  // rather than something the next field has to remember (the same reason
+  // `positionNote` and `positionValue` are client-side).
+  //
+  // Mirrored constants, so a test can diff them against the engine's.
+  const ABOVE_BASIS_THRESHOLD_PCT = 10;
+  const STAGNANT_MIN_DAYS = 30;
+  const STAGNANT_MAX_PROFIT_PCT = 2;
+
+  /**
+   * What `holdings check` would say about this position, as state rather than
+   * as an event.
+   *
+   * The third condition it reports - a 3% appreciation band being crossed - is
+   * deliberately absent. That one is an event: it depends on
+   * `lastNotifiedAppreciationBand`, which lives in holdings.json's alertState
+   * and never leaves the machine, so the browser cannot know whether a band
+   * has already been reported. These two are pure functions of the row.
+   */
+  function holdingFlags(row, now = Date.now()) {
+    const flags = [];
+    if (row.pctFromBasis === null) return flags;
+    if (row.pctFromBasis >= ABOVE_BASIS_THRESHOLD_PCT) {
+      flags.push({ kind: "above-basis", label: `+${ABOVE_BASIS_THRESHOLD_PCT}% over basis`, title: `Up ${row.pctFromBasis.toFixed(1)}% on cost.` });
+    }
+    const days = (now - new Date(row.lastPurchaseDate).getTime()) / 86_400_000;
+    if (days >= STAGNANT_MIN_DAYS && row.pctFromBasis < STAGNANT_MAX_PROFIT_PCT) {
+      flags.push({
+        kind: "stagnant",
+        label: "stagnant",
+        title: `Held ${Math.floor(days)} days and still under +${STAGNANT_MAX_PROFIT_PCT}% on cost.`,
+      });
+    }
+    return flags;
+  }
+  // ---- end of the src/holdings/engine.ts mirror -----------------------------
+
+  /** Inline, after a row's numbers. */
+  function companyNote(symbol) {
+    const parts = companyParts(symbol);
+    return parts.length === 0 ? null : muted(` · ${parts.join(" · ")}`);
+  }
+  /** Its own line, under a drawer's title. */
+  function companyLine(symbol) {
+    const info = companyOf(symbol);
+    if (info === null) return null;
+    const parts = [info.name, info.sector, info.industry].filter(Boolean);
+    return parts.length === 0 ? null : h("p", { class: "muted drawer-company", text: parts.join(" · ") });
+  }
+
+  /**
+   * Live alerts closest to firing.
+   *
+   * `buildDashboard` has always computed this and `renderDashboard` has always
+   * printed it, but the page had no renderer at all, so the one place the
+   * document was read by a person silently dropped it.
+   *
+   * Collapsed behind a <details> for the reason it is off by default in the
+   * terminal: a hundred names within a few percent of firing is market noise,
+   * not a to-do list. The arrow carries the side, because "90.48 → 90.40"
+   * alone doesn't say price has to *fall*. A negative distance means the price
+   * condition is already met and only a volume gate is holding it.
+   */
+  function renderApproaching(rows, total) {
+    $("approaching-section").hidden = rows.length === 0;
+    if (rows.length === 0) return;
+    $("approaching-summary").textContent = `${total} within range of firing${total > rows.length ? ` (showing the nearest ${rows.length})` : ""}`;
+    $("approaching").replaceChildren(
+      ...rows.map((a) =>
+        h(
+          "div",
+          { class: "approach-row" },
+          h("span", { class: "approach-dist", text: a.distancePct === null ? "vol" : `${a.distancePct >= 0 ? "+" : ""}${a.distancePct.toFixed(2)}%` }),
+          symbolLink(a.symbol, a.chartUrl),
+          h("a", { class: "plain", href: alertHash(a.alertId), text: ` ${money(a.price)} ${ARROW[a.side] ?? "→"} ${a.trigger === null ? "volume" : money(a.trigger)}` }),
+          a.hasVolumeCondition ? h("span", { class: "tag", text: "+vol" }) : null,
+          companyNote(a.symbol)
+        )
+      )
+    );
+  }
+
+  const ARROW = { below: "↓", above: "↑" };
 
   function renderQuiet(notes, total) {
     $("quiet-section").hidden = notes.length === 0;
@@ -1741,6 +2245,7 @@
     renderQueue(d.revisitQueue);
     renderTriggers(d.recentTriggers ?? [], d.summary.windowDays);
     renderStories(d.stories);
+    renderApproaching(d.approaching ?? [], d.approachingTotal ?? 0);
     renderQuiet(d.quietWatches, d.quietTotal);
     renderOpsControls();
     renderHoldingsView();
@@ -2114,13 +2619,18 @@
 
     return [
       h("h2", { class: "drawer-title" }, symbolLink(t.symbol, t.chartUrl), " ", bareHeadline(t), heldTag(t), reversedTag(t)),
+      companyLine(t.symbol),
       h("dl", { class: "kv-list" }, ...rows),
       ...(storyBlock(t.symbol) ?? []),
       h(
         "div",
         { class: "actions", style: "margin-top:1.25rem" },
         h("a", { href: t.chartUrl, target: CHART_TARGET, text: "Chart" }),
-        t.status === "open" && t.suggestedLevel !== null ? copyButton(`Copy apply → ${t.suggestedLevel}`, `${CLI} alert revisit apply ${t.id}`) : null
+        // Suggest and Apply, but no Dismiss: dismissing lives on the queue row,
+        // where what it removes is the row you are looking at (the user's rule,
+        // 2026-09-18). The condition comes from the alert book, which this
+        // drawer already fetches for its edit form.
+        ...(t.status === "open" ? revisitActions(t, alertById(t.alertId)?.condition ?? null, { dismiss: false }) : [])
       ),
       // A wrapper, because replaceChildren renders a null argument as the text "null".
       h("div", {}, triggerEditSection(t)),
@@ -2206,6 +2716,7 @@
     const triggers = (current?.recentTriggers ?? []).filter((t) => t.alertId === a.id);
     return [
       h("h2", { class: "drawer-title" }, symbolLink(a.symbol, a.chartUrl), " ", muted(KIND_LABEL[a.kind] ?? a.kind), heldTag(a)),
+      companyLine(a.symbol),
       h("dl", { class: "kv-list" }, ...rows),
       ...(storyBlock(a.symbol) ?? []),
       h("h3", { class: "drawer-sub", text: "Recent triggers" }),
@@ -2363,8 +2874,9 @@
       else link.removeAttribute("aria-current");
     }
     // Both drawers read alerts.json now: the alert drawer to render itself,
-    // the trigger drawer for the edit form on the alert behind the fire.
-    if (baseView === "alerts" || route.drawer) ensureAlerts();
+    // the trigger drawer for the edit form on the alert behind the fire. The
+    // holdings view needs it to know which positions have no alert to cover.
+    if (baseView === "alerts" || baseView === "holdings" || route.drawer) ensureAlerts();
     if (baseView === "alerts") renderAlerts();
     if (baseView === "holdings") renderHoldingsView();
     renderDrawer(route.drawer);
@@ -2483,7 +2995,7 @@
     resolvePending(d.opResults, d.opsProcessedThrough);
     // Re-read on every poll: the vault is republished alongside the results, and prices move.
     refreshVault();
-    if (baseView === "alerts" || parseRoute().drawer) ensureAlerts(true);
+    if (baseView === "alerts" || baseView === "holdings" || parseRoute().drawer) ensureAlerts(true);
   }
 
   document.addEventListener("visibilitychange", () => {

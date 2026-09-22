@@ -8,10 +8,29 @@
  */
 
 import { describeAlertCondition } from "../alerts/describe.js";
-import { effectiveTrigger, type Alert, type AlertDirection, type AlertSide, type VolumeCondition } from "../alerts/models.js";
+import {
+  effectiveTrigger,
+  type Alert,
+  type AlertDirection,
+  type AlertSide,
+  type MaAlert,
+  type MaApproach,
+  type VolumeCondition,
+} from "../alerts/models.js";
 import type { Quote } from "../providers/schwab.js";
 import { round } from "../round.js";
 import { tradingViewUrl } from "../tradingview.js";
+
+/** The editable half of a moving-average alert: everything `--ma`, `--touch` and `--from` set. */
+export interface MaRow {
+  maType: MaAlert["maType"];
+  period: number;
+  timeframe: MaAlert["timeframe"];
+  trigger: MaAlert["trigger"];
+  from: MaApproach;
+  /** Touch band as a percent of the average. Unused by crosses. */
+  marginPct: number;
+}
 
 export interface AlertRow {
   id: string;
@@ -36,6 +55,19 @@ export interface AlertRow {
    * be parsed back reliably.
    */
   volume: VolumeCondition | null;
+  /**
+   * A moving-average alert's parameters, for the edit form to prefill from.
+   * Null for every other kind.
+   *
+   * Without these the page could offer an MA edit form but not fill it in, and
+   * opening one to read it and saving would rewrite the spec to whatever the
+   * controls happened to default to — the same silent rewrite
+   * `volumeInputValue` exists to prevent on a share threshold. `condition` is
+   * prose and can't be parsed back.
+   *
+   * Not volatile: unlike `movingLevel`, none of this moves with price.
+   */
+  ma: MaRow | null;
   triggerCount: number;
   lastTriggeredAt: string | null;
   lastTriggerPrice: number | null;
@@ -83,6 +115,10 @@ export function buildAlertRows(
         direction: a.kind === "static" ? a.direction : null,
         hasVolumeCondition: a.kind === "volume" || ((a.kind === "static" || a.kind === "trailing") && a.volumeCondition !== undefined),
         volume: a.kind === "volume" ? a.volume : a.kind === "static" || a.kind === "trailing" ? (a.volumeCondition ?? null) : null,
+        ma:
+          a.kind === "ma"
+            ? { maType: a.maType, period: a.period, timeframe: a.timeframe, trigger: a.trigger, from: a.from, marginPct: a.marginPct }
+            : null,
         triggerCount: a.triggerCount,
         lastTriggeredAt: a.lastTriggeredAt,
         lastTriggerPrice: a.lastTriggerPrice,

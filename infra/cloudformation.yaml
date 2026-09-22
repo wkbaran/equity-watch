@@ -11,9 +11,14 @@ Description: >
   Basic auth is off by default and the site is public. Set
   EnableBasicAuth=true before turning on web.holdings in analysis.config.json.
 
-  EnableOps=true lets the page add and edit alerts: POST /api/ops goes to a
-  Lambda (token check) that queues the change on SQS, and `ops pull` on the
-  machine running checks applies it. Reads stay public; only writes need the token.
+  EnableOps=true lets the page change alerts, the revisit queue and holdings:
+  POST /api/ops goes to a Lambda (token check) that queues the change on SQS,
+  and `ops pull` on the machine running checks applies it. Reads stay public;
+  only writes need the token.
+
+  Adding an op type means adding it to TARGET_KEY below AND redeploying this
+  stack, or the page gets "Unknown op type" from a Lambda that has never heard
+  of it. tests/lambdaContract.test.ts asserts this map and OP_TYPES agree.
 
 Parameters:
 
@@ -248,9 +253,10 @@ Resources:
             if (!isObject(op) || typeof op.id !== "string" || !ID.test(op.id)) return reply(400, { error: "Bad op id" });
             // Op type -> the target key it must name. Keep in step with OP_TYPES in src/ops/apply.ts.
             const TARGET_KEY = {
-              "alert.add": null, "alert.edit": "alertId", "alert.remove": "alertId", "revisit.dismiss": "revisitId",
+              "alert.add": null, "alert.edit": "alertId", "alert.remove": "alertId",
+              "revisit.relevel": "revisitId", "revisit.apply": "revisitId", "revisit.dismiss": "revisitId",
               "lot.add": null, "lot.edit": "lotId", "lot.remove": "lotId", "position.remove": "symbol",
-              "stop.add": null, "stop.remove": "stopId",
+              "stop.add": null, "stop.edit": "stopId", "stop.remove": "stopId", "holdings.cover": "symbol",
             };
             if (typeof op.type !== "string" || !Object.prototype.hasOwnProperty.call(TARGET_KEY, op.type)) return reply(400, { error: "Unknown op type" });
             if (!isObject(op.params)) return reply(400, { error: "params must be an object" });

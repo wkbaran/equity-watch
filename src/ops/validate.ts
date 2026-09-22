@@ -356,6 +356,20 @@ export function editFieldsFromJson(params: unknown): Parsed<RawEditFields> {
   return attempt(() => scalarFields(params, EDIT_KEYS) as RawEditFields);
 }
 
+const APPLY_KEYS = ["level"] as const;
+
+/**
+ * `revisit.apply`'s params: an optional level that overrides the entry's own
+ * suggestion, for editing the number before taking it. Absent means "use the
+ * suggestion", which is the ordinary case and not an error.
+ */
+export function parseRevisitApply(params: unknown): Parsed<{ level?: number }> {
+  return attempt(() => {
+    const f = scalarFields(params, APPLY_KEYS);
+    return f.level === undefined ? {} : { level: positive("--level", f.level as Scalar) };
+  });
+}
+
 /** A string property of an untrusted value, or null. */
 export function stringField(value: unknown, key: string): string | null {
   if (value === null || typeof value !== "object") {
@@ -392,6 +406,7 @@ export interface StopInput {
 const LOT_KEYS = ["symbol", "count", "basisPerShare", "purchaseDate", "account", "stopPrice", "stopCount"];
 const LOT_EDIT_KEYS = ["count", "basisPerShare", "purchaseDate", "account"];
 const STOP_KEYS = ["symbol", "stopPrice", "count"];
+const STOP_EDIT_KEYS = ["stopPrice", "count"];
 
 /** Like scalarFields, but keeps empty and null values: in an edit they mean "clear". */
 function objectFields(params: unknown, keys: string[]): Record<string, unknown> {
@@ -492,6 +507,22 @@ export function parseStopInput(params: unknown): Parsed<StopInput> {
       symbol: symbolValue(f.symbol),
       stopPrice: positiveValue("Stop price", f.stopPrice),
       count: present(f.count) ? positiveValue("Shares covered", f.count) : null,
+    };
+  });
+}
+
+/**
+ * A stop edit. The symbol isn't editable for the same reason a lot's isn't:
+ * moving a stop to another position is a different position's stop, so it is a
+ * remove and an add, not an edit. `count` absent leaves the cover as it is;
+ * explicitly null means "whatever is currently held".
+ */
+export function parseStopEdit(params: unknown): Parsed<{ stopPrice: number; count?: number | null }> {
+  return attempt(() => {
+    const f = objectFields(params, STOP_EDIT_KEYS);
+    return {
+      stopPrice: positiveValue("Stop price", f.stopPrice),
+      ...("count" in f ? { count: present(f.count) ? positiveValue("Shares covered", f.count) : null } : {}),
     };
   });
 }

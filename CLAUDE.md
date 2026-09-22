@@ -282,6 +282,19 @@ the `Dashboard` document, add its key there or every run will publish (the
 `dashboardFingerprint` test in `tests/dashboard.test.ts` will catch it only if
 its fixture exercises the field).
 
+**A list whose *membership* follows the quote counts too, not just a number.**
+The site build passes `includeApproaching: true` (2026-09-21, since the page now
+renders it), and a quote-less build has *no* approaching rows while the real one
+has some — the `withinPct` filter is the difference. `approaching` and
+`approachingTotal` were already in `VOLATILE_KEYS`, which is the only reason
+turning it on didn't publish on every single run. There is a test for exactly
+that now; don't remove either key.
+
+Two fields are deliberately **not** volatile even though they sit next to ones
+that are: `RevisitRow.alertCondition` (it changes only when someone edits the
+alert, which is news) and `AlertRow.ma` (a spec, not a level — unlike
+`movingLevel` beside it, none of it moves with price).
+
 **Holdings are removed from the published JSON, not hidden by the page.** The
 site has no login by default (`EnableBasicAuth=false`), so `dashboard.json` is
 public. With `web.holdings` off, `siteDocument` (`src/web/site.ts`) empties the
@@ -340,6 +353,43 @@ Two more things that look wrong and aren't:
 - **`web/` sits outside `src/`** and is resolved as `../../web/` from the module,
   which is correct from both `src/web/site.ts` (tsx) and `dist/web/site.js`.
   `tsc` does not copy non-TS files, which is why the assets aren't under `src/`.
+
+## An author `display` rule silently defeats the `hidden` attribute
+
+`el.hidden = true` sets the attribute, and the UA stylesheet's
+`[hidden] { display: none }` is what acts on it — at **specificity 0-1-0**. Any
+author rule that sets `display` on a class the element also carries wins the tie,
+and the element stays on screen with `hidden` set. Nothing errors; the attribute is
+right there in the DOM when you inspect it.
+
+Three classes in `web/index.html` have hit this, and each one is written
+`.x:not([hidden]) { display: … }` for that reason: `.chart-panel`, `.ops-form` (a
+stop's Edit form) and `.field` (the New alert form's per-kind groups). If you add a
+`display` to a class that anything toggles with `.hidden`, do the same.
+
+Only a browser catches it. `node --check` and a DOM query both report the element as
+present-and-hidden; Playwright's `toBeHidden()` is what fails. Both instances above
+were found by a test that was written to assert something else.
+
+## Labels must reference their control, not wrap it
+
+`field()` in `web/app.js` renders `<label for=…>` beside the control rather than
+around it. Wrapping associates them too, but then the label's *text* is its whole
+text content — and for a `<select>` that includes **every option**. A "Kind" select
+offering "Price level" therefore answered to the accessible name "Level", colliding
+with the actual Level field: `getByLabel("Level")` matched two elements, and a
+screen reader would read the same collision out loud.
+
+Two related traps in the same area, both of which cost a test run:
+
+- **`getByRole("button", { name: "Move" })` also matches "Remove".** Playwright's
+  name matching is substring by default. A stop's Edit button is called "Edit" both
+  because that is what a lot row calls the same control and because "Move" next to
+  "Remove" is ambiguous to anything matching by name.
+- **`<input type="number" step="1">` hands validation to the browser.** A
+  non-integer never reaches the submit handler, so the form's own message never
+  appears and the user gets a native bubble in a page that styles errors itself.
+  The moving-average period field deliberately has no `step`.
 
 ## The Alerts page's A-Z rail is sized from the window, and hides when it would lie
 
@@ -500,6 +550,27 @@ Things that look simplifiable and aren't:
 - **`expect.condition` is the conflict guard**: `describeAlertCondition` as the
   page showed it. If you change that function's wording, every edit queued before
   the deploy is rejected once. That's acceptable, but know it will happen.
+- **`revisit.apply` guards on `expect.suggestedLevel` *as well as*
+  `expect.condition`, and that second check is not redundant.** The condition
+  catches the alert moving; it does not catch the *suggestion* moving. A
+  `revisit.relevel` landing between the page rendering and the click would
+  otherwise apply a number nobody ever saw. Don't "simplify" it to the one
+  guard every other alert-changing op uses.
+- **`ApplyContext.relevel` rejects when absent; `ensureProfile` swallows.** They
+  look like the same optional-callback pattern and are opposites. A chart link
+  is cosmetic and its op has already landed, so `ensureProfile` catches
+  everything. `revisit.relevel` *is* the op — someone asked for a suggestion and
+  has to get an answer — so with no market data configured it returns a
+  rejection saying so. Copying the swallow would make a re-level silently
+  succeed having done nothing.
+- **`holdings.cover` takes no `expect` on purpose.** Its rule is "this symbol has
+  no live alert", so the handler re-checks the rule; nothing an `expect` could
+  assert says more. Its result message also names a number, unlike every other
+  holdings op — the alert it creates goes into the public alert book anyway, so
+  withholding the level would hide nothing. The basis and share count are still
+  never named. (Note the level on an *underwater* position is `basis × 1.1`, so
+  the public alert implies the basis; pre-existing, documented in
+  docs/ARCHITECTURE.md.)
 - **Validation lives in `src/ops/validate.ts`** and the CLI uses it too. Don't
   add a check to `cmdAlertAdd`/`cmdAlertEdit` only, or the page will accept what
   the CLI refuses.
@@ -873,6 +944,20 @@ yourself about to write a second one, these are the reasons not to:
 - **`web/app.js`'s `holdingFor`** is the single place the holdings privacy rule
   is applied on the page: `holdingRows()` is null on a public page, so every
   caller is absent there rather than each remembering to check.
+- **`relevelEntry`** (`src/alerts/relevel.ts`) re-levels and re-scores one queue
+  entry. `alert revisit relevel` repeats it over the queue; the dashboard's
+  `revisit.relevel` op runs it for one row. Two copies would diverge on exactly
+  the cases it exists to get right (an MA has no level to re-point, a downward
+  fire would invert the alert) and nothing would catch it.
+- **`applyRevisitLevel`** (`src/alerts/revisitStore.ts`) is `alert revisit
+  apply`'s body, lifted out so `revisit.apply` runs it too. Every refusal is a
+  returned reason, not `process.exit`. Extracting it turned up two bugs that
+  had been unreachable by tests: re-applying a closed entry overwrote
+  `appliedFrom`/`appliedTo`, and a message named `alert relevel`, which is not a
+  command.
+- **`coverCandidates`** (`src/holdings/cover.ts`) decides who gets a starting
+  alert, for both the `holdings cover` sweep and the per-symbol
+  `holdings.cover` op. Re-running it *is* that op's conflict guard.
 
 Two that look like duplication and are not: the stop-price messages in the
 add-lot form ("or empty for none") and in `stopsBlock` ("Enter a stop price

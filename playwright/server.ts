@@ -29,7 +29,7 @@ import type { Quote } from "../src/providers/schwab.js";
 import { buildAlertRows } from "../src/web/alertsPage.js";
 import { SITE_ASSETS, siteDocument } from "../src/web/site.js";
 import { sealVault, vaultContents } from "../src/web/vault.js";
-import { FIXTURE_ALERTS, FIXTURE_REVISITS, HOLDINGS, OPS_TOKEN, PRICES } from "./fixtures.js";
+import { FIXTURE_ALERTS, FIXTURE_PROFILES, FIXTURE_REVISITS, HOLDINGS, OPS_TOKEN, PRICES } from "./fixtures.js";
 
 const PORT = Number(process.env.PW_PORT ?? 4178);
 const WEB_DIR = fileURLToPath(new URL("../web/", import.meta.url));
@@ -72,7 +72,17 @@ function resultFor(op: QueuedOp): OpResult {
 
 function documents() {
   const quotes = new Map<string, Quote>(Object.entries(PRICES).map(([symbol, lastPrice]) => [symbol, { lastPrice, totalVolume: 0 }]));
-  const dashboard = buildDashboard({ alerts: FIXTURE_ALERTS, revisits: FIXTURE_REVISITS, holdings: HOLDINGS, quotes, now: new Date() });
+  const dashboard = buildDashboard({
+    alerts: FIXTURE_ALERTS,
+    revisits: FIXTURE_REVISITS,
+    holdings: HOLDINGS,
+    quotes,
+    now: new Date(),
+    // The site build turns this on, so the fixture must too, or the page's
+    // Approaching section is only ever exercised as empty.
+    includeApproaching: true,
+    profiles: FIXTURE_PROFILES,
+  });
   const heldSymbols = new Set(HOLDINGS.lots.map((l) => l.symbol.toUpperCase()));
   return {
     "dashboard.json": siteDocument(dashboard, { holdings: false, ops: true, vault: true }, {

@@ -97,6 +97,19 @@ export interface RevisitRow extends CrossingDetails {
   why: string | null;
   heldPosition: boolean;
   /**
+   * The alert's condition **as it is now**, in words, or null once it has been
+   * removed. Distinct from `TriggerRow.condition`, which is what the alert was
+   * when it fired.
+   *
+   * Here so the queue's Apply button can send it as `expect.condition` without
+   * the page fetching the whole alert book (~500 rows) just to read one field.
+   * The builder already holds the alert for `updates` and `action`, so this
+   * costs nothing. Deliberately **not** volatile: it changes only when someone
+   * edits the alert, which is exactly the kind of event that should publish -
+   * and `updates` would force a publish on the same change anyway.
+   */
+  alertCondition: string | null;
+  /**
    * What has changed about this fire since it joined the queue, as sentences
    * to print verbatim: the alert re-levelled or removed, further crossings
    * folded on. Template text, like src/narrative.ts.
@@ -226,6 +239,24 @@ export interface Dashboard {
    * known exchange are absent; a renderer links them bare.
    */
   tradingViewPrefixes: Record<string, string>;
+  /**
+   * Company name and sector by symbol, from the FMP profile cache.
+   *
+   * Only the `exchange` on those profiles was ever read, which is why every
+   * ticker on the page was a bare symbol with nothing to say what it is. Same
+   * contract as `tradingViewPrefixes`: an absent symbol simply has no cached
+   * profile, and a renderer shows the ticker alone.
+   *
+   * Public-safe — none of it is derived from a position — and not volatile: a
+   * company's sector does not move with the quote.
+   */
+  profiles: Record<string, CompanyInfo>;
+}
+
+export interface CompanyInfo {
+  name: string | null;
+  sector: string | null;
+  industry: string | null;
 }
 
 export interface DashboardInputs {
@@ -253,6 +284,8 @@ export interface DashboardInputs {
   ignoredSymbols?: Set<string>;
   /** Symbol to FMP exchange (exchangesFromProfiles), so chart links open the right listing. */
   exchanges?: Map<string, string>;
+  /** Symbol to company name and sector, from the same profile cache. */
+  profiles?: Map<string, CompanyInfo>;
 }
 
 const RECENT_TRIGGER_CAP = 100;
@@ -368,6 +401,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       daysOpen: e.signals?.daysOpen ?? null,
       why: e.signals ? explainPriority(e.signals) : null,
       heldPosition: heldSymbols.has(e.symbol.toUpperCase()),
+      alertCondition: alert === undefined ? null : describeAlertCondition(alert),
       updates: revisitUpdates(e, alert, crossing.reversal),
       sinceTrigger: sinceTriggerNote(e.triggerPrice, quotes.get(e.symbol)?.lastPrice ?? null),
       chartUrl: chartUrl(e.symbol),
@@ -547,11 +581,19 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
   );
 
   const tradingViewPrefixes: Record<string, string> = {};
+  const profiles: Record<string, CompanyInfo> = {};
+  const knownProfiles = inputs.profiles ?? new Map<string, CompanyInfo>();
   const shown = [...holdingRows.map((r) => r.symbol), ...stories.map((s) => s.symbol), ...live.map((a) => a.symbol)];
   for (const symbol of [...new Set(shown)].sort()) {
     const prefix = mapExchange(exchanges.get(symbol));
     if (prefix !== null) {
       tradingViewPrefixes[symbol] = prefix;
+    }
+    const info = knownProfiles.get(symbol);
+    // A profile with nothing in it is the same as no profile: don't publish a
+    // row of nulls for every symbol FMP knew only the exchange for.
+    if (info !== undefined && (info.name !== null || info.sector !== null || info.industry !== null)) {
+      profiles[symbol] = info;
     }
   }
 
@@ -576,6 +618,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
     quietWatches,
     quietTotal: quietTotal.count,
     tradingViewPrefixes,
+    profiles,
   };
 }
 

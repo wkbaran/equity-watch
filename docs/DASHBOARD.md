@@ -4,10 +4,11 @@ Reference for the terminal `dashboard` command and the browser site built from t
 same document. Editing, the queue behind it, and the security model are in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
-The three CSV writers above (`breakout_report_*`, `alert_triggers_*`,
-`holdings_alerts_*`) are event logs: each covers one subsystem and is only written
-when something fired. A periodic dashboard needs the opposite — one document,
-emitted on a schedule, that's just as meaningful on a quiet day as on a busy one.
+The three CSV writers this project also has (`breakout_report_*`,
+`alert_triggers_*`, `holdings_alerts_*`) are event logs: each covers one subsystem
+and is only written when something fired. A periodic dashboard needs the opposite —
+one document, emitted on a schedule, that's just as meaningful on a quiet day as on
+a busy one.
 
 ```bash
 node dist/cli.js dashboard                        # terminal view + reports/dashboard_<timestamp>.json
@@ -32,10 +33,17 @@ Six sections, in the order they print:
    distance means the price condition is already met and the alert is only still
    live because a volume gate hasn't caught up.
 
-   It defaults off because on a 500-alert book roughly a hundred names sit within a
-   few percent of firing at any moment — that's a readout of market noise, not a
-   list of things to do. The revisit queue says what actually *happened*, which is
-   the part worth a glance.
+   It defaults off *in the terminal* because on a 500-alert book roughly a hundred
+   names sit within a few percent of firing at any moment — that's a readout of
+   market noise, not a list of things to do. The revisit queue says what actually
+   *happened*, which is the part worth a glance. The browser build always includes
+   it and folds it away instead, which is the same bargain in a medium that can
+   collapse a section.
+
+   That is safe for `--skip-unchanged` only because `approaching` and
+   `approachingTotal` are both in `VOLATILE_KEYS`: list *membership* moves with the
+   quote, so without them a quote-less build and a real one would fingerprint
+   differently and every run would publish.
 5. **Quiet** — names watched a long time that have never fired and have barely
    moved: alert slots you could spend elsewhere.
 6. **Holdings** — each position against blended basis with current value.
@@ -66,11 +74,32 @@ than the window are included too, so every queue row has details to open.
 **Holdings** (`#/holdings`). All are routes in the same page, so polling and
 notifications keep running on any of them.
 
-- **Overview** — the summary tiles, recent triggers, holdings (when published), and
-  quiet watches.
-- **Revisit queue** — open triggers by priority. Each row has *Details*, *Chart*, a
-  **Dismiss** button that queues a `revisit.dismiss` op, and — when `relevel` has
-  proposed a level — a copy-command button for `alert revisit apply <id>`.
+- **Overview** — the summary tiles, recent triggers, holdings (when published),
+  approaching, and quiet watches.
+- **Approaching** — live alerts closest to firing, collapsed behind a fold on the
+  Overview. The arrow carries the side, so a downside alert reads unambiguously
+  (`MSFT 420.00 ↓ 400.00` needs price to *fall*), and a negative distance means the
+  price condition is already met and only a volume gate is holding it. Folded for
+  the same reason it is off by default in the terminal: on a 500-alert book roughly
+  a hundred names sit within a few percent of firing at any moment, which is a
+  readout of market noise rather than a list of things to do.
+- **Revisit queue** — open triggers by priority, and the one view built to be acted
+  on. Each row has *Details*, *Chart*, and, once editing is unlocked, the whole
+  decision: **Suggest level** (a `revisit.relevel` op, which fetches that symbol's
+  bars and proposes a level and a priority for that one entry), **Apply → 61** once
+  there is a suggestion (a `revisit.apply` op, which re-levels the alert and closes
+  the entry), and **Dismiss** (a `revisit.dismiss` op, which closes the entry and
+  leaves the alert alone).
+
+  Under the level it says what the suggestion was read off — "Basis: 60d high" —
+  because the number alone isn't something you can disagree with. When a fire can't
+  have a suggestion it says why instead: a moving average's level *is* the average,
+  and a downward fire would invert the alert (`relevel` only ever proposes levels
+  above price).
+
+  Only one of the three is offered at a time: while a change to an entry is queued
+  the row shows its pending tag and no buttons, because a second decision would be
+  made against a state that is about to change.
 - **Stories** — each multi-trigger thread as a narrative.
 - **Alerts** — every live alert, from its own `alerts.json`, fetched only while that
   view is open so the every-minute poll of `dashboard.json` stays small. Each row
@@ -86,17 +115,42 @@ notifications keep running on any of them.
   moving-average and trailing rows show their level as **moving**, and the volume
   alert has no level or direction to show at all.
 - **Holdings** — positions, lots, and stops, decrypted from `vault.json` in the
-  browser. Only present once editing is unlocked.
+  browser. Only present once editing is unlocked. A position with no live alert
+  offers **Cover with an alert** (a `holdings.cover` op), and each stop has *Edit*
+  and *Remove*.
+
+  Rows also carry what `holdings check` would say about them — `+10% over basis`,
+  `stagnant` — worked out **in the browser** from the decrypted rows rather than
+  published. Both conditions are basis-derived, so publishing them would mean
+  sealing them; computing them client-side makes the privacy rule structural. The
+  third condition `holdings check` reports, a 3% appreciation band being crossed, is
+  deliberately absent: it depends on state in `holdings.json` that never leaves the
+  machine, so the browser can't know whether a band has already been reported.
 - **Trigger details** (`#/trigger/<id>`) open from any recent trigger, queue row,
   toast, or notification, in a drawer over the current view. They show when it
   fired, its status, the alert's condition at that moment, price vs. level, the
   volume it saw against what was required, the breakout verdict and priority
   breakdown, any suggested level, and a link to the alert.
 
-**Editing.** With the ops stack deployed, you can add and edit alerts, remove them,
-dismiss queue entries, and add/edit/remove lots, positions, and stops straight from
-the page. Each change is queued and applied by the next scheduled `ops pull` — see
+**Editing.** With the ops stack deployed, everything the CLI does to a *single*
+alert, queue entry, lot or stop can be done from the page: add, edit and remove
+alerts of all four kinds; suggest a level for a queue entry, apply it, or dismiss
+the entry; add, edit and remove lots and stops; remove a position; and cover an
+uncovered position. Each change is queued and applied by the next scheduled
+`ops pull` — see
 [ARCHITECTURE.md](ARCHITECTURE.md#queueing-a-change-lambda--sqs--ops-pull).
+
+The **New alert** form takes a kind: a price level, a trailing distance from a
+high/low, or a moving average, with a volume condition optionally AND-ed onto any
+of them. It shows only the fields that kind needs, and for a moving average only
+the one of *Direction* / *Approached* that the trigger uses — a cross watches a
+direction, a touch watches which side price came from. A moving average's edit form
+is prefilled from the published alert, so opening it to read the spec and saving is
+"Nothing changed." rather than a silent rewrite.
+
+What stays CLI-only is the batch and file work: `alert seed`, `holdings import`,
+`alert migrate-directions`, and `profile fetch`. Those are one-time, read files that
+live on the machine, or touch every row at once.
 
 **Notifications.** When a trigger id appears that this browser hasn't seen, the page
 shows an in-page toast and, if you've clicked *Enable notifications*, an OS
@@ -121,6 +175,13 @@ To turn both back on:
 
 1. Redeploy the stack with `EnableBasicAuth=true BasicAuthUser=… BasicAuthPassword=…`.
 2. Add `"web": { "holdings": true }` to `analysis.config.json`.
+
+**Company names.** Rows and drawers show the company name and sector next to the
+ticker, from the FMP profile cache (`profiles` on the document). Until 2026-09-21
+only the `exchange` on those cached profiles was ever read, so every ticker on the
+page was a bare symbol. A symbol with no cached profile still renders as the ticker
+alone — run `profile fetch --all-known` to fill the gaps. None of it is
+position-derived, so it publishes on the public page like any other alert field.
 
 **Theme.** Dark by default, using the uniquetrades-congress palette (Catppuccin).
 The header toggle remembers a light preference per browser.

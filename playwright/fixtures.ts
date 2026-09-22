@@ -7,6 +7,7 @@
 
 import type { MaAlert, StaticAlert, TrailingAlert, VolumeAlert } from "../src/alerts/models.js";
 import { scoreRevisit, type RevisitEntry } from "../src/alerts/revisit.js";
+import type { CompanyInfo } from "../src/dashboard.js";
 import type { HoldingsStore } from "../src/holdings/models.js";
 
 /** The fake ops endpoint accepts exactly this bearer token. */
@@ -193,3 +194,15 @@ export const FIXTURE_REVISITS: RevisitEntry[] = [
     ...scoreRevisit({ verdict: "NO_CLOSE_CONFIRM", pctMovePastLevel: -0.9, daysOpen: 2, heldPosition: false, volumeRatio: 1.1, volumeTrendRatio: null, direction: "down" }),
   },
 ];
+
+/**
+ * Invented company profiles, so the page's names and sectors are exercised.
+ * AA deliberately has no entry: a symbol with no cached profile must still
+ * render as a bare ticker, which is the common case until `profile fetch` runs.
+ */
+export const FIXTURE_PROFILES = new Map<string, CompanyInfo>([
+  ["MSFT", { name: "Microsoft Corporation", sector: "Technology", industry: "Software — Infrastructure" }],
+  ["TSLA", { name: "Tesla, Inc.", sector: "Consumer Cyclical", industry: "Auto Manufacturers" }],
+  ["SPY", { name: "SPDR S&P 500 ETF Trust", sector: null, industry: null }],
+  ["NVDA", { name: "NVIDIA Corporation", sector: "Technology", industry: "Semiconductors" }],
+]);

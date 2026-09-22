@@ -207,9 +207,34 @@ describe("holdings ops", () => {
     expect(await apply({ type: "stop.remove", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 } })).toMatchObject({ ok: true, message: "Removed a stop for AAPL." });
   });
 
+  // Moving a stop used to be a remove and an add: two ops, either of which
+  // could land alone. It is one guarded op now, on the same expect.stopPrice
+  // the removal uses.
+  it("moves a stop only when it still reads as the page showed it", async () => {
+    expect(await apply({ type: "stop.edit", target: { stopId: "stopaapl" }, expect: { stopPrice: 141 }, params: { stopPrice: 150 } })).toMatchObject({
+      ok: false,
+      message: "Not changed: that AAPL stop changed since the page loaded.",
+    });
+    expect(await apply({ type: "stop.edit", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 }, params: { stopPrice: 150 } })).toMatchObject({
+      ok: true,
+      message: "Moved the stop for AAPL.",
+    });
+    const stops = loadHoldingsStore(holdingsFile).stops.filter((s) => s.symbol === "AAPL");
+    expect(stops).toHaveLength(1);
+    // A fresh id, and the cover it had is kept when the edit doesn't mention it.
+    expect(stops[0]).toMatchObject({ stopPrice: 150, count: null });
+    expect(stops[0].id).not.toBe("stopaapl");
+  });
+
+  it("changes a stop's cover only when the edit says so", async () => {
+    await apply({ type: "stop.edit", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 }, params: { stopPrice: 150, count: 3 } });
+    expect(loadHoldingsStore(holdingsFile).stops.filter((s) => s.symbol === "AAPL")[0]).toMatchObject({ stopPrice: 150, count: 3 });
+  });
+
   it("rejects a missing target", async () => {
     expect(await apply({ type: "lot.edit", params: { count: 1 } })).toMatchObject({ ok: false, message: "A lot edit needs target.lotId." });
     expect(await apply({ type: "stop.remove" })).toMatchObject({ ok: false, message: "A stop removal needs target.stopId." });
+    expect(await apply({ type: "stop.edit", params: { stopPrice: 1 } })).toMatchObject({ ok: false, message: "A stop edit needs target.stopId." });
   });
 
   // opResults are published in the public dashboard.json.
@@ -221,6 +246,8 @@ describe("holdings ops", () => {
       await apply({ type: "lot.edit", target: { lotId: "lotaapl1" }, expect: AAPL1_AS_SHOWN, params: { count: 11 } }),
       await apply({ type: "stop.add", params: { symbol: "MSFT", stopPrice: 390 } }),
       await apply({ type: "stop.remove", target: { stopId: "stopmsft" }, expect: { stopPrice: 999 } }),
+      await apply({ type: "stop.edit", target: { stopId: "stopmsft" }, expect: { stopPrice: 999 }, params: { stopPrice: 400 } }),
+      await apply({ type: "stop.edit", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 }, params: { stopPrice: 150 } }),
       await apply({ type: "position.remove", target: { symbol: "MSFT" }, expect: { lotIds: ["lotmsft1"] } }),
     ];
     for (const r of results) {

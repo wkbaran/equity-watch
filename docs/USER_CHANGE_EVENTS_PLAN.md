@@ -1,16 +1,31 @@
 # User Change Events Plan
 
 Letting the browser dashboard change the watchlist: apply or dismiss a revisit,
-snooze, remove, add alerts. Today it can only copy CLI commands.
+snooze, remove, add alerts. When this was written the page could only copy CLI
+commands.
 
-Status: **add and edit built** (2026-09-15). The rest is proposed.
+**This is design history, kept for the reasoning below** — the "why SQS rather
+than an S3 inbox" argument is recorded nowhere else. For what the page can
+actually do today, read [DASHBOARD.md](DASHBOARD.md) and
+[ARCHITECTURE.md](ARCHITECTURE.md#queueing-a-change-lambda--sqs--ops-pull);
+ARCHITECTURE.md's op-type list is the canonical one.
+
+Status: **built, except snooze and quiet cleanup** (2026-09-21).
 
 What shipped, and where it differs from the plan below:
 
-- **Ops:** `alert.add` and `alert.edit` only. Revisit apply/dismiss, snooze,
-  remove, and quiet cleanup are not built. On the page, add creates static
-  alerts. Edit covers static level/direction and trailing distance. The worker
-  accepts every field `alert add`/`alert edit` do.
+- **Ops:** fourteen types — `alert.add`, `alert.edit`, `alert.remove`,
+  `revisit.relevel`, `revisit.apply`, `revisit.dismiss`, `lot.add`, `lot.edit`,
+  `lot.remove`, `position.remove`, `stop.add`, `stop.edit`, `stop.remove`, and
+  `holdings.cover`. The page creates and edits all four alert kinds. Still
+  unbuilt: `alert.snooze` (needs a new field, see below) and `quiet.remove`
+  (bulk). Holdings ops were never in this plan at all — it assumed holdings
+  would stay CLI-only.
+- **Three of them are a batch command made atomic.** `revisit.relevel`,
+  `revisit.apply` and `holdings.cover` each apply to one entry or symbol, where
+  the CLI command sweeps the whole store. The command bodies were lifted out of
+  `cli.ts` into shared functions (step 0 below, finally done 2026-09-21) so the
+  page and the CLI run the same code rather than two implementations.
 - **Auth:** the ops token, as proposed. Reads stay public, and no federated login.
 - **Latency:** no separate worker. `ops pull` runs as the first step of the
   existing 15-minute scheduled task, so a change can wait up to 15 minutes.
@@ -123,33 +138,60 @@ worker, against real state.
 
 ## Operations, in build order
 
-| # | Type | Target / params | Notes |
-|---|---|---|---|
-| 1 | `revisit.dismiss` | `revisitId` | Simplest; exercises the whole pipe. |
-| 2 | `revisit.apply` | `revisitId` | Uses the entry's `suggestedLevel`. This is the ~4.6 re-arms/day. |
-| 3 | `revisit.apply` + `params.level` | `revisitId`, `level` | Apply with an edited level. Needs `--level` on the CLI too. |
-| 4 | `alert.snooze` | `alertId`, `until` | Needs a **new field** (see below). |
-| 5 | `alert.remove` | `alertId` | Sets `status: "cancelled"`, same as `alert remove`. |
-| 6 | `alert.add` | `symbol`, `level` \| (`near`, `trailPercent`) | Side is inferred against a live quote, so only the worker can do it. |
-| 7 | `quiet.remove` (bulk) | `alertIds[]` | Frees alert slots. Needs `alertId` on quiet rows (below). |
+| # | Type | Target / params | Notes | Built |
+|---|---|---|---|---|
+| 1 | `revisit.dismiss` | `revisitId` | Simplest; exercises the whole pipe. | ✅ |
+| 2 | `revisit.apply` | `revisitId` | Uses the entry's `suggestedLevel`. This is the ~4.6 re-arms/day. | ✅ |
+| 3 | `revisit.apply` + `params.level` | `revisitId`, `level` | Apply with an edited level. Needs `--level` on the CLI too. | ✅ both |
+| 4 | `alert.snooze` | `alertId`, `until` | Needs a **new field** (see below). | ✗ |
+| 5 | `alert.remove` | `alertId` | Sets `status: "cancelled"`, same as `alert remove`. | ✅ |
+| 6 | `alert.add` | `symbol`, `level` \| (`near`, `trailPercent`) | Side is inferred against a live quote, so only the worker can do it. | ✅ |
+| 7 | `quiet.remove` (bulk) | `alertIds[]` | Frees alert slots. Needs `alertId` on quiet rows (below). | ✗ |
+
+Two that this plan didn't anticipate and that shipped anyway:
+`revisit.relevel` (the per-entry half of the `relevel` pass, which turned out to
+be the thing that makes an Apply button possible at all — without it most
+entries carry no suggestion) and `holdings.cover` (the per-symbol half of the
+cover pass). Both need market data, which no op in this plan did.
 
 Holdings import, seeding, and tuning stay CLI-only: they're file-based and rare.
+Editing `ignoreSymbols` is the one that still looks tempting and isn't done — it
+would write `analysis.config.json`, which is committed and is the default
+`--config` path, so a queued op editing a tracked file needs its own thinking.
 
 ## Code changes this needs
 
 ### 0. Pull the command bodies out of `cli.ts` first
 
+*Skipped in 2026-09-15, done in 2026-09-21 — and skipping it is exactly why
+`revisit.apply` took six years of project-days longer than `alert.add`.*
+
 `cmdRevisitResolve` calls `process.exit(1)` and `console.log` inline. The worker
-can't use that. Refactor each operation into a pure function in
-`src/ops/apply.ts` that takes stores, returns an `OpResult`
-(`{ ok: true, message } | { ok: false, reason }`), and doesn't touch the
-filesystem. Then:
+can't use that. Refactor each operation into a pure function that takes stores,
+returns a result rather than exiting, and leaves the printing to the caller.
+Then:
 
 - the CLI commands become thin wrappers (load, call, save, print), and
 - the worker is the same wrappers driven by queue messages.
 
-This is the step that keeps web-applied and CLI-applied changes identical. Do it
-with tests before any AWS work.
+This is the step that keeps web-applied and CLI-applied changes identical.
+
+**How it actually landed.** `alert.add` and `alert.edit` needed none of it —
+`addAlert`/`editAlert` were already store-level functions, so only the argument
+parsing was extracted (into `src/ops/validate.ts`, which is why that file exists
+and this one doesn't describe it). The three commands that *were* whole-store
+batch passes with their bodies inline needed the real thing:
+
+| lifted to | from | what it is |
+|---|---|---|
+| `relevelEntry` in `src/alerts/relevel.ts` | the inner loop of `cmdRevisitRelevel` | re-level and re-score **one** entry |
+| `applyRevisitLevel` in `src/alerts/revisitStore.ts` | `cmdRevisitResolve`'s applied branch | move the alert, close the entry, return a reason on refusal |
+| `coverCandidates` in `src/holdings/cover.ts` | `cmdHoldingsCover` | who qualifies for a starting alert |
+
+Two bugs fell out of the extraction, both from the CLI's refusals having been
+`process.exit` calls nobody could test: applying an already-closed entry
+re-applied it and overwrote `appliedFrom`/`appliedTo`, and the "no suggestion
+yet" message named `alert relevel`, a command that does not exist.
 
 ### Snooze cannot reuse `mutedUntil`
 

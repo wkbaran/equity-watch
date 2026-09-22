@@ -240,6 +240,83 @@ test("adds a stop", async ({ page }) => {
   expect(op).toMatchObject({ type: "stop.add", params: { symbol: "TSLA", stopPrice: 230, count: 1 } });
 });
 
+// Moving a stop used to be Remove then Add: two ops, either of which could
+// land alone, leaving the position with no stop recorded or two.
+test("moves a stop in one guarded op, prefilled with what is set", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  await expand(page, "AA");
+  const form = detail(page).locator("form.stop-edit");
+  await expect(form).toBeHidden();
+  await detail(page).locator(".stop-tag").getByRole("button", { name: "Edit" }).click();
+  await expect(form).toBeVisible();
+  // Prefilled, so opening the form to read it and saving changes nothing.
+  await expect(form.locator("input[type=number]").nth(0)).toHaveValue("38");
+
+  await form.locator("input[type=number]").nth(0).fill("41");
+  await form.locator("button[type=submit]").click();
+  const [op] = await queuedOps(page);
+  expect(op).toMatchObject({ type: "stop.edit", target: { stopId: "stop0001" }, expect: { stopPrice: 38 }, params: { stopPrice: 41 } });
+  await expect(page.locator("#holdings-pending")).toContainText("move AA stop from 38 to 41");
+});
+
+test("a stop move rejects a price of zero with the same words the add form uses", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  await expand(page, "AA");
+  await detail(page).locator(".stop-tag").getByRole("button", { name: "Edit" }).click();
+  const form = detail(page).locator("form.stop-edit");
+  await form.locator("input[type=number]").nth(0).fill("0");
+  await form.locator("button[type=submit]").click();
+  await expect(form.locator(".form-error")).toHaveText("Enter a stop price above 0.");
+  expect(await queuedOps(page)).toEqual([]);
+});
+
+/**
+ * The atomic unit of `holdings cover`. The scheduled pass covers everything
+ * uncovered each cycle; this is the one you don't want to wait for.
+ */
+test.describe("covering a position from the page", () => {
+  // Both fixture positions have a live alert (AA a static, TSLA a trailing),
+  // so the button is correctly absent until one of them doesn't.
+  test("is not offered for a position that already has an alert", async ({ page }) => {
+    await storeToken(page);
+    await openHoldings(page);
+    await expand(page, "AA");
+    await expect(detail(page).getByRole("button", { name: /Cover/ })).toHaveCount(0);
+  });
+
+  test("queues a cover for a position whose alert is gone", async ({ page }) => {
+    // Drop TSLA's trailing alert from the book, which is what removing it
+    // would do, and the position becomes uncovered.
+    await page.route("**/alerts.json", async (route) => {
+      const response = await route.fetch();
+      const doc = await response.json();
+      doc.alerts = doc.alerts.filter((a: { symbol: string }) => a.symbol !== "TSLA");
+      await route.fulfill({ response, json: doc });
+    });
+    await storeToken(page);
+    await openHoldings(page);
+    await expand(page, "TSLA");
+    const button = detail(page).getByRole("button", { name: "Cover with an alert" });
+    await expect(button).toHaveAttribute("title", /higher, the live price or your basis/);
+    await button.click();
+
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "holdings.cover", target: { symbol: "TSLA" }, params: {} });
+    // The level is the worker's to compute (it needs a live quote), so the
+    // page's own summary must not invent one.
+    await expect(page.locator("#holdings-pending")).toContainText("give TSLA a starting alert");
+    await expect(page.locator("#holdings-pending")).not.toContainText("266");
+    await expect(detail(page).getByRole("button", { name: "Cover with an alert" })).toHaveCount(0);
+  });
+
+  test("is not offered while locked", async ({ page }) => {
+    await page.goto("/#/holdings");
+    await expect(page.getByRole("button", { name: /Cover/ })).toHaveCount(0);
+  });
+});
+
 test("a result resolves with the page's own description of the change", async ({ page }) => {
   await storeToken(page);
   await openHoldings(page);

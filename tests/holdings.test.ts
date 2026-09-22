@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { checkHoldings } from "../src/holdings/engine.js";
+import { ABOVE_BASIS_THRESHOLD_PCT, checkHoldings, STAGNANT_MAX_PROFIT_PCT, STAGNANT_MIN_DAYS } from "../src/holdings/engine.js";
 import { computeBasis, emptyHoldingsStore, type HoldingsStore, type Lot } from "../src/holdings/models.js";
 import type { Quote } from "../src/providers/schwab.js";
 
@@ -124,5 +125,66 @@ describe("checkHoldings", () => {
     const { checked, triggered } = await checkHoldings(store, fakeMarket({}), []);
     expect(checked).toBe(1);
     expect(triggered).toHaveLength(0);
+  });
+});
+
+/**
+ * `holdings check` reports its verdicts to a CSV and isn't in the scheduled
+ * run, so the page never saw them. It shows two of the three as state on a
+ * holdings row instead — computed in the browser, because `pctAboveBasis`
+ * plus a price gives the basis away and nothing basis-derived may be published.
+ *
+ * That means a second copy of the thresholds, so diff them. Same trick as the
+ * volume mirror and the vault key prefix.
+ */
+describe("web/app.js mirrors the holdings thresholds", () => {
+  const appJs = readFileSync(new URL("../web/app.js", import.meta.url), "utf-8");
+  const start = appJs.indexOf("  const ABOVE_BASIS_THRESHOLD_PCT =");
+  const end = appJs.indexOf("  // ---- end of the src/holdings/engine.ts mirror");
+
+  it("keeps the block where the test expects it", () => {
+    expect(start, "the holdings-threshold block moved in web/app.js").toBeGreaterThan(-1);
+    expect(end, "the end-of-mirror marker moved in web/app.js").toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+  });
+
+  const copy = new Function(
+    `${appJs.slice(start, end)}\nreturn { holdingFlags, ABOVE_BASIS_THRESHOLD_PCT, STAGNANT_MIN_DAYS, STAGNANT_MAX_PROFIT_PCT };`
+  )() as {
+    holdingFlags: (row: { pctFromBasis: number | null; lastPurchaseDate: string }, now?: number) => { kind: string }[];
+    ABOVE_BASIS_THRESHOLD_PCT: number;
+    STAGNANT_MIN_DAYS: number;
+    STAGNANT_MAX_PROFIT_PCT: number;
+  };
+
+  it("uses the engine's numbers, not its own", () => {
+    expect(copy.ABOVE_BASIS_THRESHOLD_PCT).toBe(ABOVE_BASIS_THRESHOLD_PCT);
+    expect(copy.STAGNANT_MIN_DAYS).toBe(STAGNANT_MIN_DAYS);
+    expect(copy.STAGNANT_MAX_PROFIT_PCT).toBe(STAGNANT_MAX_PROFIT_PCT);
+  });
+
+  const NOW = new Date("2026-09-21T12:00:00.000Z").getTime();
+  const kinds = (pctFromBasis: number | null, lastPurchaseDate: string) =>
+    copy.holdingFlags({ pctFromBasis, lastPurchaseDate }, NOW).map((f) => f.kind);
+
+  it("flags a position at or past the threshold, and not one just under it", () => {
+    expect(kinds(10, "2026-09-20")).toEqual(["above-basis"]);
+    expect(kinds(9.9, "2026-09-20")).toEqual([]);
+  });
+
+  it("flags a stagnant position only once it is both old enough and flat enough", () => {
+    expect(kinds(1, "2026-08-01")).toEqual(["stagnant"]); // 51 days, +1%
+    expect(kinds(1, "2026-09-20")).toEqual([]); // flat but new
+    expect(kinds(5, "2026-08-01")).toEqual([]); // old but up 5%
+  });
+
+  it("says nothing about a position with no quote", () => {
+    expect(kinds(null, "2026-08-01")).toEqual([]);
+  });
+
+  // A loss is stagnant too: the condition is "hasn't gone anywhere", and money
+  // sitting in a loser for two months is exactly what it is meant to surface.
+  it("counts a long-held loss as stagnant", () => {
+    expect(kinds(-12, "2026-06-01")).toEqual(["stagnant"]);
   });
 });
