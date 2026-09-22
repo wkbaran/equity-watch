@@ -656,10 +656,10 @@
 
   /**
    * The Edit form for one alert. `revisitId` is set when the form is shown in
-   * a trigger's details panel: the queued edit then also closes that queue
-   * entry, because re-levelling from the panel is the decision it was waiting
-   * on. It is part of the reuse key, so the same alert's form is rebuilt when
-   * it is opened from the other drawer.
+   * a trigger's details panel, and only affects wording: the edit itself is
+   * identical either way, because any edit closes every open entry on the
+   * alert, so the op never names one. It is part of the reuse key, so the same
+   * alert's form is rebuilt when it is opened from the other drawer.
    */
   function editSection(a, revisitId = null) {
     if (!canEdit()) return null;
@@ -1083,7 +1083,7 @@
           await submitOp(
             {
               type: "alert.edit",
-              target: revisitId === null ? { alertId: a.id } : { alertId: a.id, revisitId },
+              target: { alertId: a.id },
               expect: { condition: a.condition },
               params: c.params,
             },

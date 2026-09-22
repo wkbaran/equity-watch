@@ -307,24 +307,16 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
   }
   const { alert } = guard;
   const alertId = alert.id;
-  // Any edit closes the alert's open queue entries (closeRevisitsForEdit). One
-  // sent from a trigger's details panel also names its entry, which is checked
-  // before the edit so a stale panel is one rejection and no half-done change,
-  // rather than an alert moved on the strength of a fire already dealt with.
-  const revisitId = stringField(op.target, "revisitId");
+  // Any edit closes the alert's open queue entries (closeRevisitsForEdit), so
+  // an edit never needs to name one. It used to: a trigger panel sent
+  // target.revisitId and this checked the entry still existed and was open
+  // before editing. That guard now contradicts the rule - submitting a change
+  // *is* the decision, so an edit must not be refused because the fire behind
+  // the panel was already closed (by an earlier edit, or by an edit from the
+  // other panel). Staleness is still guarded, by expect.condition in
+  // guardedAlert, which is about the alert rather than the queue. An older
+  // page may still send revisitId; it is ignored.
   const revisitsFile = ctx.revisitsFile ?? DEFAULT_REVISITS_FILE;
-  if (revisitId !== null && revisitId !== "") {
-    const entry = loadRevisits(revisitsFile).find((e) => e.id === revisitId);
-    if (entry === undefined) {
-      return reject(alert.symbol, alertId, `No revisit entry with id ${revisitId}. It may already be closed.`);
-    }
-    if (entry.alertId !== alertId) {
-      return reject(alert.symbol, alertId, `Revisit ${revisitId} belongs to alert ${entry.alertId}, not ${alertId}.`);
-    }
-    if (entry.status !== "open") {
-      return reject(alert.symbol, alertId, `Revisit ${revisitId} is already ${entry.status}.`);
-    }
-  }
   const fields = editFieldsFromJson(op.params);
   if (!fields.ok) {
     return reject(alert.symbol, alertId, fields.error);

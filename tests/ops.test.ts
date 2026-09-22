@@ -287,20 +287,46 @@ describe("applyOp", () => {
     expect(loadRevisits(revisitsFile)[0]).toMatchObject({ status: "applied", appliedFrom: null, appliedTo: null });
   });
 
-  // Checked before the edit, so a stale panel is one rejection rather than an
-  // alert moved with its entry left open.
+  // Submitting a change IS the decision, so an edit is never refused because
+  // the fire behind the panel was already dealt with. An older page can still
+  // send target.revisitId; it is ignored, never validated. Staleness is still
+  // caught, by expect.condition, which is about the alert not the queue.
   it.each([
-    ["rv-gone1", (): void => void seedRevisit(), "No revisit entry with id rv-gone1"],
-    ["rv000001", (): void => void seedRevisit({ alertId: "other123" }), "belongs to alert other123"],
-    ["rv000001", (): void => void seedRevisit({ status: "dismissed" }), "is already dismissed"],
-  ])("rejects an edit naming revisit %s without touching the alert", async (revisitId, seed, message) => {
+    ["names an entry that is gone", "rv-gone1", (): void => void seedRevisit()],
+    ["names another alert's entry", "rv000001", (): void => void seedRevisit({ alertId: "other123" })],
+    ["names an already-closed entry", "rv000001", (): void => void seedRevisit({ status: "dismissed" })],
+  ])("applies an edit that %s", async (_label, revisitId, seed) => {
     saveAlerts(alertsFile, [makeStatic()]);
     seed();
     const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }) };
     const { result } = await applyOp(editFromRevisit(revisitId, { level: 110 }), ctx);
-    expect(result.ok).toBe(false);
-    expect(result.message).toContain(message);
-    expect((loadAlerts(alertsFile)[0] as StaticAlert).level).toBe(100);
+    expect(result.ok).toBe(true);
+    expect((loadAlerts(alertsFile)[0] as StaticAlert).level).toBe(110);
+  });
+
+  // The case that prompted dropping the guard: edit twice before the next
+  // check drains, from a panel whose entry the first edit already closed.
+  it("applies a second edit after the first closed the entry behind the panel", async () => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    seedRevisit();
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }) };
+    const first = await applyOp(editFromRevisit("rv000001", { level: 110 }), ctx);
+    expect(first.result.ok).toBe(true);
+    expect(loadRevisits(revisitsFile)[0].status).toBe("applied");
+
+    // Still naming the now-closed entry, with the condition as the panel shows
+    // it after the first edit landed.
+    const again = parseOp({
+      id: "op-edit-0003",
+      type: "alert.edit",
+      target: { alertId: "s1abcdef", revisitId: "rv000001" },
+      expect: { condition: "price crosses above 110" },
+      params: { level: 115 },
+    });
+    if (!again.ok) throw new Error(again.error);
+    const second = await applyOp(again.op, ctx);
+    expect(second.result.ok).toBe(true);
+    expect((loadAlerts(alertsFile)[0] as StaticAlert).level).toBe(115);
   });
 
   const remove = (alertId: string, condition: string | undefined, id = "op-remv-0001"): Op => {

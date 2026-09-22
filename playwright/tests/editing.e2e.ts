@@ -245,10 +245,13 @@ test.describe("edit", () => {
     const [op] = await queuedOps(page);
     expect(op).toMatchObject({
       type: "alert.edit",
-      target: { alertId: STATIC.id, revisitId: "rv0000a2" },
+      target: { alertId: STATIC.id },
       expect: { condition: "price crosses above 55" },
       params: { level: 61 },
     });
+    // The entry closes because the alert was edited at all, so the op names no
+    // entry - and can't be refused for naming one already closed.
+    expect(op.target).not.toHaveProperty("revisitId");
 
     // The entry stays in the queue until the next check applies the op, so the
     // row has to say the edit is on its way rather than look untouched.

@@ -437,12 +437,19 @@ Things that look simplifiable and aren't:
   `closeRevisitsForEdit` marks them `applied`, not `dismissed`, with
   `appliedFrom`/`appliedTo` from `levelMove` when the level moved, as
   `alert revisit apply` records. One edit can therefore stamp the same move on
-  several entries; `tickerStory` tells it once. A trigger panel's edit still
-  sends `target.revisitId`, and that entry is checked **before** the edit (it
-  must exist, belong to that alert, and still be open), so a stale panel is one
-  rejection rather than an alert moved on a fire already dealt with. That is why
-  `ApplyContext` carries a `revisitsFile`; both `ops pull` and `ops apply` pass
-  `--revisits-file` through, defaulting to `revisits.json`.
+  several entries; `tickerStory` tells it once.
+  - **An edit names no entry, and `target.revisitId` is ignored** (2026-09-22).
+    A trigger panel used to send it, and `applyEdit` checked the entry existed,
+    belonged to that alert, and was still open *before* editing. That guard
+    outlived its purpose and contradicted the rule above: edit twice before the
+    next drain, and the second op was rejected ("Revisit … is already applied")
+    because the first edit had closed the very entry the panel was sitting on.
+    Submitting a change is the decision, so it must not be refused for that.
+    Staleness is still guarded by `expect.condition` in `guardedAlert`, which
+    is about the alert rather than the queue. Don't reintroduce a queue-state
+    guard on an edit.
+  - That is why `ApplyContext` carries a `revisitsFile`; both `ops pull` and
+    `ops apply` pass `--revisits-file` through, defaulting to `revisits.json`.
 - **Nothing can push to the machine, so there is no "apply now" button.** The
   page is static on S3/CloudFront and the Lambda can only write to SQS; the
   drain happens when the Windows task next runs `ops pull`. A button would need
