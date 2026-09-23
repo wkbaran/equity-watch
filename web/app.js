@@ -1137,6 +1137,7 @@
   // Built once per symbol and reused while its lots and stops are unchanged, so a poll doesn't wipe what's typed.
   const detailCache = new Map(); // symbol -> { sig, el }
   let lotAddFormEl = null;
+  let lotAddFields = null; // { symbol, account } inputs of lotAddFormEl
 
   const isHoldingsOp = (p) => !p.type.startsWith("alert.") && !p.type.startsWith("revisit.");
   const canEditHoldings = () => canEdit() && vaultData !== null;
@@ -1256,6 +1257,15 @@
     list.replaceChildren(...accounts.map((a) => h("option", { value: a })));
   }
 
+  /** Start an add-to-position: fill the Add a lot form's symbol and account, and scroll to it. */
+  function prefillLotAdd(symbol, account) {
+    renderLotAddForm();
+    if (!lotAddFields) return;
+    lotAddFields.symbol.value = symbol;
+    lotAddFields.account.value = account;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function renderLotAddForm() {
     const slot = $("lot-add");
     slot.hidden = !canEditHoldings();
@@ -1274,6 +1284,7 @@
     const stopCovered = numberInput(null, { placeholder: "all" });
     const error = h("span", { class: "form-error" });
     const button = h("button", { type: "submit", text: "Add lot" });
+    lotAddFields = { symbol, account };
     lotAddFormEl = h(
       "form",
       {
@@ -1652,6 +1663,15 @@
       h(
         "div",
         { class: "actions" },
+        h("button", {
+          type: "button",
+          text: "Add to position",
+          onclick: () => {
+            // One account across every lot pre-fills it; a mixed position leaves it to the user.
+            const accounts = new Set(lots.map((l) => l.account ?? ""));
+            prefillLotAdd(symbol, accounts.size === 1 ? [...accounts][0] : "");
+          },
+        }),
         confirmButton(`Remove the ${symbol} position`, () =>
           submitOp(
             { type: "position.remove", target: { symbol }, expect: { lotIds: lots.map((l) => l.id) }, params: {} },
