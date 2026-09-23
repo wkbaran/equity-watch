@@ -22,13 +22,14 @@ Six sections, in the order they print:
    triggers in the last `--window-days` (default 7), positions held, and how many
    alerts had no quote this run.
 2. **Revisit queue** — what needs a decision, priority-ranked, each row carrying its
-   proposed level and the signal breakdown behind its score. Capped at `--limit`
-   (default 25).
+   proposed level and the signal breakdown behind its score. Every open entry,
+   unless `--limit` caps it: the site only publishes every 15 minutes or so, so a
+   capped queue made anyone clearing it in one sitting stop and wait for the rest.
 3. **Stories** — tickers that have fired more than once, threaded into a narrative
    (below).
 4. **Approaching** — *off by default*; pass `--approaching`. Live alerts within
    `--within-pct` (default 5%) of firing, sorted by distance, capped at `--limit`
-   with the true total reported. The arrow carries the side, so a downside alert
+   (default 25) with the true total reported. The arrow carries the side, so a downside alert
    reads unambiguously (`WFC 90.48 ↓ 90.40` needs price to *fall*); a negative
    distance means the price condition is already met and the alert is only still
    live because a volume gate hasn't caught up.
@@ -69,10 +70,17 @@ firing in the window, newest first, any status) because the revisit queue is
 priority-sorted and capped, so it can't tell you what's *new*. Open entries older
 than the window are included too, so every queue row has details to open.
 
-**Views.** The header switches between **Overview**, **Revisit queue** (`#/queue`),
+**Views.** The left rail (a top bar on a phone) switches between **Overview**, **Revisit queue** (`#/queue`),
 **Stories** (`#/stories`), **Alerts** (`#/alerts`), and — once editing is unlocked —
 **Holdings** (`#/holdings`). All are routes in the same page, so polling and
-notifications keep running on any of them.
+notifications keep running on any of them. Each view's count sits beside it in
+the rail, so the rail doubles as the day's scoreboard.
+
+**The queue strip** runs across the top of every view: each open revisit as one
+cell (symbol, direction and level, a dot when held, `↩` when reversed), in the
+queue view's order, each linking to its decision. It sticks while you scroll, so
+any decision is one tap away. "N to decide" is `summary.openRevisits`, the same
+number as the rail and the overview tile.
 
 - **Overview** — the summary tiles, recent triggers, holdings (when published),
   approaching, and quiet watches.
@@ -197,8 +205,13 @@ page was a bare symbol. A symbol with no cached profile still renders as the tic
 alone — run `profile fetch --all-known` to fill the gaps. None of it is
 position-derived, so it publishes on the public page like any other alert field.
 
-**Theme.** Dark by default, using the uniquetrades-congress palette (Catppuccin).
-The header toggle remembers a light preference per browser.
+**Theme.** Dark by default; the Light/Dark button remembers a preference per
+browser. Every colour on the page is mixed from three: background, text and
+accent (`--p-ground`, `--p-ink`, `--p-signal`), and light mode swaps the first two.
+The swatch button in the lower left (`web/palette.js`) picks from presets or any
+three colours, remembered per browser; the default is `data-palette` on `<html>`
+in `web/index.html`. The accent is spent only on what wants attention: the queue
+count and strip, a fresh trigger, a pending change, a warning.
 
 **Publishing.** Deploying the S3/CloudFront stack and copying its outputs into `.env`
 is in the [README](../README.md#deploying-the-dashboard-optional).

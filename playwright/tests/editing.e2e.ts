@@ -652,6 +652,8 @@ test.describe("phone width", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
     await page.goto(`/#/alert/${STATIC.id}`);
     await expect(page.locator("#drawer-body form")).toBeVisible();
+    // The drawer slides in from the right; measure where it comes to rest.
+    await page.locator("#drawer").evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
     const box = await page.locator("#drawer-body form").boundingBox();
     expect(box!.x + box!.width).toBeLessThanOrEqual(400);
   });

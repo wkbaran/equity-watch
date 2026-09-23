@@ -1193,7 +1193,7 @@
   function renderHoldingsView() {
     const rows = holdingRows();
     $("nav-holdings").hidden = rows === null;
-    $("nav-holdings-count").textContent = rows === null ? "" : `(${rows.length})`;
+    $("nav-holdings-count").textContent = rows === null ? "" : String(rows.length);
     const status = $("holdings-status");
     if (rows === null) {
       status.textContent =
@@ -1755,8 +1755,48 @@
     return h("div", { class: "sub position-note", text: parts.join(" · ") });
   }
 
+  const STRIP_GLYPH = { up: "▲", down: "▼" };
+
+  /**
+   * The queue strip: every open revisit as one cell across the top of the
+   * content, in the queue view's order, each linking to its decision. Sticky,
+   * so a decision is one tap away from any view. It says "N to decide" off the
+   * summary, the same number as the nav and the tile, and admits it at the end
+   * when --limit left some out.
+   */
+  function renderStrip(d) {
+    const rows = d.revisitQueue;
+    const open = d.summary.openRevisits;
+    $("tape-wrap").hidden = rows.length === 0;
+    $("tape-label").textContent = `${open} to decide`;
+    const cells = rows.map((r) =>
+      h(
+        "li",
+        {},
+        h(
+          "a",
+          {
+            href: triggerHash(r.id),
+            "aria-label": `${r.symbol} fired ${r.direction === "down" ? "below" : "above"} ${r.levelAtTrigger ?? ""}${r.reversal ? ", reversed" : ""}`,
+          },
+          h("span", { class: "t-sym", text: r.symbol }),
+          r.heldPosition ? h("span", { class: "t-held", title: "Held" }) : null,
+          h("span", { class: "t-lvl", text: `${STRIP_GLYPH[r.direction] ?? "◆"} ${r.levelAtTrigger ?? "–"}` }),
+          r.priority !== null ? h("span", { class: "t-mark", text: r.priority.toFixed(0) }) : null,
+          // Reversed fires are most of a real queue, so a glyph, not a word.
+          r.reversal ? h("span", { class: "t-mark", title: "Reversed", text: "↩" }) : null
+        )
+      )
+    );
+    if (rows.length < open) cells.push(h("li", {}, h("span", { class: "tape-more", text: `Top ${rows.length} of ${open}` })));
+    $("tape").replaceChildren(...cells);
+  }
+
   function renderQueue(rows) {
-    $("queue-count").textContent = rows.length ? `(${rows.length})` : "";
+    // With --limit the document carries only the top rows, so say when more
+    // are open than shown rather than undercount them.
+    const open = current?.summary.openRevisits ?? rows.length;
+    $("queue-count").textContent = rows.length === 0 ? "" : rows.length < open ? `${rows.length} of ${open}` : String(rows.length);
     if (rows.length === 0) {
       $("queue").replaceChildren(h("div", { class: "empty", text: "Nothing waiting on a decision." }));
       return;
@@ -1944,7 +1984,7 @@
   }
 
   function renderTriggers(rows, windowDays) {
-    $("triggers-count").textContent = rows.length ? `(${rows.length})` : "";
+    $("triggers-count").textContent = rows.length ? String(rows.length) : "";
     if (rows.length === 0) {
       $("triggers").replaceChildren(
         h("div", { class: "empty", text: `Nothing has fired in the last ${windowDays} days, and nothing is waiting on a decision.` })
@@ -1955,7 +1995,7 @@
   }
 
   function renderStories(stories) {
-    $("stories-count").textContent = stories.length ? `(${stories.length})` : "";
+    $("stories-count").textContent = stories.length ? String(stories.length) : "";
     if (stories.length === 0) {
       $("stories").replaceChildren(h("div", { class: "empty", text: "No symbol has fired more than once yet." }));
       return;
@@ -2022,7 +2062,7 @@
     renderAccountFilter(rows);
     const shown = rows.filter(inAccountFilter);
     // Say "3 of 12" while a filter hides some, so a short list never reads as the whole book.
-    $("holdings-count").textContent = shown.length === rows.length ? (rows.length ? `(${rows.length})` : "") : `(${shown.length} of ${rows.length})`;
+    $("holdings-count").textContent = shown.length === rows.length ? (rows.length ? String(rows.length) : "") : `${shown.length} of ${rows.length}`;
     const { key, dir } = holdingsSort;
     const sorted = [...shown].sort((a, b) => {
       const av = holdingSortValue(a, key);
@@ -2327,13 +2367,15 @@
     current = d;
     renderUpdated();
     renderAuthBanner();
-    $("nav-alerts-count").textContent = `(${d.summary.liveAlerts})`;
-    $("nav-queue-count").textContent = `(${d.revisitQueue.length})`;
-    $("nav-stories-count").textContent = `(${d.stories.length})`;
+    $("nav-alerts-count").textContent = String(d.summary.liveAlerts);
+    // Every open entry, the same number as the overview tile.
+    $("nav-queue-count").textContent = String(d.summary.openRevisits);
+    $("nav-stories-count").textContent = String(d.stories.length);
     // Holdings come from the decrypted vault when unlocked, or from the document
     // when the publisher includes them in the clear (web.holdings). Otherwise
     // they're absent from dashboard.json entirely, not merely hidden here.
     renderTiles(d.summary, holdingRows() !== null);
+    renderStrip(d);
     renderQueue(d.revisitQueue);
     renderTriggers(d.recentTriggers ?? [], d.summary.windowDays);
     renderStories(d.stories);

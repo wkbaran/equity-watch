@@ -68,7 +68,7 @@ test("unlocking shows positions, and a position expands to its lots and stops", 
   page.once("dialog", (d) => d.accept(OPS_TOKEN));
   await page.locator("#ops-btn").click();
   await expect(page.locator("#nav-holdings")).toBeVisible();
-  await expect(page.locator("#nav-holdings-count")).toHaveText("(2)");
+  await expect(page.locator("#nav-holdings-count")).toHaveText("2");
   await expect(page.locator("#tiles")).toContainText("positions held");
 
   await page.locator("#nav-holdings").click();
@@ -99,7 +99,7 @@ test("the account column lists every account a position sits in, and filters to 
   await select.selectOption("roth");
   await expect(positionRow(page, "AA")).toBeVisible();
   await expect(positionRow(page, "TSLA")).toHaveCount(0);
-  await expect(page.locator("#holdings-count")).toHaveText("(1 of 2)");
+  await expect(page.locator("#holdings-count")).toHaveText("1 of 2");
 
   // The unlabeled bucket is its own choice, not a way of showing everything.
   await select.selectOption({ label: "No account (1)" });
@@ -108,7 +108,7 @@ test("the account column lists every account a position sits in, and filters to 
 
   await select.selectOption("all");
   await expect(page.locator("#holdings > tbody > tr")).toHaveCount(2);
-  await expect(page.locator("#holdings-count")).toHaveText("(2)");
+  await expect(page.locator("#holdings-count")).toHaveText("2");
 });
 
 test("sorting by account puts the unlabeled position last either way", async ({ page }) => {
@@ -252,17 +252,18 @@ test.describe("the alert on a position", () => {
     await expect(positionRow(page, "TSLA").locator(".tag.alert")).toContainText("~");
   });
 
-  test("puts its edit form beside the stop form, and queues an edit from there", async ({ page }) => {
+  test("puts its edit form in a band under the stop band, and queues an edit from there", async ({ page }) => {
     await storeToken(page);
     await openHoldings(page);
     await expand(page, "AA");
-    // Stops left, alert right, in one two-column row.
+    // Lots, Stop, Alert: one band each, stacked, aligned on the same left edge.
     const cols = detail(page).locator(".detail-cols");
     await expect(cols.locator("> .stops")).toBeVisible();
     await expect(cols.locator("> .alert-col")).toBeVisible();
     const stopsBox = await cols.locator("> .stops").boundingBox();
     const alertBox = await cols.locator("> .alert-col").boundingBox();
-    expect(stopsBox!.x).toBeLessThan(alertBox!.x);
+    expect(stopsBox!.y + stopsBox!.height).toBeLessThanOrEqual(alertBox!.y);
+    expect(Math.abs(stopsBox!.x - alertBox!.x)).toBeLessThan(1);
 
     const form = cols.locator("> .alert-col form");
     await expect(form.getByLabel("Level")).toHaveValue("55");

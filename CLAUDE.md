@@ -362,14 +362,51 @@ author rule that sets `display` on a class the element also carries wins the tie
 and the element stays on screen with `hidden` set. Nothing errors; the attribute is
 right there in the DOM when you inspect it.
 
-Three classes in `web/index.html` have hit this, and each one is written
+Four places in `web/index.html` have hit this. Three are written
 `.x:not([hidden]) { display: … }` for that reason: `.chart-panel`, `.ops-form` (a
-stop's Edit form) and `.field` (the New alert form's per-kind groups). If you add a
-`display` to a class that anything toggles with `.hidden`, do the same.
+stop's Edit form) and `.field` (the New alert form's per-kind groups). The fourth
+is the rail's Holdings link, guarded by `.site-nav a[hidden] { display: none }`:
+without it the rail offered Holdings on a page with no holdings behind it. If you
+add a `display` to a class that anything toggles with `.hidden`, do the same.
 
 Only a browser catches it. `node --check` and a DOM query both report the element as
 present-and-hidden; Playwright's `toBeHidden()` is what fails. Both instances above
 were found by a test that was written to assert something else.
+
+## The page's design: three colours, and a holdings layout done in CSS
+
+The page adopted the "Desk" design on 2026-09-23 (a left rail whose counts are the
+scoreboard, a sticky queue strip, Archivo throughout). Things that will bite:
+
+- **Every colour comes from three inputs**, `--p-ground`, `--p-ink`, `--p-signal`,
+  set by `web/palette.js` from `data-palette` on `<html>` or a saved choice. The
+  rest are `color-mix` derivations in `:root`, and light mode swaps ground and
+  ink. Add a colour as a mix of those three, never as a hex, or it won't follow a
+  palette change. There are deliberately no separate up/down colours: up is the
+  signal, down is dimmed ink, and the bar's side already says which.
+- **The expanded position's bands are CSS over `positionDetail`'s markup.**
+  `.detail-cols` and `.actions` are `display: contents`, so their children land
+  in `.position-detail`'s grid; the band labels are pseudo-elements. Wrapping
+  `.stops`, `.alert-col` or the two action buttons in another element breaks the
+  grid placement silently. Change the markup and the grid together.
+- **Counts are bare numbers** (`48`, `25 of 48`), not `(48)`. The rail sets them
+  as the biggest type in it.
+
+## Holdings need HTTPS or localhost to appear at all
+
+The vault is decrypted with WebCrypto, which browsers only expose in a secure
+context. Over plain `http://<machine>:<port>` from a phone, `crypto.subtle` is
+undefined, the vault never opens, and the page correctly hides Holdings - which
+looks exactly like a layout bug hiding the nav link (2026-09-23). The published
+site is HTTPS, so this only bites local servers: check `isSecureContext` first.
+
+## A change to `web/` alone doesn't make the next run publish
+
+`siteFingerprint` hashes the documents, not the page assets, so a check that
+finds nothing new skips publishing even when `index.html` or `app.js` changed.
+The new page goes out with the next publish that happens for any other reason,
+at most `--max-stale-minutes` later. To ship a page change now, run
+`dashboard --publish` without `--skip-unchanged`.
 
 ## Labels must reference their control, not wrap it
 

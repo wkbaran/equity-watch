@@ -1,352 +1,527 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="dark" data-palette="#0e2a31,#ece4d0,#f3a83b">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Alerts</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔔</text></svg>">
+<title>Equity watch</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='10' y='46' width='80' height='8' fill='%23f3a83b'/><circle cx='62' cy='50' r='14' fill='%23f3a83b'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet">
 <script>
-  // Apply a saved light preference before first paint, so the page doesn't flash dark.
-  // "tva-theme" is the key from before the project was renamed.
   try { if ((localStorage.getItem("equity-watch.theme") ?? localStorage.getItem("tva-theme")) === "light") document.documentElement.setAttribute("data-theme", "light"); } catch (e) {}
 </script>
+<script src="palette.js"></script>
 <style>
-  /* Palette copied from uniquetrades-congress (Catppuccin Mocha / Latte). Dark is the default. */
+  /*
+   * DESK. A working surface for one person clearing a queue of decisions.
+   *
+   * Three colours in, everything else mixed from them (palette.js sets the
+   * --p-* inputs). Ground and ink swap for light mode; the signal is kept but
+   * pulled toward the new ground so it holds contrast on paper.
+   *
+   * The signal is spent on one thing only: what wants attention. Priority,
+   * a fresh trigger, a pending change, a warning. Symbols, links and chrome
+   * stay in ink, so the accent keeps its meaning.
+   */
   :root {
-    --bg: #1e1e2e;
-    --surface: #313244;
-    --surface2: #45475a;
-    --border: #585b70;
-    --text: #cdd6f4;
-    --subtext: #a6adc8;
-    --muted: #6c7086;
-    --accent: #89b4fa;
-    --green: #a6e3a1;
-    --red: #f38ba8;
-    --yellow: #f9e2af;
-    --peach: #fab387;
-    --radius: 10px;
-    --shadow: 0 2px 12px rgba(0,0,0,0.4);
+    --ground: var(--p-ground);
+    --ink: var(--p-ink);
+    --signal: var(--p-signal);
     color-scheme: dark;
   }
-  [data-theme="light"] {
-    --bg: #eff1f5;
-    --surface: #e6e9ef;
-    --surface2: #dce0e8;
-    --border: #bcc0cc;
-    --text: #4c4f69;
-    --subtext: #5c5f77;
-    --muted: #9ca0b0;
-    --accent: #1e66f5;
-    --green: #40a02b;
-    --red: #d20f39;
-    --yellow: #df8e1d;
-    --peach: #fe640b;
-    --shadow: 0 2px 12px rgba(0,0,0,0.12);
+  :root[data-theme="light"] {
+    --ground: var(--p-ink);
+    --ink: var(--p-ground);
+    --signal: color-mix(in oklab, var(--p-signal) 72%, var(--p-ground));
     color-scheme: light;
   }
+  :root {
+    --surface: color-mix(in oklab, var(--ink) 5%, var(--ground));
+    --raised: color-mix(in oklab, var(--ink) 9%, var(--ground));
+    --line: color-mix(in oklab, var(--ink) 15%, var(--ground));
+    --line-strong: color-mix(in oklab, var(--ink) 28%, var(--ground));
+    --muted: color-mix(in oklab, var(--ink) 50%, var(--ground));
+    --sub: color-mix(in oklab, var(--ink) 72%, var(--ground));
+    --wash: color-mix(in oklab, var(--signal) 13%, var(--ground));
+    --on-signal: var(--ground);
+    --down: color-mix(in oklab, var(--ink) 55%, var(--ground));
+    --radius-s: 4px;
+    --radius-m: 10px;
+    --rail: 15.5rem;
+    --shadow: 0 18px 48px color-mix(in oklab, black 45%, transparent);
+    --narrow: 'Archivo', system-ui, sans-serif;
+  }
+
   *, *::before, *::after { box-sizing: border-box; }
   html { font-size: 15px; }
   body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Inter', system-ui, sans-serif;
-    line-height: 1.5;
-    min-height: 100vh;
+    margin: 0; min-height: 100vh;
+    background: var(--ground); color: var(--ink);
+    font-family: 'Archivo', system-ui, sans-serif; font-stretch: 100%;
+    line-height: 1.5; font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
   }
-  body.drawer-open { overflow: hidden; }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
+  body.drawer-open, body.chart-open { overflow: hidden; }
+  a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--signal); }
+  :focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+
   button {
-    font: inherit; font-size: 0.8rem; color: var(--text); background: var(--surface2);
-    border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.7rem; cursor: pointer;
-    transition: background 0.15s;
+    font: inherit; font-size: 0.82rem; font-weight: 500; color: var(--ink);
+    background: var(--raised); border: 1px solid var(--line); border-radius: var(--radius-s);
+    padding: 0.32rem 0.75rem; cursor: pointer;
   }
-  button:hover { background: var(--border); }
+  button:hover { border-color: var(--line-strong); background: color-mix(in oklab, var(--ink) 13%, var(--ground)); }
+  button.danger { color: var(--signal); border-color: color-mix(in oklab, var(--signal) 50%, var(--ground)); }
   input[type="search"], input[type="text"], input[type="number"], input[type="date"], select {
-    font: inherit; font-size: 0.85rem; color: var(--text); background: var(--surface);
-    border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem;
+    font: inherit; font-size: 0.88rem; color: var(--ink); background: var(--ground);
+    border: 1px solid var(--line-strong); border-radius: var(--radius-s); padding: 0.38rem 0.6rem;
   }
-  code { font-size: 0.85em; background: var(--surface2); padding: 0 0.3rem; border-radius: 4px; }
+  input::placeholder { color: var(--muted); }
+  code { font-size: 0.85em; background: var(--raised); padding: 0 0.3rem; border-radius: 3px; }
   .muted { color: var(--muted); }
-  .note { color: var(--muted); font-size: 0.78rem; }
-  /* A queued change that is past due: still the note's size, but not ignorable. */
-  .note.warn { color: var(--yellow); }
-  /* The header's clock line when a check is overdue, same signal as .note.warn. */
-  #updated.stale { color: var(--yellow); }
+  .note { color: var(--muted); font-size: 0.8rem; }
+  .note.warn, #updated.stale { color: var(--signal); }
+
+  /* ---- the rail ------------------------------------------------------ */
+  .shell { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); min-height: 100vh; }
+  .rail {
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 1.5rem;
+    padding: 1.4rem 0 4rem; background: var(--surface); border-right: 1px solid var(--line);
+  }
+  .site-title {
+    margin: 0 1.4rem; font-size: 1rem; font-weight: 800; font-stretch: 125%; letter-spacing: 0.01em;
+    display: flex; align-items: center; gap: 0.55rem;
+  }
+  /* The mark: a level, and price sitting on it. */
+  .site-title::before {
+    content: ""; width: 1.4rem; height: 0.8rem; flex: none;
+    background:
+      radial-gradient(circle at 70% 50%, var(--signal) 0 0.28rem, transparent 0.3rem),
+      linear-gradient(var(--signal), var(--signal)) center / 100% 2px no-repeat;
+  }
+  .site-nav { display: flex; flex-direction: column; }
+  /*
+   * The rail is the overview's scoreboard as well as its navigation: each
+   * view's count is the biggest thing in it. Set ultra-condensed and light so
+   * five three-digit numbers fit a narrow column without shouting.
+   */
+  .site-nav a {
+    display: grid; grid-template-columns: 1fr auto; align-items: baseline;
+    padding: 0.35rem 1.4rem 0.35rem 1.25rem; border-left: 3px solid transparent;
+    color: var(--sub); text-decoration: none; font-size: 0.92rem; font-weight: 500;
+  }
+  .site-nav a:hover { color: var(--ink); background: var(--raised); }
+  .site-nav a[aria-current="page"] { color: var(--ink); border-left-color: var(--signal); background: var(--raised); }
+  /* The display on `.site-nav a` beats the UA's [hidden] rule at equal
+     specificity, which showed a Holdings link with no holdings behind it. */
+  .site-nav a[hidden] { display: none; }
+  .nav-count {
+    font-family: var(--narrow); font-stretch: 62%; font-weight: 250; font-size: 2.3rem; line-height: 1;
+    color: var(--muted); letter-spacing: -0.01em;
+  }
+  .site-nav a[aria-current="page"] .nav-count { color: var(--ink); }
+  /* The queue is the one count that is a to-do list, so it carries the signal. */
+  #nav-queue-count { color: var(--signal); font-weight: 400; }
+  .meta { color: var(--muted); font-size: 0.8rem; }
+  #updated { margin: 0 1.4rem; display: block; }
+  .spacer { flex: 1; }
+  .header-right { display: flex; flex-direction: column; align-items: stretch; gap: 0.45rem; margin: 0 1.4rem; }
+  .header-right .meta:empty { display: none; }
+  .header-right button { text-align: left; }
 
   /*
-   * The Schwab login expiring stops checks outright, and only a person at the
-   * machine can fix it - so it gets a banner rather than a tint on the clock
-   * line. Yellow, not red: nothing is lost while it waits, queued edits simply
-   * sit until the login is renewed.
+   * The queue strip, borrowed from Tape: the open revisit queue in the queue
+   * page's order, one symbol per cell, each a way into its decision. It
+   * sticks to the top of the content column, so a decision is one tap away
+   * from any view however far down it is scrolled. Never moves by itself.
    */
+  .content { min-width: 0; --tape-h: 2.45rem; }
+  .tape-wrap {
+    position: sticky; top: 0; z-index: 5; display: flex; height: var(--tape-h);
+    background: var(--signal); color: var(--on-signal); box-shadow: 0 1px 0 color-mix(in oklab, var(--ground) 60%, transparent);
+  }
+  .tape-wrap[hidden] { display: none; }
+  .tape-label {
+    flex: none; display: flex; align-items: center; padding: 0 1rem 0 1.25rem;
+    background: var(--ink); color: var(--ground); font-size: 0.82rem; font-weight: 600; white-space: nowrap;
+  }
+  .tape {
+    display: flex; flex: 1; min-width: 0; margin: 0; padding: 0 2.5rem 0 0; list-style: none;
+    overflow-x: auto; scrollbar-width: none; mask-image: linear-gradient(90deg, #000 calc(100% - 2.5rem), transparent);
+  }
+  .tape::-webkit-scrollbar { display: none; }
+  .tape li { flex: none; display: flex; }
+  .tape a {
+    display: flex; align-items: center; gap: 0.4rem; padding: 0 0.95rem; color: inherit; text-decoration: none; font-size: 0.85rem;
+    border-right: 1px solid color-mix(in oklab, var(--on-signal) 22%, var(--signal));
+  }
+  .tape a:hover, .tape a:focus-visible { background: color-mix(in oklab, var(--on-signal) 12%, var(--signal)); outline: none; }
+  .tape .t-sym { font-weight: 750; font-stretch: 112%; letter-spacing: 0.01em; }
+  .tape .t-lvl { font-stretch: 75%; font-size: 0.9rem; }
+  .tape .t-mark { font-stretch: 75%; font-size: 0.75rem; opacity: 0.75; }
+  .tape .t-held { width: 0.38rem; height: 0.38rem; border-radius: 50%; background: var(--on-signal); }
+  .tape-more { display: flex; align-items: center; padding: 0 0.95rem; font-size: 0.78rem; font-stretch: 85%; opacity: 0.8; white-space: nowrap; }
+
+  /* ---- page ------------------------------------------------------------ */
+  main { width: 100%; max-width: 68rem; padding: 2rem 2.5rem 5rem; }
+  .section-header { display: flex; align-items: baseline; gap: 0.75rem; margin: 2.75rem 0 0.9rem; }
+  section > .section-header:first-child, #view-overview > .tiles + .section-header { margin-top: 0; }
+  .section-title { margin: 0; font-size: 1.7rem; font-weight: 600; font-stretch: 75%; letter-spacing: -0.005em; line-height: 1.1; }
+  .section-count { font-size: 1.7rem; font-stretch: 62%; font-weight: 250; color: var(--muted); line-height: 1.1; }
+  /* The alerts view writes a sentence here ("542 of 542 · prices 13 min ago"), not a count. */
+  #alerts-status { font-size: 0.85rem; font-stretch: 100%; font-weight: 400; }
+
+  #error { margin-bottom: 1rem; color: var(--signal); }
   #auth-banner {
-    background: var(--surface2); border: 1px solid var(--yellow); border-left-width: 4px;
-    border-radius: 6px; padding: 0.6rem 0.9rem; margin-bottom: 1rem; font-size: 0.85rem;
+    margin-bottom: 1.5rem; padding: 0.85rem 1.1rem; border-radius: var(--radius-m);
+    background: var(--wash); border: 1px solid color-mix(in oklab, var(--signal) 45%, var(--ground)); font-size: 0.9rem;
   }
-  #auth-banner strong { color: var(--yellow); }
-  #auth-banner .auth-detail { color: var(--subtext); display: block; margin-top: 0.2rem; }
+  #auth-banner strong { color: var(--signal); }
+  #auth-banner .auth-detail { display: block; margin-top: 0.2rem; color: var(--sub); }
 
-  .site-header {
-    background: var(--surface); border-bottom: 1px solid var(--border);
-    padding: 0.75rem 1rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+  /* Overview figures: one band, not four boxes. */
+  /*
+   * Every figure carries a rule on its left and top, pulled 1px outside its
+   * cell; the band clips what lands on its own edge. So whichever figure
+   * starts a row, however the band wraps, it has no rule before it and
+   * lines up with the one above.
+   */
+  .tiles {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); overflow: hidden;
+    margin-bottom: 2.5rem; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
   }
-  .site-title { font-size: 1.1rem; font-weight: 700; color: var(--accent); letter-spacing: 0.02em; margin: 0; }
-  .site-nav { display: flex; gap: 0.25rem; }
-  .site-nav a { color: var(--subtext); padding: 0.3rem 0.7rem; border-radius: 6px; font-size: 0.9rem; }
-  .site-nav a:hover { background: var(--surface2); text-decoration: none; }
-  .site-nav a[aria-current="page"] { color: var(--text); background: var(--surface2); }
-  .nav-count { color: var(--muted); font-size: 0.8rem; }
-  .meta { color: var(--subtext); font-size: 0.8rem; }
-  .spacer { flex: 1; }
-  .header-right { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
+  .tile { padding: 1rem 1.25rem 1.05rem; margin: -1px 0 0 -1px; border-left: 1px solid var(--line); border-top: 1px solid var(--line); }
+  .tile .value { font-size: 3.4rem; line-height: 1; font-weight: 200; font-stretch: 62%; letter-spacing: -0.02em; }
+  .tile:first-child .value { color: var(--signal); font-weight: 350; }
+  .tile .label { margin-top: 0.35rem; color: var(--sub); font-size: 0.8rem; line-height: 1.35; max-width: 16rem; }
 
-  main { max-width: 1080px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
-  .section-header {
-    display: flex; align-items: baseline; gap: 0.75rem;
-    margin: 2rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border);
+  .card { background: var(--surface); border-radius: var(--radius-m); overflow: hidden; }
+  .empty { padding: 1rem 1.25rem; color: var(--muted); }
+
+  a.sym { font-weight: 750; font-stretch: 112%; color: var(--ink); text-decoration: none; letter-spacing: 0.01em; }
+  a.sym:hover { color: var(--signal); }
+  a.plain { color: inherit; text-decoration: none; }
+  a.plain:hover { text-decoration: underline; text-decoration-color: var(--signal); }
+
+  .tag {
+    display: inline-block; margin-left: 6px; padding: 0 7px; vertical-align: 1px;
+    font-size: 0.72rem; font-weight: 500; line-height: 1.55; border-radius: 999px;
+    color: var(--sub); background: var(--raised); text-decoration: none;
   }
-  .section-header:first-child { margin-top: 0; }
-  .section-title { font-size: 1rem; font-weight: 700; margin: 0; }
-  .section-count { font-size: 0.8rem; color: var(--muted); }
+  a.tag:hover { background: var(--line); }
+  .tag.held { color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); background: transparent; }
+  .tag.alert { color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); background: transparent; }
+  .tag.reversed, .tag.stagnant { color: var(--sub); background: transparent; box-shadow: inset 0 0 0 1px var(--line); font-style: italic; }
+  .tag.above-basis { color: var(--on-signal); background: var(--signal); }
+  .tag.pending { color: var(--signal); background: var(--wash); }
+  .reversal-note { color: var(--sub); font-style: italic; }
+  .update-note { color: var(--signal); }
+  .position-note { color: var(--sub); }
 
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; }
-  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.85rem 1rem; }
-  .tile .value { font-size: 1.7rem; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .tile .label { color: var(--subtext); font-size: 0.8rem; }
+  /*
+   * Recent triggers: a timeline. The time column carries a spine, each fire a
+   * node on it; a fire you haven't seen yet is a filled signal node, and that
+   * is the only accent in the list.
+   */
+  .trigger-row {
+    position: relative; display: grid; grid-template-columns: 7.5rem 1fr auto; gap: 1.25rem;
+    padding: 0.6rem 1.25rem 0.6rem 0; align-items: baseline; cursor: pointer; color: var(--ink);
+  }
+  .trigger-row .when { position: relative; text-align: right; padding-right: 1.4rem; align-self: stretch; }
+  .trigger-row .when::before { content: ""; position: absolute; right: 0.3rem; top: -0.6rem; bottom: -0.6rem; width: 1px; background: var(--line); }
+  .trigger-row .when::after {
+    content: ""; position: absolute; right: calc(0.3rem - 3px); top: 0.52em; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  }
+  .trigger-row.new .when::after { background: var(--signal); box-shadow: 0 0 0 3px var(--wash); }
+  .trigger-row.new .when { color: var(--ink); }
+  .trigger-row:first-child .when::before { top: 0.9rem; }
+  .trigger-row:last-child .when::before { bottom: auto; height: 1.2rem; }
+  .trigger-row:hover, tr.clickable:hover { background: var(--raised); }
+  .trigger-row:focus-visible, tr.clickable:focus-visible { outline: 2px solid var(--signal); outline-offset: -2px; }
+  .when { color: var(--muted); font-size: 0.8rem; }
+  .status { font-size: 0.78rem; color: var(--muted); }
 
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-  .empty { padding: 0.9rem 1rem; color: var(--muted); }
-  #error { margin-bottom: 1rem; color: var(--red); }
-
-  .queue-row { display: grid; grid-template-columns: 48px 1fr; gap: 12px; padding: 0.8rem 1rem; border-top: 1px solid var(--border); }
-  .queue-row:first-child { border-top: 0; }
-  .priority { font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; color: var(--accent); }
-  .priority.none { color: var(--muted); }
-  .headline { font-size: 1rem; font-weight: 500; }
-  a.plain { color: inherit; }
-  a.plain:hover { color: var(--accent); }
-  .sub { color: var(--subtext); font-size: 0.85rem; }
-  .why { color: var(--muted); font-size: 0.78rem; }
-  .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
-  .tag { display: inline-block; font-size: 0.72rem; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--subtext); margin-left: 6px; vertical-align: 1px; }
-  .tag.held { border-color: var(--accent); color: var(--accent); }
-  .tag.alert { border-color: var(--accent); color: var(--accent); }
-  /* The held tag is a link into the Holdings view; keep it looking like a tag. */
-  a.tag:hover { text-decoration: none; background: var(--surface2); }
-  .tag.reversed { border-color: var(--peach); color: var(--peach); }
-  /* What `holdings check` would say about a position, worked out in the
-     browser (see holdingFlags in app.js). Green for clearing cost by the
-     threshold, peach for money that has sat still — neither is an alarm. */
-  .tag.above-basis { border-color: var(--green); color: var(--green); }
-  .tag.stagnant { border-color: var(--peach); color: var(--peach); }
-  .reversal-note { color: var(--peach); }
-  /* Something changed since this fire was queued: the alert re-levelled or
-     removed, more crossings folded on. Marked, because a row that has moved on
-     reads differently from one that hasn't. */
-  .update-note { color: var(--yellow); }
-  /* Only ever rendered from the decrypted vault, never from dashboard.json. */
-  .position-note { color: var(--subtext); }
-  ol.timeline { margin: 0; padding-left: 18px; }
+  /* The queue: one decision per row; the priority is set as the row's number. */
+  .queue-row { display: grid; grid-template-columns: 4.5rem 1fr; gap: 1rem; padding: 1.1rem 1.5rem 1.2rem 0.5rem; }
+  .queue-row + .queue-row { border-top: 1px solid var(--line); }
+  .priority {
+    text-align: right; color: var(--signal); font-size: 2.6rem; line-height: 0.95;
+    font-weight: 300; font-stretch: 62%; letter-spacing: -0.02em;
+  }
+  .priority.none { color: var(--line-strong); }
+  .headline { font-size: 1.02rem; font-weight: 500; line-height: 1.4; }
+  .queue-row .headline a.sym { font-size: 1.12rem; }
+  .sub { color: var(--sub); font-size: 0.86rem; }
+  .why { color: var(--muted); font-size: 0.78rem; margin-top: 0.2rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: 0.5rem 0.9rem; margin-top: 0.7rem; align-items: center; font-size: 0.86rem; }
+  .actions a { color: var(--sub); }
+  ol.timeline { margin: 0; padding-left: 1.2rem; }
   ol.timeline li { margin-bottom: 2px; }
-  ol.timeline li.reversal { color: var(--peach); }
+  ol.timeline li.reversal { color: var(--sub); font-style: italic; }
 
-  .trigger-row { display: grid; grid-template-columns: 110px 1fr auto; gap: 12px; padding: 0.55rem 1rem; border-top: 1px solid var(--border); align-items: baseline; }
-  .trigger-row:first-child { border-top: 0; }
-  .trigger-row { color: var(--text); cursor: pointer; }
-  .trigger-row:hover, tr.clickable:hover { background: var(--surface2); }
-  .trigger-row:focus-visible, tr.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  a.sym { font-weight: 700; color: var(--accent); }
-  .trigger-row.new { box-shadow: inset 3px 0 0 var(--yellow); }
-  .when { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
-  .status { font-size: 0.8rem; color: var(--muted); }
+  .story { padding: 1rem 1.5rem; }
+  .story + .story { border-top: 1px solid var(--line); }
+  .story ol { margin: 0.4rem 0 0; padding-left: 1.2rem; color: var(--sub); font-size: 0.88rem; }
 
-  .story { padding: 0.8rem 1rem; border-top: 1px solid var(--border); }
-  .story:first-child { border-top: 0; }
-  .story ol { margin: 6px 0 0; padding-left: 18px; color: var(--subtext); font-size: 0.85rem; }
+  details summary { cursor: pointer; color: var(--sub); padding: 0.85rem 1.25rem; }
+  details ul { margin: 0; padding: 0 1.25rem 1rem 2.5rem; color: var(--sub); }
+  .approach-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 3px 1.25rem; font-size: 0.88rem; }
+  .approach-dist { min-width: 4.5rem; text-align: right; color: var(--sub); }
 
+  /* ---- tables ------------------------------------------------------ */
   .table-wrap { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-  th, td { padding: 7px 12px; text-align: right; white-space: nowrap; border-top: 1px solid var(--border); }
-  th { font-size: 0.8rem; font-weight: 500; color: var(--subtext); border-top: 0; cursor: pointer; user-select: none; background: var(--surface2); }
-  th[aria-sort] { color: var(--text); }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: 0.5rem 0.9rem; text-align: right; white-space: nowrap; border-top: 1px solid var(--line); }
+  th {
+    position: sticky; top: 0; border-top: 0; cursor: pointer; user-select: none;
+    font-size: 0.78rem; font-weight: 500; font-stretch: 88%; color: var(--muted); background: var(--surface);
+    border-bottom: 1px solid var(--line-strong);
+  }
+  th[aria-sort] { color: var(--ink); }
   th:first-child, td:first-child { text-align: left; }
   tr.ignored td { color: var(--muted); }
   tr.clickable { cursor: pointer; }
-  /* The position #/holdings/<symbol> points at, scrolled to and marked. */
-  tr.focused > td { background: var(--surface2); }
-  tr.focused > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  tr.focused > td { background: var(--raised); }
+  tr.focused > td:first-child, tr.jumped > td:first-child { box-shadow: inset 3px 0 0 var(--signal); }
   #alerts-table th { cursor: default; }
-  #alerts-table th:nth-child(2) { text-align: left; }
-  #alerts-table td.cond { text-align: left; white-space: normal; min-width: 14rem; color: var(--subtext); }
-  #alerts-table th:nth-child(3), #alerts-table td.dir { text-align: left; }
+  #alerts-table th:nth-child(2), #alerts-table th:nth-child(3), #alerts-table td.dir { text-align: left; }
+  #alerts-table td.cond { text-align: left; white-space: normal; min-width: 14rem; color: var(--sub); }
+  /* Distance to the level: up in signal, down in ink, split on a centre tick. */
   .bar-cell { width: 140px; }
-  .bar { position: relative; height: 10px; background: var(--surface2); border-radius: 2px; }
-  .bar::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--muted); }
+  .bar { position: relative; height: 6px; background: var(--raised); border-radius: 3px; }
+  .bar::after { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--muted); }
   .bar span { position: absolute; top: 0; bottom: 0; }
-  .bar span.up { left: 50%; background: var(--green); border-radius: 0 2px 2px 0; }
-  .bar span.down { right: 50%; background: var(--red); border-radius: 2px 0 0 2px; }
+  .bar span.up { left: 50%; background: var(--signal); border-radius: 0 3px 3px 0; }
+  .bar span.down { right: 50%; background: var(--down); border-radius: 3px 0 0 3px; }
 
-  /*
-   * The A-Z rail beside a long table. Sticky rather than fixed: it is the page
-   * that scrolls, so the rail only needs to stay put within its own column.
-   * How many tabs it shows is decided in app.js from the height actually
-   * available - the letters are grouped into ranges when they don't all fit.
-   */
   .indexed { display: flex; align-items: flex-start; gap: 0.5rem; }
   .indexed > .table-wrap { flex: 1 1 auto; min-width: 0; }
-  .alpha-rail {
-    position: sticky; top: 0.75rem; flex: 0 0 auto;
-    display: flex; flex-direction: column; gap: 1px;
-  }
+  .alpha-rail { position: sticky; top: calc(var(--tape-h) + 0.75rem); flex: 0 0 auto; display: flex; flex-direction: column; gap: 1px; }
   .alpha-rail button {
-    font-size: 0.7rem; line-height: 1.1; padding: 2px 4px; min-width: 2.5rem;
-    background: none; border: 0; border-radius: 3px; color: var(--subtext);
+    font-size: 0.72rem; font-stretch: 75%; line-height: 1.15; padding: 2px 4px; min-width: 2.4rem;
+    background: none; border: 0; border-radius: 3px; color: var(--sub);
   }
-  .alpha-rail button:hover { background: var(--surface2); color: var(--text); }
-  /* A letter nothing starts with stays in place, so the rail doesn't reflow as you filter. */
-  .alpha-rail button[disabled] { color: var(--border); cursor: default; background: none; }
-  /* Where the last jump landed; cleared on the next one. Same marker as tr.focused. */
-  tr.jumped > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  .alpha-rail button:hover { background: var(--raised); color: var(--ink); }
+  .alpha-rail button[disabled] { color: var(--line-strong); cursor: default; background: none; }
 
   .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
   .toolbar input[type="search"] { flex: 1 1 14rem; min-width: 0; }
 
-  details summary { cursor: pointer; color: var(--subtext); padding: 0.7rem 1rem; }
-  details ul { margin: 0; padding: 0 1rem 0.8rem 2rem; color: var(--subtext); }
-
-  .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 15; }
+  /* ---- drawer and chart --------------------------------------------- */
+  .backdrop { position: fixed; inset: 0; background: color-mix(in oklab, var(--ground) 55%, transparent); backdrop-filter: blur(2px); z-index: 15; }
   .drawer {
-    position: fixed; top: 0; right: 0; bottom: 0; width: min(34rem, 100vw);
-    background: var(--surface); border-left: 1px solid var(--border); box-shadow: var(--shadow);
-    z-index: 20; overflow-y: auto; padding: 1rem 1.25rem 2rem; outline: none;
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(36rem, 100vw); z-index: 20; overflow-y: auto; outline: none;
+    background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow); padding: 1.5rem 1.75rem 2.5rem;
+    animation: drawer-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
+  @keyframes drawer-in { from { transform: translateX(2.5rem); opacity: 0; } }
   .drawer-close { float: right; }
-  .drawer-title { font-size: 1.1rem; margin: 0.25rem 0 1rem; padding-right: 4rem; }
-  /* Sits above the drawer (a ticker inside a trigger/alert drawer opens the
-     chart on top of it), in one shared panel that swaps its iframe's src per
-     symbol rather than opening a new tab per ticker. */
+  .drawer-title { margin: 0.2rem 0 1rem; padding-right: 4.5rem; font-size: 1.35rem; font-weight: 600; font-stretch: 85%; line-height: 1.25; }
+  .drawer-title a.sym { font-size: 1.45rem; }
+  .drawer-sub { margin: 1.75rem 0 0.55rem; font-size: 1.05rem; font-weight: 600; font-stretch: 80%; color: var(--ink); }
+  dl.kv-list { display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 1.25rem; margin: 0; }
+  dl.kv-list dt { color: var(--muted); font-size: 0.84rem; }
+  dl.kv-list dd { margin: 0; overflow-wrap: anywhere; }
+  .drawer .trigger-row { grid-template-columns: 7rem 1fr auto; }
   .chart-backdrop { z-index: 21; }
   .chart-panel {
-    position: fixed; inset: 4vh 4vw; z-index: 22; flex-direction: column;
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-    box-shadow: var(--shadow); padding: 1rem 1.25rem; outline: none;
+    position: fixed; inset: 4vh 4vw; z-index: 22; flex-direction: column; outline: none;
+    background: var(--surface); border-radius: var(--radius-m); box-shadow: var(--shadow); padding: 1rem 1.25rem;
   }
-  /* display must stay unset in the base rule above: an author-stylesheet
-     `display` on this class overrides the UA stylesheet's `[hidden] { display:
-     none }` even while the hidden attribute is present, at equal specificity. */
   .chart-panel:not([hidden]) { display: flex; }
   .chart-panel iframe { flex: 1; width: 100%; border: 0; border-radius: 6px; }
-  body.chart-open { overflow: hidden; }
-  @media (max-width: 700px) {
-    .chart-panel { inset: 2vh 2vw; padding: 0.6rem; }
-  }
-  .drawer-sub { font-size: 0.9rem; margin: 1.5rem 0 0.5rem; color: var(--subtext); }
-  dl.kv-list { display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 1rem; margin: 0; }
-  dl.kv-list dt { color: var(--subtext); font-size: 0.85rem; }
-  dl.kv-list dd { margin: 0; overflow-wrap: anywhere; }
-  .drawer .trigger-row { grid-template-columns: 110px 1fr auto; }
 
-  #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 25; max-width: min(420px, calc(100vw - 32px)); }
+  #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 25; display: flex; flex-direction: column; gap: 8px; max-width: min(420px, calc(100vw - 32px)); }
   .toast {
-    background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-left: 3px solid var(--yellow);
-    border-radius: var(--radius); padding: 0.65rem 0.9rem; box-shadow: var(--shadow);
-    display: grid; grid-template-columns: 1fr auto; gap: 10px; animation: slide .2s ease-out;
+    display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 0.7rem 0.95rem;
+    background: var(--raised); color: var(--ink); border-radius: var(--radius-m); box-shadow: var(--shadow);
+    border-left: 3px solid var(--line-strong); animation: slide 0.2s ease-out;
   }
   .toast .t-body { cursor: pointer; }
-  .toast .t-sym { font-weight: 700; color: var(--accent); }
+  .toast .t-sym { font-weight: 700; }
   .toast button { background: transparent; border: 0; padding: 0 2px; font-size: 1rem; line-height: 1; }
-  .toast.ok { border-left-color: var(--green); }
-  .toast.bad { border-left-color: var(--red); }
+  .toast.ok { border-left-color: var(--ink); }
+  .toast.bad { border-left-color: var(--signal); }
   @keyframes slide { from { transform: translateY(8px); opacity: 0; } }
 
-  /* `:not([hidden])` for the same reason .chart-panel needs it above: this
-     author `display` would otherwise beat the UA stylesheet's
-     `[hidden] { display: none }` at equal specificity, and a toggled-off form
-     (a stop's Edit) would stay on screen with the attribute set. */
-  .ops-form:not([hidden]) { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.5rem 0.75rem; }
-  .ops-form { padding: 0.75rem 1rem; margin-bottom: 1rem; overflow: visible; }
-  .ops-form .form-title { flex-basis: 100%; font-size: 0.9rem; }
+  /* ---- forms ------------------------------------------------------- */
+  .ops-form:not([hidden]) { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.6rem 0.8rem; }
+  .ops-form { padding: 1rem 1.25rem; margin-bottom: 1rem; overflow: visible; }
+  .ops-form .form-title { flex-basis: 100%; font-size: 1rem; font-weight: 600; font-stretch: 85%; }
   .ops-form .note { flex-basis: 100%; }
-  /* `:not([hidden])` for the same reason .ops-form and .chart-panel need it:
-     this author `display` beats the UA stylesheet's `[hidden] { display: none }`
-     at equal specificity, so a field toggled off by kind would stay on screen. */
   .field:not([hidden]) { display: flex; flex-direction: column; }
-  .field { gap: 2px; font-size: 0.75rem; color: var(--subtext); }
+  .field { gap: 3px; font-size: 0.76rem; color: var(--sub); }
   .field input[type="number"] { width: 8rem; }
   .field input[type="text"] { width: 7rem; text-transform: uppercase; }
-  /* The volume amount is the one text field that isn't a ticker; uppercasing
-     it is wanted here, since "2.5m" shown as "2.5M" is what it means. The
-     window beside it is a select, so it needs nothing. */
-  .form-error { color: var(--red); font-size: 0.8rem; align-self: center; }
-  .tag.pending { border-color: var(--yellow); color: var(--yellow); }
-  #ops-pending { margin-bottom: 1rem; }
-  .pending-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0.5rem 1rem; border-top: 1px solid var(--border); font-size: 0.85rem; }
-  .pending-row:first-child { border-top: 0; }
+  .form-error { color: var(--signal); font-size: 0.82rem; align-self: center; }
+  #ops-pending, #holdings-pending { margin-bottom: 1rem; }
+  .pending-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0.55rem 1.25rem; font-size: 0.86rem; }
+  .pending-row + .pending-row { border-top: 1px solid var(--line); }
   .pending-row .tag { margin-left: 0; }
 
-  #holdings-status { margin: -0.5rem 0 1rem; }
-  #holdings-pending { margin-bottom: 1rem; }
-  tr.detail-row > td { background: var(--bg); padding: 0; text-align: left; white-space: normal; }
-  .position-detail { padding: 0.75rem 1rem 1rem; display: grid; gap: 0.75rem; }
-  table.lots th { cursor: default; background: transparent; }
+  #holdings-status { margin: -0.4rem 0 1rem; }
+  tr.detail-row > td { background: var(--ground); padding: 0; text-align: left; white-space: normal; }
+  /*
+   * An expanded position: three bands, Lots, Stop and Alert, each one row of
+   * controls under a label in a shared left column, so the two forms read
+   * as the same kind of thing instead of two columns of different heights.
+   * Add to position sits beside the lots it adds to; removing the position
+   * is last and on its own.
+   *
+   * Done in CSS over app.js's existing markup: .detail-cols and .actions are
+   * `display: contents`, so their children land in this grid directly. The
+   * labels are pseudo-elements: the grid's own ::before for Lots, and each
+   * band's ::before, hung into the label column, for the other two.
+   */
+  .position-detail {
+    --label-w: 4.5rem; --col-gap: 1.25rem;
+    display: grid; grid-template-columns: var(--label-w) minmax(0, 1fr) auto; column-gap: var(--col-gap);
+    padding: 1rem 1.25rem 1.1rem;
+  }
+  .position-detail::before, .position-detail > .detail-cols > *::before {
+    font-size: 0.95rem; font-weight: 600; font-stretch: 80%; color: var(--sub);
+  }
+  .position-detail::before { content: "Lots"; grid-column: 1; grid-row: 1; padding-top: 0.3rem; }
+  .position-detail > .table-wrap { grid-column: 2; grid-row: 1; }
+  .position-detail > .detail-cols, .position-detail > .actions { display: contents; }
+  .position-detail > .actions > :first-child { grid-column: 3; grid-row: 1; align-self: start; }
+  .position-detail > .actions > :last-child { grid-column: 2 / -1; grid-row: 4; justify-self: end; margin-top: 0.9rem; }
+  .position-detail > .detail-cols > * {
+    position: relative; grid-column: 2 / -1; margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px solid var(--line);
+  }
+  .position-detail > .detail-cols > .stops { grid-row: 2; }
+  .position-detail > .detail-cols > .alert-col { grid-row: 3; }
+  .position-detail > .detail-cols > *::before {
+    position: absolute; top: calc(0.9rem + 0.3rem); left: calc(-1 * (var(--label-w) + var(--col-gap)));
+  }
+  .position-detail > .detail-cols > .stops::before { content: "Stop"; }
+  .position-detail > .detail-cols > .alert-col::before { content: "Alert"; }
+  /* The border runs under the labels too, so each band reads as one row. */
+  .position-detail > .detail-cols > *::after {
+    content: ""; position: absolute; top: -1px; height: 1px; left: calc(-1 * (var(--label-w) + var(--col-gap))); width: calc(var(--label-w) + var(--col-gap));
+    background: var(--line);
+  }
+  table.lots th { cursor: default; background: transparent; position: static; }
   table.lots th, table.lots td { padding: 5px 10px; }
   tr.lot-edit > td { text-align: left; white-space: normal; }
-  .position-detail .ops-form { margin: 0; padding: 0.25rem 0; }
-  /* Stops on the left, the alert on the right. minmax(0,1fr) rather than 1fr:
-     a grid track's default min-width is auto, so the alert form's own controls
-     would push the column wider than its half instead of wrapping. */
-  .detail-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.75rem 1.5rem; align-items: start; }
+  .position-detail .ops-form { margin: 0; padding: 0; }
+  /* Stop band: the stops you have, then the form to add one, on one line. */
+  .stops { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.6rem 1.25rem; }
+  .stops > .stop-list { align-self: center; }
+  /* With the band labelled, "Stops:" only repeats it; "No stops." still says something. */
+  .stop-list > .muted:not(:only-child) { display: none; }
+  .stops > .stop-edit:not([hidden]) { flex-basis: 100%; }
+  /* Alert band: the edit form's fields in one row; its own titles repeat the label. */
   .alert-col { display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem; align-items: flex-end; }
-  /* The edit form is a card in a drawer, where it stands alone. Here it is one
-     of two columns, so it drops the frame to sit flush like the stop form. */
-  .alert-col .ops-form.card { background: transparent; border: 0; border-radius: 0; }
-  .alert-col > .form-title { flex-basis: 100%; font-size: 0.9rem; }
-  .alert-col .note { flex-basis: 100%; }
+  .alert-col > .form-title, .alert-col .ops-form > .form-title { display: none; }
+  .alert-col .ops-form.card { background: transparent; border-radius: 0; }
+  .alert-col .note { flex-basis: 100%; margin: 0; }
+  .position-detail .ops-form > .note { order: 99; }
   .row-actions { display: inline-flex; gap: 6px; }
-  .approach-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 3px 0; font-size: 0.85rem; }
-  .approach-dist { min-width: 4.5rem; text-align: right; font-variant-numeric: tabular-nums; color: var(--subtext); }
   .stop-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-  .stop-tag { display: inline-flex; align-items: center; gap: 6px; margin-left: 0; padding: 2px 6px; }
+  .stop-tag { display: inline-flex; align-items: center; gap: 6px; margin-left: 0; padding: 2px 8px; }
   .stop-tag button { font-size: 0.72rem; padding: 0 6px; }
-  button.danger { border-color: var(--red); color: var(--red); }
+
+  /* ---- palette control (web/palette.js) ------------------------------- */
+  .pal { position: fixed; left: 1.4rem; bottom: 1.2rem; z-index: 30; }
+  .pal-toggle { display: flex; gap: 0; padding: 3px; border-radius: 999px; background: var(--raised); }
+  .pal-toggle span, .pal-preset span { width: 14px; height: 14px; border-radius: 50%; box-shadow: 0 0 0 1px var(--line-strong); }
+  .pal-toggle span + span { margin-left: -4px; }
+  .pal-panel {
+    position: absolute; left: 0; bottom: calc(100% + 8px); width: 15rem; padding: 0.9rem; display: grid; gap: 0.55rem;
+    background: var(--raised); border: 1px solid var(--line); border-radius: var(--radius-m); box-shadow: var(--shadow); font-size: 0.82rem;
+  }
+  .pal-panel[hidden] { display: none; }
+  .pal-heading { font-weight: 650; font-stretch: 85%; font-size: 0.95rem; }
+  .pal-presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .pal-preset { display: flex; justify-content: center; padding: 6px 4px; }
+  .pal-preset span + span { margin-left: -4px; }
+  .pal-field { display: flex; align-items: center; gap: 0.6rem; }
+  .pal-field input { width: 2.2rem; height: 1.6rem; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; }
+  .pal-code { font-size: 0.75rem; color: var(--sub); user-select: all; }
+  .pal-reset { font-size: 0.75rem; }
+
+  /* ---- narrow screens: the rail folds into a top bar ------------------ */
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; }
+    .rail {
+      position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center;
+      gap: 0.6rem 1rem; padding: 0.9rem 1rem; border-right: 0; border-bottom: 1px solid var(--line);
+    }
+    .site-title { margin: 0; }
+    .site-nav { flex-direction: row; overflow-x: auto; flex-basis: 100%; order: 3; gap: 0.25rem; }
+    .site-nav a { display: flex; gap: 0.35rem; padding: 0.3rem 0.6rem; border-left: 0; border-bottom: 2px solid transparent; white-space: nowrap; }
+    .site-nav a[aria-current="page"] { border-bottom-color: var(--signal); }
+    .nav-count { font-size: 1.05rem; font-stretch: 75%; font-weight: 400; }
+    #updated { margin: 0; }
+    .spacer { display: none; }
+    .header-right { flex-direction: row; flex-wrap: wrap; margin: 0 0 0 auto; }
+    main { padding: 1.5rem 1rem 5rem; }
+    .pal { left: 1rem; }
+  }
   @media (max-width: 560px) {
-    .trigger-row, .drawer .trigger-row { grid-template-columns: 1fr; gap: 2px; }
-    .queue-row { grid-template-columns: 36px 1fr; }
-    .detail-cols { grid-template-columns: 1fr; }
+    .trigger-row, .drawer .trigger-row { grid-template-columns: 1fr; gap: 2px; padding-left: 1.25rem; }
+    .trigger-row .when { text-align: left; padding-right: 0; }
+    .trigger-row .when::before, .trigger-row .when::after { display: none; }
+    .trigger-row.new { box-shadow: inset 3px 0 0 var(--signal); }
+    .queue-row { grid-template-columns: 2.75rem 1fr; gap: 0.6rem; padding-right: 1rem; }
+    .priority { font-size: 2rem; }
+    .tile .value { font-size: 2.6rem; }
+    /* The expanded position goes to one column: labels become headings over their band. */
+    /* The row lives in a cell of a table wider than the phone; pin it to the
+       visible width so it never scrolls sideways with the table. */
+    .position-detail { grid-template-columns: minmax(0, 1fr) auto; padding: 0.9rem 1rem 1rem; position: sticky; left: 0; width: calc(100vw - 2rem); }
+    .position-detail::before { grid-column: 1; grid-row: 1; }
+    .position-detail > .actions > :first-child { grid-column: 2; grid-row: 1; }
+    .position-detail > .table-wrap { grid-column: 1 / -1; grid-row: 2; margin-top: 0.4rem; }
+    .position-detail > .detail-cols > * { grid-column: 1 / -1; }
+    .position-detail > .detail-cols > .stops { grid-row: 3; }
+    .position-detail > .detail-cols > .alert-col { grid-row: 4; }
+    .position-detail > .detail-cols > *::before { position: static; flex-basis: 100%; }
+    .position-detail > .detail-cols > *::after { display: none; }
+    .position-detail > .actions > :last-child { grid-column: 1 / -1; grid-row: 5; }
     dl.kv-list { grid-template-columns: 1fr; gap: 0.1rem; }
     dl.kv-list dd { margin-bottom: 0.5rem; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .drawer, .toast { animation: none; }
   }
 </style>
 </head>
 <body>
-<header class="site-header">
-  <h1 class="site-title">Alerts</h1>
+<div class="shell">
+<header class="rail">
+  <h1 class="site-title">Equity watch</h1>
   <nav class="site-nav" aria-label="Views">
-    <a href="#/" data-nav="overview">Overview</a>
-    <a href="#/queue" data-nav="queue">Revisit queue <span id="nav-queue-count" class="nav-count"></span></a>
-    <a href="#/stories" data-nav="stories">Stories <span id="nav-stories-count" class="nav-count"></span></a>
-    <a href="#/alerts" data-nav="alerts">Alerts <span id="nav-alerts-count" class="nav-count"></span></a>
-    <!-- Shown when holdings are available: decrypted from vault.json after unlocking, or published in the clear (web.holdings). -->
-    <a href="#/holdings" data-nav="holdings" id="nav-holdings" hidden>Holdings <span id="nav-holdings-count" class="nav-count"></span></a>
+    <a href="#/" data-nav="overview"><span>Overview</span></a>
+    <a href="#/queue" data-nav="queue"><span>Revisit queue</span> <span id="nav-queue-count" class="nav-count"></span></a>
+    <a href="#/stories" data-nav="stories"><span>Stories</span> <span id="nav-stories-count" class="nav-count"></span></a>
+    <a href="#/alerts" data-nav="alerts"><span>Alerts</span> <span id="nav-alerts-count" class="nav-count"></span></a>
+    <a href="#/holdings" data-nav="holdings" id="nav-holdings" hidden><span>Holdings</span> <span id="nav-holdings-count" class="nav-count"></span></a>
   </nav>
   <span id="updated" class="meta">loading…</span>
   <span class="spacer"></span>
   <div class="header-right">
     <span id="notify-state" class="meta"></span>
     <button id="notify-btn" hidden>Enable notifications</button>
-    <!-- Shown only when the published document has site.ops = true (OPS_QUEUE_URL configured). -->
     <button id="ops-btn" hidden>Unlock editing</button>
     <button id="theme-btn">☀️ Light</button>
   </div>
 </header>
 
+<div class="content">
+<!-- The open revisit queue as a strip; renderStrip in app.js fills it from each poll. -->
+<div class="tape-wrap" id="tape-wrap" hidden>
+  <span class="tape-label" id="tape-label">To decide</span>
+  <ul class="tape" id="tape" aria-labelledby="tape-label"></ul>
+</div>
+
 <main>
   <div id="error" class="card empty" hidden></div>
-  <!-- Shown when the publisher reports opsAuthExpiredSince: checks are stopped
-       until someone re-runs `schwab-login` on the machine. -->
   <div id="auth-banner" hidden></div>
 
   <section id="view-overview">
@@ -355,10 +530,6 @@
     <div class="section-header"><h2 class="section-title">Recent triggers</h2><span id="triggers-count" class="section-count"></span></div>
     <div id="triggers" class="card"></div>
 
-    <!-- Collapsed, like the quiet watches: on a 500-alert book a hundred names
-         sit within a few percent of firing at any moment, which is a readout of
-         market noise rather than a list of things to do. The queue says what
-         actually happened; this answers "what is close?" when you ask. -->
     <div id="approaching-section" hidden>
       <div class="section-header"><h2 class="section-title">Approaching</h2></div>
       <details class="card"><summary id="approaching-summary"></summary><div id="approaching"></div></details>
@@ -383,7 +554,6 @@
   <section id="view-holdings" hidden>
     <div class="section-header"><h2 class="section-title">Holdings</h2><span id="holdings-count" class="section-count"></span></div>
     <p id="holdings-status" class="note"></p>
-    <!-- Hidden until there is more than one account to choose between. -->
     <div class="toolbar" id="holdings-toolbar" hidden>
       <select id="holdings-account" aria-label="Filter by account"><option value="all">All accounts</option></select>
     </div>
@@ -407,14 +577,14 @@
     </div>
     <div id="alert-add" hidden></div>
     <div id="ops-pending" class="card" hidden></div>
-    <!-- The A-Z rail is built beside the table, not inside it, so the table
-         keeps its own horizontal scroll. Populated only when sorted by symbol. -->
     <div class="indexed">
       <nav id="alerts-index" class="alpha-rail" aria-label="Jump to symbol" hidden></nav>
       <div class="card table-wrap"><table id="alerts-table"></table></div>
     </div>
   </section>
 </main>
+</div>
+</div>
 
 <div id="backdrop" class="backdrop" hidden></div>
 <aside id="drawer" class="drawer" tabindex="-1" aria-label="Details" hidden>

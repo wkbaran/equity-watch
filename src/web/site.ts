@@ -19,7 +19,7 @@ import type { AlertRow } from "./alertsPage.js";
 import { VAULT_FILE, type VaultContents, type VaultDocument } from "./vault.js";
 
 /** Static assets copied verbatim into the site directory. */
-export const SITE_ASSETS = ["index.html", "app.js", "sw.js"];
+export const SITE_ASSETS = ["index.html", "app.js", "palette.js", "sw.js"];
 
 /**
  * Two levels up from both src/web/site.ts (tsx) and dist/web/site.js (built),
