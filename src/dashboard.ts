@@ -267,7 +267,12 @@ export interface DashboardInputs {
   now: Date;
   /** How many days back "recent triggers" counts. */
   windowDays?: number;
-  /** Cap on rows in the queue and approaching lists. */
+  /**
+   * Cap on rows in the queue, approaching and quiet-watch lists. Unset, the
+   * queue carries every open entry (the others still stop at 25): the site
+   * publishes every 15 minutes at most, so a capped queue made someone
+   * clearing it wait for the next publish to see what was behind the cap.
+   */
   limit?: number;
   /** Only list alerts within this percent of firing. */
   approachingWithinPct?: number;
@@ -354,6 +359,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
   const revisits = inputs.revisits.filter((e) => e.followUpOf === undefined);
   const windowDays = inputs.windowDays ?? 7;
   const limit = inputs.limit ?? 25;
+  const queueLimit = inputs.limit ?? Infinity;
   const withinPct = inputs.approachingWithinPct ?? 5;
 
   const ignored = inputs.ignoredSymbols ?? new Set<string>();
@@ -371,7 +377,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
   const open = revisits.filter((e) => e.status === "open" && !isIgnored(e.symbol));
   const revisitQueue: RevisitRow[] = [...open]
     .sort((a, b) => (b.priority ?? -1) - (a.priority ?? -1))
-    .slice(0, limit)
+    .slice(0, queueLimit)
     .map((e) => {
       const alert = alertsById.get(e.alertId);
       const crossing = crossingDetails(e);

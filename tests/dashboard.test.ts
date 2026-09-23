@@ -297,6 +297,13 @@ describe("buildDashboard", () => {
     expect(d.revisitQueue.map((r) => r.id)).toEqual(["hot", "mild", "cold"]);
   });
 
+  it("carries every open entry unless a limit is given", () => {
+    const revisits = Array.from({ length: 40 }, (_, i) => revisit({ id: `rv${i}`, symbol: "AAPL", priority: i }));
+    expect(base({ revisits }).revisitQueue).toHaveLength(40);
+    expect(base({ revisits }).summary.openRevisits).toBe(40);
+    expect(base({ revisits, limit: 10 }).revisitQueue.map((r) => r.id)).toEqual(Array.from({ length: 10 }, (_, i) => `rv${39 - i}`));
+  });
+
   it("counts only open entries as the queue, but counts all recent ones as triggers", () => {
     const d = base({
       revisits: [

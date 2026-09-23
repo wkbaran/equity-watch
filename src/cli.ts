@@ -2182,7 +2182,7 @@ function buildProgram(): Command {
     .description("One periodic JSON document: the revisit queue, what's close to firing, and holdings")
     .option("--out <path>", "Output JSON path (default: reports/dashboard_<timestamp>.json)")
     .option(...HOLDINGS_FILE_OPTION)
-    .option("--limit <n>", "Max rows in the revisit queue", (v) => parseInt(v, 10))
+    .option("--limit <n>", "Max rows in the revisit queue (default: all) and the approaching list (default: 25)", (v) => parseInt(v, 10))
     .option("--approaching", "Include the list of alerts closest to firing (off by default)")
     .option("--within-pct <n>", "With --approaching: only list alerts within this percent of firing", (v) => parseFloat(v))
     .option("--window-days <n>", "How many days back the trigger count covers", (v) => parseInt(v, 10))
