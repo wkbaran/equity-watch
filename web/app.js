@@ -3034,6 +3034,10 @@
       openDrawerKey = null;
       return;
     }
+    // Opening a fire's details is reading it, so it stops being news.
+    if (d.type === "trigger" && freshIds.delete(d.id) && current) {
+      renderTriggers(current.recentTriggers ?? [], current.summary.windowDays);
+    }
     $("drawer-body").replaceChildren(...(d.type === "trigger" ? triggerDetail(d.id) : alertDetail(d.id)));
     if (key !== openDrawerKey) {
       openDrawerKey = key;

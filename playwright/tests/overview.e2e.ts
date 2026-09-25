@@ -373,3 +373,22 @@ test.describe("holdings conditions", () => {
     expect(JSON.stringify(doc)).not.toContain("stagnant");
   });
 });
+
+test("a new trigger stops being highlighted once its details have been opened", async ({ page }) => {
+  // A seen list that exists but is empty makes every fire on the page news.
+  await page.addInitScript(() => localStorage.setItem("equity-watch.seenTriggers", "[]"));
+  await page.goto("/#/");
+  await showAllTriggers(page);
+  const aa = triggerRow(page, AA_FIRE);
+  const msft = triggerRow(page, MSFT_FIRE);
+  await expect(aa).toHaveClass(/\bnew\b/);
+  await expect(msft).toHaveClass(/\bnew\b/);
+
+  await aa.locator(".when").click();
+  await expect(page.locator("#drawer")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.goto("/#/");
+
+  await expect(aa).not.toHaveClass(/\bnew\b/);
+  await expect(msft).toHaveClass(/\bnew\b/);
+});
