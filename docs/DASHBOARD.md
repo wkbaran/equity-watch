@@ -83,7 +83,9 @@ any decision is one tap away. "N to decide" is `summary.openRevisits`, the same
 number as the rail and the overview tile.
 
 - **Overview** — the summary tiles, recent triggers, holdings (when published),
-  approaching, and quiet watches.
+  approaching, and quiet watches. Recent triggers shows the last two trading days
+  (by Eastern date, weekdays only, so Monday includes Friday) and folds the rest
+  behind **Show N more**; the section count is still every fire.
 - **Approaching** — live alerts closest to firing, collapsed behind a fold on the
   Overview. The arrow carries the side, so a downside alert reads unambiguously
   (`MSFT 420.00 ↓ 400.00` needs price to *fall*), and a negative distance means the

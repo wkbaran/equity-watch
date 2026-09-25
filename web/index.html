@@ -239,7 +239,13 @@
   .trigger-row.new .when::after { background: var(--signal); box-shadow: 0 0 0 3px var(--wash); }
   .trigger-row.new .when { color: var(--ink); }
   .trigger-row:first-child .when::before { top: 0.9rem; }
-  .trigger-row:last-child .when::before { bottom: auto; height: 1.2rem; }
+  /* of-type, not child: the "Show more" button after the rows is not a div. */
+  .trigger-row:last-of-type .when::before { bottom: auto; height: 1.2rem; }
+  .show-more {
+    display: block; width: 100%; padding: 0.7rem 1.25rem; text-align: left;
+    background: none; border: 0; border-top: 1px solid var(--line); border-radius: 0; color: var(--sub);
+  }
+  .show-more:hover { background: var(--raised); color: var(--ink); }
   .trigger-row:hover, tr.clickable:hover { background: var(--raised); }
   .trigger-row:focus-visible, tr.clickable:focus-visible { outline: 2px solid var(--signal); outline-offset: -2px; }
   .when { color: var(--muted); font-size: 0.8rem; }

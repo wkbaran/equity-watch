@@ -15,6 +15,15 @@ const storeToken = (page: Page) =>
 const AA_FIRE = "crossed above 55"; // rv0000a2, on a held symbol, two fires so it has a story
 const MSFT_FIRE = "crossed below 400"; // rv0000m1, not held, one fire so it has none
 
+const OLD_AA_FIRE = "crossed above 43"; // rv0000a1, five days old, always behind "Show more"
+
+/** Unfolds the overview's older fires, when there are any to unfold. */
+async function showAllTriggers(page: Page) {
+  const toggle = page.locator("#triggers button.show-more");
+  await expect(page.locator("#triggers .trigger-row").first()).toBeVisible();
+  if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
+}
+
 const triggerRow = (page: Page, headline: string) => page.locator("#triggers .trigger-row", { hasText: headline });
 const heldTag = (scope: ReturnType<typeof triggerRow>) => scope.locator("a.tag.held");
 /** The value of one row of the drawer's definition list, by its label. */
@@ -50,8 +59,35 @@ test("a recent trigger on a position carries a link to it, and one on anything e
   await expect(tag).toHaveAttribute("target", "equity-watch-holdings");
   await expect(tag).toHaveAttribute("title", "Show AA in Holdings");
 
+  // Two days ago is behind "Show more" on some weekdays and not on others.
+  await showAllTriggers(page);
   await expect(triggerRow(page, MSFT_FIRE)).toBeVisible();
   await expect(heldTag(triggerRow(page, MSFT_FIRE))).toHaveCount(0);
+});
+
+/**
+ * The overview shows the last two trading days and folds the rest behind a
+ * button. AA's first fire is five days old, which is past that cutoff on every
+ * day of the week; its second is one day old, which never is.
+ */
+test("older fires wait behind Show more, and Show fewer folds them back", async ({ page }) => {
+  await page.goto("/#/");
+  const old = triggerRow(page, OLD_AA_FIRE);
+  await expect(triggerRow(page, AA_FIRE)).toBeVisible();
+  await expect(old).toHaveCount(0);
+
+  const toggle = page.locator("#triggers button.show-more");
+  await expect(toggle).toHaveText(/^Show \d+ more$/);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await expect(old).toBeVisible();
+  await expect(toggle).toHaveText("Show fewer");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+  await toggle.click();
+  await expect(old).toHaveCount(0);
+  // The section's count is every fire, not only the ones showing.
+  await expect(page.locator("#triggers-count")).toHaveText("3");
 });
 
 test("clicking the held tag opens Holdings in its own tab rather than the trigger drawer", async ({ page }) => {

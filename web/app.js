@@ -1983,6 +1983,35 @@
     );
   }
 
+  /** An instant's trading date, "YYYY-MM-DD" on the exchange clock (never UTC, never the machine's zone). */
+  const EASTERN_DATE = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" });
+  const easternDate = (d) => EASTERN_DATE.format(d);
+
+  /** The weekday before a "YYYY-MM-DD" date, as the same string. */
+  function previousWeekday(date) {
+    const d = new Date(`${date}T12:00:00Z`);
+    do d.setUTCDate(d.getUTCDate() - 1);
+    while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
+    return d.toISOString().slice(0, 10);
+  }
+
+  /**
+   * The first trading date the overview shows without asking: the last two
+   * trading days, so Monday shows Friday too and a weekend shows Thursday and
+   * Friday. Weekdays only, no holidays, the same approximation the reversion
+   * window makes. Fires after the cutoff on a weekend still count as recent.
+   */
+  function recentTriggerCutoff(now = new Date()) {
+    const today = easternDate(now);
+    const day = new Date(`${today}T12:00:00Z`).getUTCDay();
+    const latest = day === 0 || day === 6 ? previousWeekday(today) : today;
+    return previousWeekday(latest);
+  }
+
+  // Whether the overview's older fires are showing. Kept across polls, so a
+  // refresh doesn't fold the list back up under someone reading it.
+  let triggersExpanded = false;
+
   function renderTriggers(rows, windowDays) {
     $("triggers-count").textContent = rows.length ? String(rows.length) : "";
     if (rows.length === 0) {
@@ -1991,7 +2020,24 @@
       );
       return;
     }
-    $("triggers").replaceChildren(...rows.map(triggerRow));
+    const cutoff = recentTriggerCutoff();
+    const recent = rows.filter((t) => easternDate(new Date(t.triggeredAt)) >= cutoff);
+    const older = rows.length - recent.length;
+    const shown = triggersExpanded ? rows : recent;
+    const toggle =
+      older === 0
+        ? null
+        : h("button", {
+            class: "show-more",
+            "aria-expanded": String(triggersExpanded),
+            text: triggersExpanded ? "Show fewer" : `Show ${older} more`,
+            onclick: () => {
+              triggersExpanded = !triggersExpanded;
+              renderTriggers(rows, windowDays);
+            },
+          });
+    const list = shown.length ? shown.map(triggerRow) : [h("div", { class: "empty", text: "Nothing has fired in the last two trading days." })];
+    $("triggers").replaceChildren(...list, ...(toggle ? [toggle] : []));
   }
 
   function renderStories(stories) {
