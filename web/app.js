@@ -2197,6 +2197,7 @@
       body.push(h("tr", {}, h("td", { class: "empty", colspan: String(HOLDING_COLS.length), text: "No positions." })));
     }
     $("holdings").replaceChildren(h("thead", {}, head), h("tbody", {}, ...body));
+    pinTableHeaders();
   }
 
   /**
@@ -2653,7 +2654,7 @@
 
   // ---- pinned table headers -------------------------------------------------
   //
-  // The Alerts header row stays in view under the queue strip
+  // The Holdings and Alerts header rows stay in view under the queue strip
   // while the page scrolls, and everything above the table (the toolbar, the
   // add forms) scrolls away as normal.
   //
@@ -2666,7 +2667,7 @@
   // instead. So the header is moved down by hand, by exactly how far the
   // table's top has gone under the strip, and never past the table's own end.
 
-  const PINNED_TABLES = ["alerts-table"];
+  const PINNED_TABLES = ["holdings", "alerts-table"];
 
   function pinTableHeaders() {
     const tape = $("tape-wrap");

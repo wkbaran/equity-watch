@@ -51,6 +51,7 @@ async function scrollPast(page: Page, table: string, past: number) {
 
 for (const [view, table] of [
   ["alerts", "#alerts-table"],
+  ["holdings", "#holdings"],
 ] as const) {
   test(`the ${view} header row stays under the strip, and not past its table`, async ({ page }) => {
     await page.goto(`/#/${view}`);

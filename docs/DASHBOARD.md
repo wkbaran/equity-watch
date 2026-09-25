@@ -117,7 +117,7 @@ number as the rail and the overview tile.
   it has fired, and when. You can search, filter by kind, and sort (symbol, closest
   to level, most triggered, recently fired, newest). A trailing trigger or moving
   average shows as "moving". An A–Z rail appears under the symbol sort. Click a row
-  for its details and recent triggers. The header row stays pinned under the queue
+  for its details and recent triggers. The header row (Holdings' too) stays pinned under the queue
   strip as you scroll; the search box and the add form above it scroll away.
 
   ![The Alerts table with one row per kind: a static alert with an edit pending tag, a price-AND-volume alert, a standalone volume alert, a moving-average alert and a trailing alert, the last two showing a moving level](images/alerts-table.png)
