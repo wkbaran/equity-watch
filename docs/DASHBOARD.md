@@ -25,8 +25,8 @@ Six sections, in the order they print:
    proposed level and the signal breakdown behind its score. Every open entry,
    unless `--limit` caps it: the site only publishes every 15 minutes or so, so a
    capped queue made anyone clearing it in one sitting stop and wait for the rest.
-3. **Stories** — tickers that have fired more than once, threaded into a narrative
-   (below).
+3. **Stories** — tickers that have fired more than once, or once around a buy or
+   sale, threaded into a narrative (below).
 4. **Approaching** — *off by default*; pass `--approaching`. Live alerts within
    `--within-pct` (default 5%) of firing, sorted by distance, capped at `--limit`
    (default 25) with the true total reported. The arrow carries the side, so a downside alert
@@ -71,8 +71,8 @@ priority-sorted and capped, so it can't tell you what's *new*. Open entries olde
 than the window are included too, so every queue row has details to open.
 
 **Views.** The left rail (a top bar on a phone) switches between **Overview**, **Revisit queue** (`#/queue`),
-**Stories** (`#/stories`), **Alerts** (`#/alerts`), and — once editing is unlocked —
-**Holdings** (`#/holdings`). All are routes in the same page, so polling and
+**Alerts** (`#/alerts`), and — once editing is unlocked — **Stories** (`#/stories`)
+and **Holdings** (`#/holdings`). All are routes in the same page, so polling and
 notifications keep running on any of them. Each view's count sits beside it in
 the rail, so the rail doubles as the day's scoreboard.
 
@@ -110,7 +110,10 @@ number as the rail and the overview tile.
   Only one of the three is offered at a time: while a change to an entry is queued
   the row shows its pending tag and no buttons, because a second decision would be
   made against a state that is about to change.
-- **Stories** — each multi-trigger thread as a narrative.
+- **Stories** — each multi-trigger thread as a narrative, with your buys and sales
+  in it. Unlocked only: a locked page has no Stories link, `#/stories` lands on the
+  overview, and the drawers leave out their Story section. That hides them from the
+  page, not from `dashboard.json`, which still carries them.
 - **Alerts** — every live alert, from its own `alerts.json`, fetched only while that
   view is open so the every-minute poll of `dashboard.json` stays small. Each row
   shows the condition in words, its level, the current price and distance, how often
@@ -267,6 +270,25 @@ with 1 still open.
   Aug 27: you raised the level 84.2 to 86.
   Sep 1:  CTVA crossed above 86 and closed above it on volume, now 6.2% above it.
 ```
+
+Your position is part of the thread. Each lot bought (on its purchase date) and each
+lot removed (when it was removed) is a beat of its own, so the alert history and your
+trades read side by side:
+
+```
+  Sep 17: WAT crossed above 425, then fell back below it the same day.
+  Sep 17: you bought WAT.
+  Sep 22: Holding WAT crossed above 428.5, then fell back below it the same day.
+```
+
+The wording is "you bought", "you added to your … position", "you trimmed your …
+position", "you closed your … position", and "you bought … again". It never carries
+a share count, basis or value, because stories are published and size and value are
+not. A removed lot is not called a sale, since nothing records whether it was one.
+"Holding X" on a fire means held *when it fired*, not held now. Removals are
+recorded from 2026-09-25 (`removedLots` in `holdings.json`); a position removed
+before then left no trace. A `holdings import --replace` is a reset, not a sale,
+and records nothing.
 
 These are **template-based, not model-generated** (`src/narrative.ts`), and
 deliberately so: the lines describe money decisions, render unattended on a device

@@ -27,12 +27,18 @@
 import type { CrossDirection } from "./alerts/models.js";
 import { endedOnFiredSide, entryDirection, otherSide, reversalOf, sideOf, tradingDaysAfter } from "./alerts/reversion.js";
 import type { RevisitEntry } from "./alerts/revisit.js";
+import type { HoldingEvent } from "./holdings/models.js";
 import { maLabel } from "./indicators/movingAverage.js";
 import { describeSession, type Session } from "./marketHours.js";
 
 export interface NarrativeContext {
   /** Symbols currently held, so a trigger on a position reads differently. */
   heldSymbols: Set<string>;
+  /**
+   * Lots bought and removed (`holdingHistory`), so a story can set the
+   * position against the alerts. Absent means the story tells alerts only.
+   */
+  holdingEvents?: HoldingEvent[];
 }
 
 function pct(n: number): string {
@@ -307,6 +313,51 @@ function shortDate(iso: string): string {
 }
 
 /**
+ * The position's beats for one symbol. Lots bought or removed together (an
+ * import, a whole position removed) are one beat. Worded from whether the
+ * position was empty before or after, never from a size: stories are
+ * published, and size and value are not (CLAUDE.md). A removed lot is not
+ * called a sale, because nothing records whether it was one.
+ */
+/** Whether any lot of the symbol was held at `at`, from the events up to and including it. */
+function heldAt(symbol: string, at: string, events: HoldingEvent[]): boolean {
+  const lots = new Set<string>();
+  for (const e of events) {
+    if (e.at > at) break;
+    if (e.symbol.toUpperCase() !== symbol.toUpperCase()) continue;
+    if (e.type === "lot.add") lots.add(e.lotId);
+    else lots.delete(e.lotId);
+  }
+  return lots.size > 0;
+}
+
+function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
+  const own = events.filter((e) => e.symbol.toUpperCase() === symbol.toUpperCase());
+  const lots = new Set<string>();
+  let everHeld = false;
+  const lines: StoryLine[] = [];
+  for (let i = 0; i < own.length; ) {
+    const { type, at } = own[i];
+    const wasEmpty = lots.size === 0;
+    for (; i < own.length && own[i].type === type && own[i].at === at; i++) {
+      if (type === "lot.add") lots.add(own[i].lotId);
+      else lots.delete(own[i].lotId);
+    }
+    const text =
+      type === "lot.add"
+        ? wasEmpty
+          ? `you bought ${symbol}${everHeld ? " again" : ""}`
+          : `you added to your ${symbol} position`
+        : lots.size === 0
+          ? `you closed your ${symbol} position`
+          : `you trimmed your ${symbol} position`;
+    everHeld = true;
+    lines.push({ at, text: `${shortDate(at)}: ${text}.` });
+  }
+  return lines;
+}
+
+/**
  * Threads one ticker's entries into a story. The interesting shape this
  * exposes is the chase: fired, re-levelled higher, fired again. That pattern
  * is invisible in a flat list of triggers but is the whole reason the revisit
@@ -314,6 +365,9 @@ function shortDate(iso: string): string {
  *
  * Legacy follow-up entries (`followUpOf`) are skipped: their crossing is
  * already told as part of the fire they follow.
+ *
+ * Buys and removals from `ctx.holdingEvents` are woven in by time, so a buy
+ * the day after a fire, or a sale after a reversal, reads next to it.
  */
 export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: NarrativeContext): TickerStory {
   const entries = entriesInput
@@ -338,7 +392,13 @@ export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: N
   // several entries can carry the same move. It happened once; say it once.
   const movesTold = new Set<string>();
   for (const entry of entries) {
-    lines.push({ at: entry.triggeredAt, text: `${shortDate(entry.triggeredAt)}: ${triggerHeadline(entry, ctx)}.` });
+    // With the history known, "Holding X" means held when it fired, not now:
+    // a story that says you bought on Sep 3 can't call an Aug 20 fire a holding.
+    const headlineCtx =
+      ctx.holdingEvents === undefined
+        ? ctx
+        : { heldSymbols: heldAt(symbol, entry.triggeredAt, ctx.holdingEvents) ? new Set([symbol.toUpperCase()]) : new Set<string>() };
+    lines.push({ at: entry.triggeredAt, text: `${shortDate(entry.triggeredAt)}: ${triggerHeadline(entry, headlineCtx)}.` });
     if (entry.status === "applied" && entry.appliedFrom != null && entry.appliedTo != null) {
       const key = `${entry.alertId}|${entry.resolvedAt}|${entry.appliedFrom}|${entry.appliedTo}`;
       if (movesTold.has(key)) continue;
@@ -354,6 +414,10 @@ export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: N
       });
     }
   }
+
+  lines.push(...holdingLines(symbol, ctx.holdingEvents ?? []));
+  // Stable, so beats at the same instant keep the order they were told in.
+  lines.sort((a, b) => a.at.localeCompare(b.at));
 
   const triggers = entries.length;
   const applied = entries.filter((e) => e.status === "applied").length;
@@ -392,6 +456,8 @@ export function buildStories(
   opts: { limit?: number; minTriggers?: number } = {}
 ): TickerStory[] {
   const minTriggers = opts.minTriggers ?? 2;
+  // A single fire is a thread once you have bought or sold around it.
+  const traded = new Set((ctx.holdingEvents ?? []).map((e) => e.symbol.toUpperCase()));
   const bySymbol = new Map<string, RevisitEntry[]>();
   for (const e of entries) {
     // A legacy follow-up is part of another fire, not a trigger of its own.
@@ -403,7 +469,7 @@ export function buildStories(
 
   const stories: TickerStory[] = [];
   for (const [symbol, symbolEntries] of bySymbol) {
-    if (symbolEntries.length < minTriggers) {
+    if (symbolEntries.length < minTriggers && !traded.has(symbol.toUpperCase())) {
       continue;
     }
     stories.push(tickerStory(symbol, symbolEntries, ctx));

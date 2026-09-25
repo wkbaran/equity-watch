@@ -130,6 +130,17 @@ describe("holdings engine", () => {
     expect(removed.stops.map((x) => x.id)).toEqual(["stopaapl"]);
     expect(loadHoldingsStore(holdingsFile).lots.map((l) => l.id)).toEqual(["lotmsft1"]);
   });
+
+  // The story needs removals, and stories are published: no size, no basis.
+  it("records removed lots for the story, without count or basis", () => {
+    removeLot(holdingsFile, "lotmsft1", new Date("2026-09-20T15:00:00.000Z"));
+    removePosition(holdingsFile, "AAPL", new Date("2026-09-21T15:00:00.000Z"));
+    expect(loadHoldingsStore(holdingsFile).removedLots).toEqual([
+      { lotId: "lotmsft1", symbol: "MSFT", purchaseDate: "2026-08-20", createdAt: "2026-08-20T15:00:00.000Z", removedAt: "2026-09-20T15:00:00.000Z" },
+      { lotId: "lotaapl1", symbol: "AAPL", purchaseDate: "2026-09-01", createdAt: "2026-09-01T15:00:00.000Z", removedAt: "2026-09-21T15:00:00.000Z" },
+      { lotId: "lotaapl2", symbol: "AAPL", purchaseDate: "2026-09-08", createdAt: "2026-09-08T15:00:00.000Z", removedAt: "2026-09-21T15:00:00.000Z" },
+    ]);
+  });
 });
 
 describe("holdings ops", () => {

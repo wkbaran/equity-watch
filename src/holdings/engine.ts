@@ -153,6 +153,15 @@ export function editLot(path: string, id: string, edit: LotEdit): Lot | null {
  * alert baseline (checkHoldings seeds without firing) rather than inherit the
  * old position's armed/notified state.
  */
+/** Keeps the removal for the ticker's story (RemovedLot says why, and what it may not carry). */
+function recordRemoval(store: HoldingsStore, lots: Lot[], now: Date): void {
+  const removedAt = now.toISOString();
+  store.removedLots = [
+    ...(store.removedLots ?? []),
+    ...lots.map((l) => ({ lotId: l.id, symbol: l.symbol, purchaseDate: l.purchaseDate, createdAt: l.createdAt, removedAt })),
+  ];
+}
+
 function closePosition(store: HoldingsStore, symbol: string): Stop[] {
   const stops = store.stops.filter((s) => s.symbol === symbol);
   store.stops = store.stops.filter((s) => s.symbol !== symbol);
@@ -161,13 +170,14 @@ function closePosition(store: HoldingsStore, symbol: string): Stop[] {
 }
 
 /** Removes one lot. `closedPosition` when it was the symbol's last, which also removes its stops. */
-export function removeLot(path: string, id: string): { lot: Lot; closedPosition: boolean } | null {
+export function removeLot(path: string, id: string, now: Date = new Date()): { lot: Lot; closedPosition: boolean } | null {
   const store = loadHoldingsStore(path);
   const lot = store.lots.find((l) => l.id === id);
   if (lot === undefined) {
     return null;
   }
   store.lots = store.lots.filter((l) => l.id !== id);
+  recordRemoval(store, [lot], now);
   const closedPosition = !store.lots.some((l) => l.symbol === lot.symbol);
   if (closedPosition) {
     closePosition(store, lot.symbol);
@@ -177,10 +187,11 @@ export function removeLot(path: string, id: string): { lot: Lot; closedPosition:
 }
 
 /** Removes every lot of a symbol, and its stops and alert state. */
-export function removePosition(path: string, symbol: string): { lots: Lot[]; stops: Stop[] } {
+export function removePosition(path: string, symbol: string, now: Date = new Date()): { lots: Lot[]; stops: Stop[] } {
   const store = loadHoldingsStore(path);
   const lots = store.lots.filter((l) => l.symbol === symbol);
   store.lots = store.lots.filter((l) => l.symbol !== symbol);
+  recordRemoval(store, lots, now);
   const stops = lots.length > 0 ? closePosition(store, symbol) : [];
   saveHoldingsStore(path, store);
   return { lots, stops };

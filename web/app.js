@@ -346,8 +346,25 @@
    */
   const editForms = new Map();
 
+  /**
+   * Stories are for whoever holds the token. They tell your buys and sales
+   * alongside the alerts, so a locked page shows neither the Stories view nor
+   * a drawer's Story section, and `#/stories` falls back to the overview.
+   * (The document still carries them: this is about the page, not privacy.)
+   */
+  const storiesVisible = () => canEdit();
+
+  // Only once the document is in: opsEnabled() reads it, so before the first
+  // poll every visitor looks locked and an unlocked #/stories would be bounced.
+  function syncStoriesAccess() {
+    if (!current) return;
+    $("nav-stories").hidden = !storiesVisible();
+    if (!storiesVisible() && baseView === "stories") location.hash = "#/";
+  }
+
   function rerenderOps() {
     renderOpsControls();
+    syncStoriesAccess();
     if (current) {
       renderTiles(current.summary, holdingRows() !== null);
       // The queue rows carry an "edit pending" tag of their own.
@@ -2418,6 +2435,7 @@
     // Every open entry, the same number as the overview tile.
     $("nav-queue-count").textContent = String(d.summary.openRevisits);
     $("nav-stories-count").textContent = String(d.stories.length);
+    syncStoriesAccess();
     // Holdings come from the decrypted vault when unlocked, or from the document
     // when the publisher includes them in the clear (web.holdings). Otherwise
     // they're absent from dashboard.json entirely, not merely hidden here.
@@ -2749,6 +2767,7 @@
    * has one or the symbol has only fired once.
    */
   function storyBlock(symbol) {
+    if (!storiesVisible()) return null;
     const story = (current?.stories ?? []).find((s) => s.symbol === symbol);
     if (!story) return null;
     return [
@@ -3118,6 +3137,7 @@
         scrollToFocused = focus !== null;
       }
     }
+    syncStoriesAccess();
     for (const view of ["overview", ...BASE_VIEWS]) $(`view-${view}`).hidden = baseView !== view;
     syncTableHeads();
     for (const link of document.querySelectorAll("[data-nav]")) {

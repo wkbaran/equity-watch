@@ -203,9 +203,12 @@ even after you move or delete the alert:
 ![The trigger details drawer: when it fired and in which session, status, the condition at trigger time, price and level at trigger, direction, the breakout verdict, move past level, volume vs normal, the priority breakdown, the suggested level, the watch-history line, and the position](docs/images/trigger-details.png)
 
 **7. The story is the part a flat list hides.** Two fires with the re-level between
-them, which is the chase the queue exists to make visible:
+them, which is the chase the queue exists to make visible, and your own buys and sales
+threaded through it, so you can see what you did around each fire. "Holding AA" on a
+fire means you held it *then*. Stories need editing unlocked; a locked page doesn't
+show them.
 
-![A story: AA has fired 2 times since Sep 16, walking its level from 43 up to 55, with 1 still open, followed by the dated sequence of fires and re-levels](docs/images/story.png)
+![A story: AA has fired 2 times since Sep 20, walking its level from 43 up to 55, with 1 still open, followed by the dated sequence: started watching, bought, added to the position, fired while held, the re-level, and fired again](docs/images/story.png)
 
 **8. You decide, from the page this time.** With editing unlocked, the alert's drawer
 carries an edit form, price and volume together. (The queue row's *Suggest level* and

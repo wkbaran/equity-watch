@@ -162,10 +162,11 @@ test("a trigger on a symbol that is neither held nor a thread shows neither bloc
 });
 
 // The rule this is here to hold: size and value are private, being held is not.
-test("a locked drawer still says held and still tells the story, but carries no numbers", async ({ page }) => {
+// Stories tell your buys and sales, so they are for the unlocked page only.
+test("a locked drawer still says held, but tells no story and carries no numbers", async ({ page }) => {
   await page.goto("/#/trigger/rv0000a2");
   await expect(page.locator("#drawer-body .drawer-title a.tag.held")).toHaveText("held");
-  await expect(story(page).locator(".headline")).toContainText("AA has fired 2 times");
+  await expect(story(page)).toHaveCount(0);
   await expect(kv(page, "Position")).toHaveCount(0);
 
   const text = await page.locator("#drawer-body").innerText();
@@ -179,6 +180,27 @@ test("a locked drawer still says held and still tells the story, but carries no 
   await expect(page.locator("#drawer-body .drawer-title a.tag.held")).toHaveText("held");
   await expect(kv(page, "Position")).toHaveCount(0);
   expect(await page.locator("#drawer-body").innerText()).not.toContain("15 shares");
+});
+
+test("a locked page has no Stories view, and #/stories lands on the overview", async ({ page }) => {
+  await page.goto("/#/stories");
+  await expect(page.locator("#view-overview")).toBeVisible();
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(page.locator("#view-stories")).toBeHidden();
+  await expect(page.locator("#nav-stories")).toBeHidden();
+});
+
+test("an unlocked page keeps Stories, including a direct #/stories load", async ({ page }) => {
+  await storeToken(page);
+  await page.goto("/#/stories");
+  await expect(page.locator("#view-stories")).toBeVisible();
+  await expect(page.locator("#nav-stories")).toBeVisible();
+  await expect(page.locator("#stories .story").first()).toBeVisible();
+
+  // Locking takes it away without a reload.
+  await page.locator("#ops-btn").click();
+  await expect(page.locator("#nav-stories")).toBeHidden();
+  await expect(page.locator("#view-overview")).toBeVisible();
 });
 
 test("the alert drawer carries the same held tag, position and story", async ({ page }) => {

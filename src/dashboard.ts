@@ -27,7 +27,7 @@ import {
   type RevisitMa,
   type RevisitVolume,
 } from "./alerts/revisit.js";
-import { computeBasis, heldSymbolsOf, type HoldingsStore } from "./holdings/models.js";
+import { computeBasis, heldSymbolsOf, holdingHistory, type HoldingsStore } from "./holdings/models.js";
 import type { Session } from "./marketHours.js";
 import {
   buildStories,
@@ -370,7 +370,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
   const live = alerts.filter((a) => a.status === "live" && !isIgnored(a.symbol));
   const heldSymbols = heldSymbolsOf(holdings);
 
-  const narrativeCtx: NarrativeContext = { heldSymbols };
+  const narrativeCtx: NarrativeContext = { heldSymbols, holdingEvents: holdingHistory(holdings) };
   // Every alert, not just the live ones: a queue row needs to say when the
   // alert behind it has since been cancelled.
   const alertsById = new Map(alerts.map((a) => [a.id, a]));

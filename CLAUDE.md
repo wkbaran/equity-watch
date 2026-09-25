@@ -826,6 +826,28 @@ not travel in a published document. On the public page `holdingRows()` is null
 and the line is simply absent, leaving the `held` tag — the one holdings fact a
 document may carry. Don't "simplify" it by hanging the numbers on `RevisitRow`.
 
+## A story's buys are derived; only removals are stored
+
+Stories weave in each lot bought and removed (`holdingHistory` in
+`src/holdings/models.ts`, told by `holdingLines` in `src/narrative.ts`). A buy is
+read off the lot itself at its purchase date, so editing a lot's date moves the beat
+and imported lots need nothing recorded. A removal can't be read off anything, since
+the lot is deleted, so `removeLot` and `removePosition` append to
+`HoldingsStore.removedLots`. That record carries dates only, never count or basis:
+stories are in the public `dashboard.json`. Anything that deletes lots without going
+through those two functions (`holdings import --replace` does, on purpose) leaves no
+trace in the story.
+
+Inside a story, "Holding X" means held when that fire happened (`heldAt`), not held
+now. Outside stories (trigger rows, the queue) `heldSymbols` is still current.
+
+The page shows stories only when editing is unlocked (`storiesVisible` in
+`web/app.js`: the rail link, the view, and the drawers' Story section). That check
+must wait for the document (`syncStoriesAccess` returns early until `current` is
+set): `canEdit()` reads `current.site.ops`, so before the first poll everyone looks
+locked, and gating in `parseRoute` bounced an unlocked `#/stories` load to the
+overview. Hiding is not privacy; `dashboard.json` still carries the stories.
+
 ## Trigger details before 2026-09-13 are incomplete, and can't be backfilled
 
 `RevisitEntry.condition` and `RevisitEntry.volume` are recorded by the engine

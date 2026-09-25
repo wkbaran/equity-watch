@@ -8,6 +8,7 @@ import {
   triggerHeadline,
 } from "../src/narrative.js";
 import { scoreRevisit, type RevisitEntry } from "../src/alerts/revisit.js";
+import { holdingHistory, lotStoryTime, type HoldingEvent } from "../src/holdings/models.js";
 
 const NONE = { heldSymbols: new Set<string>() };
 const HELD = { heldSymbols: new Set(["MKS"]) };
@@ -504,5 +505,81 @@ describe("watch history", () => {
       NONE
     );
     expect(story.lines[0].text).toContain("you started watching CTVA (or earlier)");
+  });
+});
+
+describe("holdings in the story", () => {
+  const add = (lotId: string, at: string, symbol = "TGT"): HoldingEvent => ({ type: "lot.add", at, symbol, lotId });
+  const remove = (lotId: string, at: string, symbol = "TGT"): HoldingEvent => ({ type: "lot.remove", at, symbol, lotId });
+  const texts = (events: HoldingEvent[], entries = [entry()]) =>
+    tickerStory("TGT", entries, { heldSymbols: new Set(["TGT"]), holdingEvents: events }).lines.map((l) => l.text);
+
+  it("weaves buys and removals into the alert history by time", () => {
+    expect(
+      texts([
+        add("l1", "2026-09-11T15:00:00.000Z"),
+        add("l2", "2026-09-14T15:00:00.000Z"),
+        remove("l1", "2026-09-16T15:00:00.000Z"),
+        remove("l2", "2026-09-18T15:00:00.000Z"),
+        add("l3", "2026-09-22T15:00:00.000Z"),
+        add("x", "2026-09-12T15:00:00.000Z", "MKS"),
+      ])
+    ).toEqual([
+      "Sep 10: TGT crossed above 110.",
+      "Sep 11: you bought TGT.",
+      "Sep 14: you added to your TGT position.",
+      "Sep 16: you trimmed your TGT position.",
+      "Sep 18: you closed your TGT position.",
+      "Sep 22: you bought TGT again.",
+    ]);
+  });
+
+  it("tells lots bought or removed together as one beat", () => {
+    const at = "2026-09-11T15:00:00.000Z";
+    const gone = "2026-09-12T15:00:00.000Z";
+    expect(texts([add("l1", at), add("l2", at), remove("l1", gone), remove("l2", gone)])).toEqual([
+      "Sep 10: TGT crossed above 110.",
+      "Sep 11: you bought TGT.",
+      "Sep 12: you closed your TGT position.",
+    ]);
+  });
+
+  it("calls a fire a holding only if it was held when it fired", () => {
+    const lines = texts([add("l1", "2026-09-11T15:00:00.000Z")], [entry({ id: "a" }), entry({ id: "b", triggeredAt: "2026-09-12T14:00:00.000Z" })]);
+    expect(lines).toEqual(["Sep 10: TGT crossed above 110.", "Sep 11: you bought TGT.", "Sep 12: Holding TGT crossed above 110."]);
+  });
+
+  it("makes a single fire a story once you have traded around it", () => {
+    const ctx = { heldSymbols: new Set<string>(), holdingEvents: [add("l1", "2026-09-11T15:00:00.000Z")] };
+    expect(buildStories([entry()], ctx).map((s) => s.symbol)).toEqual(["TGT"]);
+    expect(buildStories([entry({ symbol: "MKS" })], ctx)).toEqual([]);
+  });
+
+  it("never states a size", () => {
+    const lines = texts([add("l1", "2026-09-11T15:00:00.000Z"), add("l2", "2026-09-14T15:00:00.000Z"), remove("l1", "2026-09-16T15:00:00.000Z")]);
+    for (const line of lines.slice(1)) expect(line.replace(/^Sep \d+: /, "")).not.toMatch(/\d/);
+  });
+});
+
+describe("holdingHistory", () => {
+  it("places a lot entered on its purchase day at entry time, a backdated one at noon UTC", () => {
+    const createdAt = "2026-09-11T15:00:00.000Z";
+    expect(lotStoryTime({ purchaseDate: "2026-09-11", createdAt })).toBe(createdAt);
+    expect(lotStoryTime({ purchaseDate: "2026-08-01", createdAt })).toBe("2026-08-01T12:00:00.000Z");
+  });
+
+  it("derives buys from current and removed lots, and orders a buy before a same-instant removal", () => {
+    const lot = { id: "l1", symbol: "TGT", count: 5, basisPerShare: 100, purchaseDate: "2026-08-01", createdAt: "2026-09-11T15:00:00.000Z" };
+    const events = holdingHistory({
+      lots: [lot],
+      stops: [],
+      alertState: [],
+      removedLots: [{ lotId: "l0", symbol: "TGT", purchaseDate: "2026-07-01", createdAt: "2026-09-11T15:00:00.000Z", removedAt: "2026-07-01T12:00:00.000Z" }],
+    });
+    expect(events.map((e) => `${e.type} ${e.lotId} ${e.at}`)).toEqual([
+      "lot.add l0 2026-07-01T12:00:00.000Z",
+      "lot.remove l0 2026-07-01T12:00:00.000Z",
+      "lot.add l1 2026-08-01T12:00:00.000Z",
+    ]);
   });
 });
