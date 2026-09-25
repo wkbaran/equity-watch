@@ -400,12 +400,27 @@ ancestor, and every table sits in a `.table-wrap` with `overflow-x: auto` (so it
 can scroll sideways on a phone; Alerts overflows even at 1100px). That wrapper
 never scrolls vertically, so the header went off the top with the page.
 
-The Alerts and Holdings header rows are pinned by `pinTableHeaders` in
-`web/app.js` instead, which translates the `<thead>` by however far the table
-has gone under the queue strip. Don't "fix" it back to CSS by dropping the
-wrapper's overflow: the wider tables would then clip or spill at mid widths.
-Anything that moves a pinned table without scrolling the page (re-rendering
-it, the strip appearing) has to call `pinTableHeaders`/`schedulePin`.
+The Alerts and Holdings header rows are pinned by a **copy**: `.table-head`, a
+sticky element above each wrapper, holds a clone of the header row that
+`syncTableHead` in `web/app.js` rebuilds to the real cells' widths, and the
+wrapper is pulled up under it by the header's height so the copy covers the real
+row exactly. The real row stays for screen readers and column sizing; a click on
+the copy is passed to the real cell. Things that bite:
+
+- **The first version moved the real `<thead>` from a scroll handler** and it
+  visibly bounced: the browser scrolls on its own thread and the handler lands a
+  frame later. Don't go back to that. Only *sideways* scrolling is followed by
+  script now.
+- **The card must be `overflow: clip`, not `hidden`.** `hidden` makes the card a
+  scroller too, and the copy would stick to it instead of the page.
+- **Anything that changes column widths must call `syncTableHead`.** A
+  `ResizeObserver` catches size changes and a view being shown; a re-sort can
+  move widths without resizing the table, so both renders call it themselves.
+- **Tests must click the copy** (`#holdings-head th`), not `#holdings thead th`:
+  the real cell is underneath, and Playwright refuses a click another element
+  would intercept.
+- Style for the header by table id has to name both, e.g.
+  `:is(#alerts-table, #alerts-head) th`.
 
 ## Holdings need HTTPS or localhost to appear at all
 

@@ -356,8 +356,6 @@
     if (baseView === "alerts") renderAlerts();
     renderHoldingsView();
     renderDrawer(parseRoute().drawer);
-    // The strip above may have appeared or gone, which moves where headers pin.
-    schedulePin();
   }
 
   function setToken(token) {
@@ -2197,7 +2195,7 @@
       body.push(h("tr", {}, h("td", { class: "empty", colspan: String(HOLDING_COLS.length), text: "No positions." })));
     }
     $("holdings").replaceChildren(h("thead", {}, head), h("tbody", {}, ...body));
-    pinTableHeaders();
+    syncTableHead($("holdings"));
   }
 
   /**
@@ -2433,8 +2431,6 @@
     renderOpsControls();
     renderHoldingsView();
     renderDrawer(parseRoute().drawer);
-    // The strip above may have appeared or gone, which moves where headers pin.
-    schedulePin();
   }
 
   // ---- alerts view ----------------------------------------------------------
@@ -2644,12 +2640,13 @@
     if (body.length === 0) {
       table.replaceChildren(h("tbody", {}, h("tr", {}, h("td", { class: "empty", colspan: "8", text: "No alerts match." }))));
       renderAlphaRail(new Set());
+      syncTableHead(table);
       return;
     }
     jumpedRow = null;
     table.replaceChildren(h("thead", {}, head), h("tbody", {}, ...body));
     renderAlphaRail(new Set(rows.map((a) => initialOf(a.symbol))));
-    pinTableHeaders();
+    syncTableHead(table);
   }
 
   // ---- pinned table headers -------------------------------------------------
@@ -2658,38 +2655,66 @@
   // while the page scrolls, and everything above the table (the toolbar, the
   // add forms) scrolls away as normal.
   //
-  // Not `position: sticky`, which is what anyone would reach for first: a
-  // sticky cell sticks to its nearest scrolling ancestor, and these tables sit
-  // in an `overflow-x: auto` wrapper so they can scroll sideways on a phone (and
-  // Alerts does even at 1100px). That wrapper is the scroller the header sticks
-  // to, and it never scrolls vertically, so the header scrolled off with the
-  // page. Dropping the wrapper's overflow would clip or spill the wider tables
-  // instead. So the header is moved down by hand, by exactly how far the
-  // table's top has gone under the strip, and never past the table's own end.
+  // The header row can't simply be `position: sticky`: a sticky cell sticks to
+  // its nearest scrolling ancestor, and these tables sit in an `overflow-x:
+  // auto` wrapper so they can scroll sideways on a phone (Alerts does even at
+  // 1100px). That wrapper never scrolls vertically, so the header went off the
+  // top with the page. Moving it from a scroll handler worked but lagged the
+  // page by a frame and visibly bounced.
+  //
+  // So each table has a .table-head above its wrapper: a copy of the header
+  // row, sticky, which the browser keeps in place itself. The wrapper is pulled
+  // up under it by the header's height, so the copy covers the real row
+  // exactly. The real row stays in the table for screen readers and for column
+  // sizing; the copy is aria-hidden, and a click on it is passed to the real
+  // cell. Only sideways scrolling is followed by script.
 
   const PINNED_TABLES = ["holdings", "alerts-table"];
 
-  function pinTableHeaders() {
-    const tape = $("tape-wrap");
-    const top = tape.hidden ? 0 : tape.getBoundingClientRect().bottom;
-    for (const id of PINNED_TABLES) {
-      const head = $(id).tHead;
-      if (!head) continue;
-      const box = $(id).getBoundingClientRect();
-      // A hidden view's table has an empty box, and its header stays put.
-      const room = Math.max(box.height - head.offsetHeight, 0);
-      const offset = box.height === 0 ? 0 : Math.min(Math.max(top - box.top, 0), room);
-      head.style.transform = offset > 0 ? `translateY(${offset}px)` : "";
-      head.classList.toggle("pinned", offset > 0);
+  /** Rebuilds a table's pinned copy of its header row, to its current column widths. */
+  function syncTableHead(table) {
+    const wrap = table.parentElement;
+    const strip = wrap.previousElementSibling;
+    const head = table.tHead;
+    // A hidden view measures zero; the ResizeObserver brings it back here when shown.
+    if (table.offsetParent === null) return;
+    if (!head) {
+      strip.hidden = true;
+      wrap.style.marginTop = "";
+      return;
     }
+    const copy = head.cloneNode(true);
+    const cells = [...head.rows[0].cells];
+    [...copy.rows[0].cells].forEach((cell, i) => (cell.style.width = `${cells[i].getBoundingClientRect().width}px`));
+    const height = head.getBoundingClientRect().height;
+    copy.rows[0].style.height = `${height}px`;
+    const clone = strip.firstElementChild;
+    clone.style.width = `${table.getBoundingClientRect().width}px`;
+    clone.replaceChildren(copy);
+    strip.hidden = false;
+    wrap.style.marginTop = `-${height}px`;
+    strip.scrollLeft = wrap.scrollLeft;
   }
 
-  let pinFrame = 0;
-  const schedulePin = () => {
-    if (!pinFrame) pinFrame = requestAnimationFrame(() => ((pinFrame = 0), pinTableHeaders()));
-  };
-  window.addEventListener("scroll", schedulePin, { passive: true });
-  window.addEventListener("resize", schedulePin);
+  function syncTableHeads() {
+    for (const id of PINNED_TABLES) syncTableHead($(id));
+  }
+
+  // Column widths move with the window, the fonts arriving, and a view being
+  // shown; a render also calls syncTableHead itself, since a re-sort can move
+  // widths without changing the table's size.
+  const tableHeadObserver = new ResizeObserver((entries) => entries.forEach((e) => syncTableHead(e.target)));
+  for (const id of PINNED_TABLES) {
+    const table = $(id);
+    const wrap = table.parentElement;
+    const strip = wrap.previousElementSibling;
+    tableHeadObserver.observe(table);
+    wrap.addEventListener("scroll", () => (strip.scrollLeft = wrap.scrollLeft), { passive: true });
+    strip.addEventListener("click", (e) => {
+      const cell = e.target.closest("th");
+      if (cell) table.tHead?.rows[0].cells[cell.cellIndex]?.click();
+    });
+  }
 
   // ---- details drawer -------------------------------------------------------
 
@@ -3094,7 +3119,7 @@
       }
     }
     for (const view of ["overview", ...BASE_VIEWS]) $(`view-${view}`).hidden = baseView !== view;
-    schedulePin();
+    syncTableHeads();
     for (const link of document.querySelectorAll("[data-nav]")) {
       if (link.dataset.nav === baseView) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");

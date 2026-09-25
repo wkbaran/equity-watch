@@ -114,7 +114,8 @@ test("the account column lists every account a position sits in, and filters to 
 test("sorting by account puts the unlabeled position last either way", async ({ page }) => {
   await storeToken(page);
   await openHoldings(page);
-  const account = page.locator("#holdings thead th", { hasText: "Account" });
+  // The pinned copy is what is on screen; a click on it goes to the real cell.
+  const account = page.locator("#holdings-head th", { hasText: "Account" });
   const symbols = page.locator("#holdings > tbody > tr a.sym");
   await account.click();
   await expect(symbols).toHaveText(["AA", "TSLA"]);

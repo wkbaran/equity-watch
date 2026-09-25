@@ -287,10 +287,22 @@
     font-size: 0.78rem; font-weight: 500; font-stretch: 88%; color: var(--muted); background: var(--surface);
     border-bottom: 1px solid var(--line-strong);
   }
-  /* app.js pins these two header rows under the strip (pinTableHeaders); the
-     sticky rule above can't, since each table's wrapper is its scroller. */
-  #holdings > thead, #alerts-table > thead { position: relative; z-index: 3; will-change: transform; }
-  #holdings > thead.pinned th, #alerts-table > thead.pinned th { box-shadow: 0 1px 0 var(--line-strong); }
+  /*
+   * Holdings' and Alerts' header rows, pinned under the queue strip. The sticky
+   * rule above can't do it: each table's .table-wrap scrolls sideways, which
+   * makes it the scroller a sticky cell sticks to, and it never scrolls down.
+   * So .table-head, a copy of the header row outside that wrapper, is what
+   * sticks, and the wrapper is pulled up under it (syncTableHead in app.js).
+   * Sticky rather than scripted on scroll, so the browser moves it with the
+   * page and it can't lag a frame behind.
+   *
+   * The card clips rather than hides: overflow: hidden makes a scroller too.
+   */
+  .card.pinned-table { overflow: clip; }
+  .table-head { position: sticky; top: var(--tape-h); z-index: 3; overflow: hidden; background: var(--surface); }
+  .table-head table { table-layout: fixed; }
+  .table-head th { box-sizing: border-box; }
+  .content:has(> .tape-wrap[hidden]) { --tape-h: 0px; }
   #holdings > tbody > tr, #alerts-table > tbody > tr { scroll-margin-top: calc(var(--tape-h) + 2.5rem); }
   th[aria-sort] { color: var(--ink); }
   th:first-child, td:first-child { text-align: left; }
@@ -298,8 +310,8 @@
   tr.clickable { cursor: pointer; }
   tr.focused > td { background: var(--raised); }
   tr.focused > td:first-child, tr.jumped > td:first-child { box-shadow: inset 3px 0 0 var(--signal); }
-  #alerts-table th { cursor: default; }
-  #alerts-table th:nth-child(2), #alerts-table th:nth-child(3), #alerts-table td.dir { text-align: left; }
+  :is(#alerts-table, #alerts-head) th { cursor: default; }
+  :is(#alerts-table, #alerts-head) th:is(:nth-child(2), :nth-child(3)), #alerts-table td.dir { text-align: left; }
   #alerts-table td.cond { text-align: left; white-space: normal; min-width: 14rem; color: var(--sub); }
   /* Distance to the level: up in signal, down in ink, split on a centre tick. */
   .bar-cell { width: 140px; }
@@ -310,7 +322,7 @@
   .bar span.down { right: 50%; background: var(--down); border-radius: 3px 0 0 3px; }
 
   .indexed { display: flex; align-items: flex-start; gap: 0.5rem; }
-  .indexed > .table-wrap { flex: 1 1 auto; min-width: 0; }
+  .indexed > .pinned-table { flex: 1 1 auto; min-width: 0; }
   .alpha-rail { position: sticky; top: calc(var(--tape-h) + 0.75rem); flex: 0 0 auto; display: flex; flex-direction: column; gap: 1px; }
   .alpha-rail button {
     font-size: 0.72rem; font-stretch: 75%; line-height: 1.15; padding: 2px 4px; min-width: 2.4rem;
@@ -570,7 +582,10 @@
     </div>
     <div id="lot-add" hidden></div>
     <div id="holdings-pending" class="card" hidden></div>
-    <div class="card table-wrap"><table id="holdings"></table></div>
+    <div class="card pinned-table">
+      <div class="table-head" aria-hidden="true" hidden><table id="holdings-head"></table></div>
+      <div class="table-wrap"><table id="holdings"></table></div>
+    </div>
   </section>
 
   <section id="view-alerts" hidden>
@@ -590,7 +605,10 @@
     <div id="ops-pending" class="card" hidden></div>
     <div class="indexed">
       <nav id="alerts-index" class="alpha-rail" aria-label="Jump to symbol" hidden></nav>
-      <div class="card table-wrap"><table id="alerts-table"></table></div>
+      <div class="card pinned-table">
+        <div class="table-head" aria-hidden="true" hidden><table id="alerts-head"></table></div>
+        <div class="table-wrap"><table id="alerts-table"></table></div>
+      </div>
     </div>
   </section>
 </main>
