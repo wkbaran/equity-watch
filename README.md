@@ -1,32 +1,57 @@
+<div align="center">
+
 # equity-watch
 
-A self-managed alert engine for equities, built to replace a capped, paid alert
-subscription. It watches price levels, trailing stops, volume, and moving
-averages against Schwab market data. When an alert fires it never disarms: the
-firing lands in a **revisit queue**, a durable to-do list of levels that got taken
-out and now need a decision.
+**Price alerts that don't stop at "it fired."**
 
-A browser dashboard shows that queue, recent triggers, your holdings, and every
-live alert — and acts on them: propose a new
-level for a fired alert and apply it, add or edit any kind of alert, manage lots and
-stops. Everything that holds state (alerts, positions, queue) lives in flat JSON
-files on one machine. The cloud only holds a rendered copy of what that machine
-published, plus a mailbox of changes waiting to be collected.
+A self-hosted alert engine for US equities. It watches price levels, trailing stops,
+volume and moving averages against Schwab market data, and every firing lands in a
+**revisit queue**: a ranked list of levels that got taken out and now need a decision.
+A static browser dashboard shows the queue, your holdings and every live alert, and
+lets you act on them from any device.
 
-**You need:** Node.js, and a Schwab developer app with the Market Data product
-([`docs/SETUP.md`](docs/SETUP.md)). **Optional:** an AWS account for the browser
-dashboard, and a free Financial Modeling Prep key for sector data and correct chart
-links.
+![Node 22](https://img.shields.io/badge/node-22-339933?logo=nodedotjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![Market data: Schwab](https://img.shields.io/badge/market%20data-Schwab%20API-00A0DF)
+![AWS optional](https://img.shields.io/badge/AWS-S3%20%C2%B7%20CloudFront%20%C2%B7%20SQS-FF9900?logo=amazonwebservices&logoColor=white)
+![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
-## Contents
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Worked example](#a-worked-example) · [Alerts](docs/ALERTS.md) · [Holdings](docs/HOLDINGS.md) · [Dashboard](docs/DASHBOARD.md) · [Architecture](docs/ARCHITECTURE.md)
 
-- [Quick start](#quick-start) and the [command map](#command-map)
-- [How it works](#how-it-works) and [a worked example](#a-worked-example)
-- [What runs by itself, and what you do](#what-runs-by-itself-and-what-you-do)
-- [The four alert kinds](#the-four-alert-kinds)
-- [Deploying the dashboard (optional)](#deploying-the-dashboard-optional)
-- [When something breaks](#when-something-breaks)
-- [Reference](#reference) · [Development](#development)
+<img src="docs/images/queue-row.png" alt="A revisit queue row: priority 47, the English headline, the held tag, the fired line with a suggested level, price since the fire, the position, the signal breakdown, and the Details, Chart, Re-suggest, Apply and Dismiss actions" width="900">
+
+<sub>Screenshots come from the test fixture server. Every symbol, level and position in them is invented.</sub>
+
+</div>
+
+Built to replace a capped, paid alert subscription. Everything that holds state
+(alerts, positions, the queue) lives in flat JSON files on one machine. The cloud
+only holds a rendered copy of what that machine published, plus a mailbox of
+changes waiting to be collected.
+
+## What it uses
+
+Only Schwab is required. Everything else is optional, and the engine runs without it.
+
+| What | Service | Needed? |
+|---|---|---|
+| Quotes, daily and minute bars, market hours | [Charles Schwab Trader API](https://developer.schwab.com/), Market Data product | **Yes.** Free with a Schwab account. OAuth login in a browser, renewed weekly. See [`docs/SETUP.md`](docs/SETUP.md) |
+| Sector, industry and listing exchange | [Financial Modeling Prep](https://site.financialmodelingprep.com/) | Optional. Free tier, 250 calls/day, cached locally. Without it, chart links fall back to the bare symbol |
+| Charts | [TradingView](https://www.tradingview.com/) | Links and the free embeddable chart widget. No account or key |
+| Dashboard hosting | AWS S3 + CloudFront | Optional. The page is static files; a CloudFormation template is included (`infra/`) |
+| Editing from the dashboard | AWS Lambda (Node 22) + SQS FIFO | Optional. Changes queue in the cloud and the local machine collects them |
+| Custom domain | AWS Route 53 + Certificate Manager | Optional. Otherwise the site serves from its `*.cloudfront.net` URL |
+| Scheduled runs | Windows Task Scheduler, cron, or Docker | One of them, to run unattended |
+| Run monitoring | [healthchecks.io](https://healthchecks.io) or any ping URL | Optional dead-man's switch for scheduled runs |
+| Importing existing data | TradingView alert CSV exports, Webull holdings CSV exports | One-time migration only. There is no brokerage sync |
+
+The CLI is TypeScript on Node.js 22, with [commander](https://github.com/tj/commander.js),
+[csv-parse](https://csv.js.org/parse/)/[csv-stringify](https://csv.js.org/stringify/),
+[dotenv](https://github.com/motdotla/dotenv) and the AWS SDK v3 (S3, CloudFront, SQS).
+The dashboard is plain HTML, CSS and JavaScript with no framework or bundler; it
+loads Archivo from Google Fonts and decrypts private holdings in the browser with
+WebCrypto. Tests use [Vitest](https://vitest.dev/) and [Playwright](https://playwright.dev/).
 
 ---
 
@@ -51,6 +76,8 @@ for "show me everything on this symbol": `node dist/cli.js TSLA`.
 
 To run it unattended, register `scripts\check-and-publish.ps1` with Task Scheduler
 (or `scripts/check-and-publish.sh` with cron); see [`docs/SCHEDULING.md`](docs/SCHEDULING.md).
+On a Docker host, `docker/` runs the same loop in one container; see
+[`docker/README.md`](docker/README.md).
 
 ### Command map
 
@@ -123,9 +150,7 @@ there waiting for you. Re-fire suppression, per kind, is in
 
 ## A worked example
 
-One alert on AA, from typing it to deciding what to do about it. The screenshots come
-from the Playwright fixture server, so every symbol, level and position in them is
-invented.
+One alert on AA, from typing it to deciding what to do about it.
 
 **1. You add it.** AA is trading around 38, and you want to hear about 43.
 
@@ -280,6 +305,8 @@ Three rules that surprise people:
 All four kinds can also be added and edited from the dashboard, with the same
 validation: the New alert form takes a kind and shows only the fields it needs.
 
+![The Alerts table with one row per kind: a static alert with an edit pending tag, a price-AND-volume alert, a standalone volume alert, a moving-average alert and a trailing alert, the last two showing a moving level](docs/images/alerts-table.png)
+
 Everything else (volume windows and baselines, moving-average semantics, market hours,
 the revisit queue and its scoring, `alert seed`) is in
 [`docs/ALERTS.md`](docs/ALERTS.md).
@@ -349,6 +376,7 @@ of the same name is easy to pick by mistake and works for neither.
 |---|---|
 | [`docs/SETUP.md`](docs/SETUP.md) | Schwab app registration, `.env`, first login, FMP key |
 | [`docs/SCHEDULING.md`](docs/SCHEDULING.md) | Task Scheduler / cron setup and the reasoning |
+| [`docker/README.md`](docker/README.md) | Running the scheduled loop in a container, and moving existing state into it |
 | [`docs/ALERTS.md`](docs/ALERTS.md) | Alert kinds in depth, volume baselines, moving averages, market hours, re-fire rules, the revisit queue and its scoring, `alert seed` |
 | [`docs/HOLDINGS.md`](docs/HOLDINGS.md) | Lots and stops, `holdings cover`, the Webull import, basis-relative alerts |
 | [`docs/DASHBOARD.md`](docs/DASHBOARD.md) | Terminal and browser dashboard, views, notifications, headlines and stories |
@@ -371,3 +399,13 @@ Real financial data stays out of git (`holdings.json`, `alerts.json`, `revisits.
 **`CLAUDE.md` documents the patterns in this codebase that look wrong and are
 load-bearing. Read it before refactoring anything here.** It also covers regenerating
 the README screenshots (`playwright/screenshots.ts`).
+
+## License
+
+[AGPL-3.0](LICENSE). You can use, change and self-host it. If you run a modified version as a service for other people, you must publish your changes under the same license.
+
+## Disclaimer
+
+A personal tool, not a trading system. Priority scores rank what most deserves your
+attention, not what to buy or sell, and nothing here is investment advice. Market data
+comes from Schwab as-is; check a level against your broker before acting on it.
