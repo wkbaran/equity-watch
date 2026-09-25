@@ -12,7 +12,7 @@ import { applyOp, parseOp, type OpResult } from "../src/ops/apply.js";
 import { parseLotEdit, parseLotInput, parseStopInput } from "../src/ops/validate.js";
 import type { Quote } from "../src/providers/schwab.js";
 import { NO_OPS, siteDocument, siteFingerprint, writeSite } from "../src/web/site.js";
-import { VAULT_FILE, openVault, sealVault, vaultContents } from "../src/web/vault.js";
+import { VAULT_FILE, openVault, sealVault, vaultContents, type VaultDocument } from "../src/web/vault.js";
 
 const TOKEN = "t".repeat(64);
 
@@ -268,7 +268,7 @@ describe("holdings ops", () => {
 });
 
 describe("vault", () => {
-  const contents = vaultContents([], store());
+  const contents = vaultContents({ holdings: [], stories: [] }, store());
 
   it("round-trips, and a wrong token can't open it", () => {
     const doc = sealVault(contents, TOKEN);
@@ -305,7 +305,7 @@ describe("vault", () => {
     const build = (s: HoldingsStore, q: Map<string, Quote>) => buildDashboard({ alerts: [], revisits: [], holdings: s, quotes: q, now: NOW });
     const fingerprint = (s: HoldingsStore, q: Map<string, Quote>) => {
       const d = build(s, q);
-      return siteFingerprint(siteDocument(d, { holdings: false, ops: true, vault: true }), [], vaultContents(d.holdings, s));
+      return siteFingerprint(siteDocument(d, { holdings: false, ops: true, vault: true }), [], vaultContents(d, s));
     };
 
     // --skip-unchanged fingerprints a quote-less build and compares it to the published one.
@@ -322,6 +322,40 @@ describe("vault", () => {
       expect(fingerprint(stopped, quotes)).not.toBe(fingerprint(store(), quotes));
     });
 
+    const revisits = [0, 1].map((i) => ({
+        id: `r${i}`, alertId: "a1", symbol: "AAPL", kind: "static" as const, triggeredAt: `2026-09-1${i}T14:00:00.000Z`,
+        triggerPrice: 181, levelAtTrigger: 180, session: "regular" as const, watchingSince: null, watchingSinceApprox: false,
+        priceAtWatchStart: null, status: "open" as const, suggestedLevel: null, suggestedAt: null, suggestionBasis: null,
+        resolvedAt: null, appliedFrom: null, appliedTo: null, priority: null, signals: null,
+      }));
+
+    // Stories tell your buys and sales: only the vault may carry them, holdings on or off.
+    it("publishes stories in the vault and never in dashboard.json", () => {
+      const d = buildDashboard({ alerts: [], revisits, holdings: store(), quotes, now: NOW });
+      expect(d.stories.map((s) => s.symbol)).toContain("AAPL");
+      for (const holdings of [false, true]) {
+        expect(siteDocument(d, { holdings, vault: true }).stories).toEqual([]);
+      }
+      const site = join(dir, "site");
+      writeSite(site, d, { holdings: true, vault: true }, [], NO_OPS, sealVault(vaultContents(d, store()), TOKEN));
+      expect(readFileSync(join(site, "dashboard.json"), "utf-8")).not.toContain("you bought");
+      const opened = openVault(JSON.parse(readFileSync(join(site, VAULT_FILE), "utf-8")) as VaultDocument, TOKEN);
+      expect(opened.stories.find((s) => s.symbol === "AAPL")?.lines.map((l) => l.text)).toContain("Sep 1: you bought AAPL.");
+    });
+
+    it("moves the fingerprint when a story changes, through the vault", () => {
+      const removed = store();
+      removed.removedLots = [{ lotId: "gone", symbol: "AAPL", purchaseDate: "2026-07-01", createdAt: "2026-07-01T15:00:00.000Z", removedAt: "2026-07-02T15:00:00.000Z" }];
+      const withStories = (s: HoldingsStore) => {
+        const d = buildDashboard({ alerts: [], revisits, holdings: s, quotes, now: NOW });
+        const doc = siteDocument(d, { holdings: false, ops: true, vault: true });
+        return { doc, print: siteFingerprint(doc, [], vaultContents(d, s)) };
+      };
+      // The document is identical; only the vault's story differs.
+      expect(withStories(removed).doc.stories).toEqual(withStories(store()).doc.stories);
+      expect(withStories(removed).print).not.toBe(withStories(store()).print);
+    });
+
     it("leaves a vault-less fingerprint as it was", () => {
       const d = build(store(), quotes);
       const doc = siteDocument(d, { holdings: false });
@@ -331,7 +365,7 @@ describe("vault", () => {
     it("writes vault.json when given one and deletes a stale one otherwise", () => {
       const site = join(dir, "site");
       const d = build(store(), quotes);
-      writeSite(site, d, { holdings: false, vault: true }, [], NO_OPS, sealVault(vaultContents(d.holdings, store()), TOKEN));
+      writeSite(site, d, { holdings: false, vault: true }, [], NO_OPS, sealVault(vaultContents(d, store()), TOKEN));
       expect(existsSync(join(site, VAULT_FILE))).toBe(true);
       expect(readFileSync(join(site, "dashboard.json"), "utf-8")).not.toMatch(/"shares"|"basis"|"marketValue"/);
       writeSite(site, d, { holdings: false }, []);

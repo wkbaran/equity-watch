@@ -94,7 +94,7 @@ function documents() {
       maxStaleMinutes: cadence.maxStale,
     }),
     "alerts.json": { generatedAt: dashboard.generatedAt, alerts: buildAlertRows(FIXTURE_ALERTS, quotes, new Set(), new Map(), heldSymbols) },
-    "vault.json": sealVault(vaultContents(dashboard.holdings, HOLDINGS), OPS_TOKEN),
+    "vault.json": sealVault(vaultContents(dashboard, HOLDINGS), OPS_TOKEN),
   };
 }
 

@@ -315,8 +315,9 @@ token (`src/web/vault.ts`). The page decrypts them in the browser after unlockin
   `vaultContents`; hashing `vault.json` would publish on every check.
 
 The line the user drew (2026-09-12): **size and value are private, being held
-is not.** "Holding MKS broke support", held-first story ordering, and "held
-position" in priority breakdowns are fine to publish. Share counts, basis,
+is not.** "Holding MKS broke support" and "held position" in priority
+breakdowns are fine to publish. Stories are not published at all outside the
+vault (see "A story's buys are derived" below). Share counts, basis,
 market value, and stops are not. If you add a field carrying any of those
 outside `holdings`, strip it in `siteDocument` too. The `siteDocument` tests in
 `tests/dashboard.test.ts` check the JSON for `shares`/`basis`/`marketValue` keys.
@@ -331,9 +332,8 @@ a published document, and both `TriggerRow` and `AlertRow` carry one so the
 tag reads the same locked as unlocked; everything with a number in it comes
 from the decrypted vault (or from the document only when `web.holdings` is
 on), so the Position row is simply absent on the public page. The **Story**
-section in the same drawer is client-side for a duller reason:
-`Dashboard.stories` already carries every story, keyed by symbol, so there is
-nothing to add server-side.
+section in the same drawer reads the decrypted vault's `stories`, so it is
+absent on the public page too.
 
 The `held` tag is a link, not a label: `#/holdings/<symbol>` with
 `target="equity-watch-holdings"`, so every click lands in one reused tab rather
@@ -833,20 +833,27 @@ Stories weave in each lot bought and removed (`holdingHistory` in
 read off the lot itself at its purchase date, so editing a lot's date moves the beat
 and imported lots need nothing recorded. A removal can't be read off anything, since
 the lot is deleted, so `removeLot` and `removePosition` append to
-`HoldingsStore.removedLots`. That record carries dates only, never count or basis:
-stories are in the public `dashboard.json`. Anything that deletes lots without going
+`HoldingsStore.removedLots`. That record carries dates only, never count or basis.
+Anything that deletes lots without going
 through those two functions (`holdings import --replace` does, on purpose) leaves no
 trace in the story.
 
 Inside a story, "Holding X" means held when that fire happened (`heldAt`), not held
 now. Outside stories (trigger rows, the queue) `heldSymbols` is still current.
 
-The page shows stories only when editing is unlocked (`storiesVisible` in
-`web/app.js`: the rail link, the view, and the drawers' Story section). That check
+**Stories travel only in the vault.** `siteDocument` empties `stories` in
+`dashboard.json` unconditionally (even with `web.holdings` on), and
+`vaultContents` carries them, so the fingerprint still sees a story change through
+the vault's plaintext. With no ops token there is no vault and no stories on the
+site; the terminal `dashboard` and its local report still have them.
+
+The page shows stories only when the vault is available and editing is unlocked
+(`storiesVisible` in `web/app.js`: the rail link, the view, and the drawers' Story
+section), and reads them from `vaultData.stories`. That check
 must wait for the document (`syncStoriesAccess` returns early until `current` is
 set): `canEdit()` reads `current.site.ops`, so before the first poll everyone looks
 locked, and gating in `parseRoute` bounced an unlocked `#/stories` load to the
-overview. Hiding is not privacy; `dashboard.json` still carries the stories.
+overview.
 
 ## Trigger details before 2026-09-13 are incomplete, and can't be backfilled
 

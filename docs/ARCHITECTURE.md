@@ -67,9 +67,11 @@ URL. Two separate mechanisms keep positions off it:
   `heldPosition` boolean is the only holdings fact allowed to travel in a public
   document, so a headline can say "Holding MKS crossed below 110" without revealing
   size or value.
-- **`vault.json`** — positions, lots, and stops sealed with **AES-256-GCM** under a
-  key derived from the ops token (`src/web/vault.ts`), decrypted in the browser by
-  WebCrypto after unlocking.
+- **`vault.json`** — positions, lots, stops, and the ticker stories sealed with
+  **AES-256-GCM** under a key derived from the ops token (`src/web/vault.ts`),
+  decrypted in the browser by WebCrypto after unlocking. Stories are here because
+  they tell when you bought and sold; `siteDocument` always empties
+  `dashboard.json`'s `stories`, whatever `web.holdings` says.
 
 The key is `SHA-256("equity-watch/holdings-vault/v1 " + token)` — a plain hash with a
 context prefix, no PBKDF2 or Argon2. That is deliberate and it rests on one

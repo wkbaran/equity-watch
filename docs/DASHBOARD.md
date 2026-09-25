@@ -111,9 +111,10 @@ number as the rail and the overview tile.
   the row shows its pending tag and no buttons, because a second decision would be
   made against a state that is about to change.
 - **Stories** — each multi-trigger thread as a narrative, with your buys and sales
-  in it. Unlocked only: a locked page has no Stories link, `#/stories` lands on the
-  overview, and the drawers leave out their Story section. That hides them from the
-  page, not from `dashboard.json`, which still carries them.
+  in it. Unlocked only: stories are published inside the encrypted `vault.json`,
+  never in `dashboard.json`, so a locked page has no Stories link, `#/stories`
+  lands on the overview, and the drawers leave out their Story section. A site
+  with no ops token configured publishes no vault, and so shows no stories.
 - **Alerts** — every live alert, from its own `alerts.json`, fetched only while that
   view is open so the every-minute poll of `dashboard.json` stays small. Each row
   shows the condition in words, its level, the current price and distance, how often
@@ -283,8 +284,8 @@ trades read side by side:
 
 The wording is "you bought", "you added to your … position", "you trimmed your …
 position", "you closed your … position", and "you bought … again". It never carries
-a share count, basis or value, because stories are published and size and value are
-not. A removed lot is not called a sale, since nothing records whether it was one.
+a share count, basis or value. Stories are only published encrypted now, but a
+story is a narrative of what you did, and the numbers belong on the Holdings view. A removed lot is not called a sale, since nothing records whether it was one.
 "Holding X" on a fire means held *when it fired*, not held now. Removals are
 recorded from 2026-09-25 (`removedLots` in `holdings.json`); a position removed
 before then left no trace. A `holdings import --replace` is a reset, not a sale,
@@ -300,7 +301,8 @@ A `NO_CLOSE_CONFIRM` says "crossed above 3.5 intraday but closed back below" ins
 
 Written for e-ink: short lines, no colour, no emoji, no box-drawing, nothing that
 needs a monospace grid. A renderer can ignore the terminal view entirely and read
-`headline` / `action` / `stories[].summary` straight out of the JSON.
+`headline` / `action` straight out of the JSON; `stories` is in the local
+`dashboard` report and the vault, and empty in the published `dashboard.json`.
 
 ## Watch history
 

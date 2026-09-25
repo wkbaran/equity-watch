@@ -188,6 +188,9 @@ test("a locked page has no Stories view, and #/stories lands on the overview", a
   await expect(page).toHaveURL(/#\/$/);
   await expect(page.locator("#view-stories")).toBeHidden();
   await expect(page.locator("#nav-stories")).toBeHidden();
+  // Not merely hidden: the stories are only in the vault.
+  const doc = (await (await page.request.get("/dashboard.json")).json()) as { stories: unknown[] };
+  expect(doc.stories).toEqual([]);
 });
 
 test("an unlocked page keeps Stories, including a direct #/stories load", async ({ page }) => {

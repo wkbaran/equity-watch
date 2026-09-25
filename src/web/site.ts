@@ -117,13 +117,17 @@ export type SiteDocument = Dashboard & {
  * The document as published. With holdings off, the holdings rows (share
  * counts, basis, market value) are removed from the JSON itself, since the site
  * may be public. That a name is held is deliberately still allowed through:
- * "Holding MKS crossed below 110" headlines, story ordering, and "held position" in
- * priority breakdowns say nothing about size or value.
+ * "Holding MKS crossed below 110" headlines and "held position" in priority
+ * breakdowns say nothing about size or value.
+ *
+ * Stories are removed always, whatever `holdings` says: they tell when you
+ * bought and sold, and travel only in the vault (vaultContents).
  */
 export function siteDocument(dashboard: Dashboard, options: SiteOptions, ops: OpsPublishState = NO_OPS): SiteDocument {
   return {
     ...dashboard,
     holdings: options.holdings ? dashboard.holdings : [],
+    stories: [],
     site: options,
     opResults: ops.results,
     opsProcessedThrough: ops.processedThrough,

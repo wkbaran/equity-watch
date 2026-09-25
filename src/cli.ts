@@ -1753,7 +1753,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     const fingerprint = siteFingerprint(
       siteDocument(quoteless, siteOptions, ops),
       buildAlertRows(alerts, new Map(), ignored, exchanges, heldSymbols),
-      vaultToken === null ? null : vaultContents(quoteless.holdings, holdings)
+      vaultToken === null ? null : vaultContents(quoteless, holdings)
     );
     const decision = shouldPublish(loadPublishState(), fingerprint, new Date(), opts.maxStaleMinutes, ops.nextCheckAt);
     if (!decision.publish) {
@@ -1796,7 +1796,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   // a publish while the holdings section is off.
   const siteDashboard = siteDocument(dashboard, siteOptions, ops);
   const alertRows = buildAlertRows(alerts, quotes, ignored, exchanges, heldSymbols);
-  const vault = vaultToken === null ? null : vaultContents(dashboard.holdings, holdings);
+  const vault = vaultToken === null ? null : vaultContents(dashboard, holdings);
   if (siteDir !== undefined) {
     writeSite(siteDir, dashboard, siteOptions, alertRows, ops, vault === null ? null : sealVault(vault, vaultToken!));
     console.log(`Wrote site to ${siteDir}/${siteOptions.holdings ? "" : " (holdings excluded; set web.holdings in the config to include)"}`);

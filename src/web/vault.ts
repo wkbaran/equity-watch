@@ -1,5 +1,5 @@
 /**
- * Holdings for the unlocked page, encrypted.
+ * Holdings, and the stories that tell your trades, for the unlocked page, encrypted.
  *
  * The site is public (no login), and share counts, basis, value, and stops
  * must never be readable on it (see siteDocument). The page still needs them
@@ -17,7 +17,8 @@
  */
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import type { HoldingRow } from "../dashboard.js";
+import type { Dashboard, HoldingRow } from "../dashboard.js";
+import type { TickerStory } from "../narrative.js";
 import type { HoldingsStore, Lot, Stop } from "../holdings/models.js";
 
 export const VAULT_FILE = "vault.json";
@@ -30,6 +31,12 @@ export interface VaultContents {
   holdings: HoldingRow[];
   lots: Pick<Lot, "id" | "symbol" | "count" | "basisPerShare" | "purchaseDate" | "account">[];
   stops: Pick<Stop, "id" | "symbol" | "count" | "stopPrice">[];
+  /**
+   * Stories tell when you bought and sold, so they travel here and never in
+   * dashboard.json (siteDocument empties them). Absent in vaults sealed before
+   * 2026-09-25.
+   */
+  stories: TickerStory[];
 }
 
 export interface VaultDocument {
@@ -45,9 +52,9 @@ export function vaultKey(token: string): Buffer {
   return createHash("sha256").update(KEY_CONTEXT + token).digest();
 }
 
-export function vaultContents(holdings: HoldingRow[], store: HoldingsStore): VaultContents {
+export function vaultContents(dashboard: Pick<Dashboard, "holdings" | "stories">, store: HoldingsStore): VaultContents {
   return {
-    holdings,
+    holdings: dashboard.holdings,
     lots: store.lots.map(({ id, symbol, count, basisPerShare, purchaseDate, account }) => ({
       id,
       symbol,
@@ -57,6 +64,7 @@ export function vaultContents(holdings: HoldingRow[], store: HoldingsStore): Vau
       ...(account !== undefined ? { account } : {}),
     })),
     stops: store.stops.map(({ id, symbol, count, stopPrice }) => ({ id, symbol, count, stopPrice })),
+    stories: dashboard.stories,
   };
 }
 

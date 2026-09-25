@@ -348,11 +348,13 @@
 
   /**
    * Stories are for whoever holds the token. They tell your buys and sales
-   * alongside the alerts, so a locked page shows neither the Stories view nor
-   * a drawer's Story section, and `#/stories` falls back to the overview.
-   * (The document still carries them: this is about the page, not privacy.)
+   * alongside the alerts, so they are published only inside vault.json
+   * (dashboard.json carries none), and a locked page shows neither the Stories
+   * view nor a drawer's Story section; `#/stories` falls back to the overview.
    */
-  const storiesVisible = () => canEdit();
+  const storiesVisible = () => canEdit() && current?.site?.vault === true;
+  /** Null until the vault is open; a vault sealed before stories moved there has none. */
+  const vaultStories = () => (vaultData ? (vaultData.stories ?? []) : null);
 
   // Only once the document is in: opsEnabled() reads it, so before the first
   // poll every visitor looks locked and an unlocked #/stories would be bounced.
@@ -365,6 +367,7 @@
   function rerenderOps() {
     renderOpsControls();
     syncStoriesAccess();
+    renderStories();
     if (current) {
       renderTiles(current.summary, holdingRows() !== null);
       // The queue rows carry an "edit pending" tag of their own.
@@ -2057,8 +2060,14 @@
     $("triggers").replaceChildren(...list, ...(toggle ? [toggle] : []));
   }
 
-  function renderStories(stories) {
-    $("stories-count").textContent = stories.length ? String(stories.length) : "";
+  function renderStories() {
+    const stories = vaultStories();
+    $("nav-stories-count").textContent = stories === null ? "" : String(stories.length);
+    $("stories-count").textContent = stories?.length ? String(stories.length) : "";
+    if (stories === null) {
+      $("stories").replaceChildren(h("div", { class: "empty", text: vaultError ?? "Opening stories…" }));
+      return;
+    }
     if (stories.length === 0) {
       $("stories").replaceChildren(h("div", { class: "empty", text: "No symbol has fired more than once yet." }));
       return;
@@ -2434,7 +2443,6 @@
     $("nav-alerts-count").textContent = String(d.summary.liveAlerts);
     // Every open entry, the same number as the overview tile.
     $("nav-queue-count").textContent = String(d.summary.openRevisits);
-    $("nav-stories-count").textContent = String(d.stories.length);
     syncStoriesAccess();
     // Holdings come from the decrypted vault when unlocked, or from the document
     // when the publisher includes them in the clear (web.holdings). Otherwise
@@ -2443,7 +2451,7 @@
     renderStrip(d);
     renderQueue(d.revisitQueue);
     renderTriggers(d.recentTriggers ?? [], d.summary.windowDays);
-    renderStories(d.stories);
+    renderStories();
     renderApproaching(d.approaching ?? [], d.approachingTotal ?? 0);
     renderQuiet(d.quietWatches, d.quietTotal);
     renderOpsControls();
@@ -2762,13 +2770,13 @@
   }
 
   /**
-   * The multi-trigger thread for this symbol, when there is one. Stories are
-   * built per symbol (narrative.ts, two triggers minimum), so a drawer either
-   * has one or the symbol has only fired once.
+   * The thread for this symbol, when there is one: two fires, or one with a
+   * buy or sale around it (narrative.ts). Read from the vault, so only an
+   * unlocked page has it.
    */
   function storyBlock(symbol) {
     if (!storiesVisible()) return null;
-    const story = (current?.stories ?? []).find((s) => s.symbol === symbol);
+    const story = (vaultStories() ?? []).find((s) => s.symbol === symbol);
     if (!story) return null;
     return [
       h("h3", { class: "drawer-sub", text: "Story" }),

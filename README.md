@@ -50,8 +50,8 @@ The CLI is TypeScript on Node.js 22, with [commander](https://github.com/tj/comm
 [csv-parse](https://csv.js.org/parse/)/[csv-stringify](https://csv.js.org/stringify/),
 [dotenv](https://github.com/motdotla/dotenv) and the AWS SDK v3 (S3, CloudFront, SQS).
 The dashboard is plain HTML, CSS and JavaScript with no framework or bundler; it
-loads Archivo from Google Fonts and decrypts private holdings in the browser with
-WebCrypto. Tests use [Vitest](https://vitest.dev/) and [Playwright](https://playwright.dev/).
+loads Archivo from Google Fonts and decrypts private holdings and stories in the
+browser with WebCrypto. Tests use [Vitest](https://vitest.dev/) and [Playwright](https://playwright.dev/).
 
 ---
 
@@ -205,8 +205,8 @@ even after you move or delete the alert:
 **7. The story is the part a flat list hides.** Two fires with the re-level between
 them, which is the chase the queue exists to make visible, and your own buys and sales
 threaded through it, so you can see what you did around each fire. "Holding AA" on a
-fire means you held it *then*. Stories need editing unlocked; a locked page doesn't
-show them.
+fire means you held it *then*. Stories are published only inside the encrypted
+holdings vault, so they appear once editing is unlocked and never on the public page.
 
 ![A story: AA has fired 2 times since Sep 20, walking its level from 43 up to 55, with 1 still open, followed by the dated sequence: started watching, bought, added to the position, fired while held, the re-level, and fired again](docs/images/story.png)
 
@@ -351,8 +351,8 @@ of the same name is easy to pick by mistake and works for neither.
   `.env`. Generate the token with `openssl rand -hex 32`; a memorable one makes the
   holdings vault brute-forceable.
 - **The site is public by default.** Alerts, levels, triggers, and *which* symbols you
-  hold are visible to anyone with the URL; share counts, basis, value, and stops are
-  not published. Turn on basic auth if that isn't acceptable. The full model:
+  hold are visible to anyone with the URL; share counts, basis, value, stops, and
+  the stories of when you bought and sold are not published in the clear. Turn on basic auth if that isn't acceptable. The full model:
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#what-the-token-protects-and-what-it-doesnt).
 
 ## When something breaks
