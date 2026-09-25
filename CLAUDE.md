@@ -392,6 +392,21 @@ scoreboard, a sticky queue strip, Archivo throughout). Things that will bite:
 - **Counts are bare numbers** (`48`, `25 of 48`), not `(48)`. The rail sets them
   as the biggest type in it.
 
+## `th { position: sticky }` never did anything on the page's tables
+
+The rule has been in `web/index.html` all along and looks like it pins the
+header row. It can't: a sticky element sticks to its nearest *scrolling*
+ancestor, and every table sits in a `.table-wrap` with `overflow-x: auto` (so it
+can scroll sideways on a phone; Alerts overflows even at 1100px). That wrapper
+never scrolls vertically, so the header went off the top with the page.
+
+The Alerts and Holdings header rows are pinned by `pinTableHeaders` in
+`web/app.js` instead, which translates the `<thead>` by however far the table
+has gone under the queue strip. Don't "fix" it back to CSS by dropping the
+wrapper's overflow: the wider tables would then clip or spill at mid widths.
+Anything that moves a pinned table without scrolling the page (re-rendering
+it, the strip appearing) has to call `pinTableHeaders`/`schedulePin`.
+
 ## Holdings need HTTPS or localhost to appear at all
 
 The vault is decrypted with WebCrypto, which browsers only expose in a secure

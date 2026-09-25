@@ -356,6 +356,8 @@
     if (baseView === "alerts") renderAlerts();
     renderHoldingsView();
     renderDrawer(parseRoute().drawer);
+    // The strip above may have appeared or gone, which moves where headers pin.
+    schedulePin();
   }
 
   function setToken(token) {
@@ -2430,6 +2432,8 @@
     renderOpsControls();
     renderHoldingsView();
     renderDrawer(parseRoute().drawer);
+    // The strip above may have appeared or gone, which moves where headers pin.
+    schedulePin();
   }
 
   // ---- alerts view ----------------------------------------------------------
@@ -2644,7 +2648,47 @@
     jumpedRow = null;
     table.replaceChildren(h("thead", {}, head), h("tbody", {}, ...body));
     renderAlphaRail(new Set(rows.map((a) => initialOf(a.symbol))));
+    pinTableHeaders();
   }
+
+  // ---- pinned table headers -------------------------------------------------
+  //
+  // The Alerts header row stays in view under the queue strip
+  // while the page scrolls, and everything above the table (the toolbar, the
+  // add forms) scrolls away as normal.
+  //
+  // Not `position: sticky`, which is what anyone would reach for first: a
+  // sticky cell sticks to its nearest scrolling ancestor, and these tables sit
+  // in an `overflow-x: auto` wrapper so they can scroll sideways on a phone (and
+  // Alerts does even at 1100px). That wrapper is the scroller the header sticks
+  // to, and it never scrolls vertically, so the header scrolled off with the
+  // page. Dropping the wrapper's overflow would clip or spill the wider tables
+  // instead. So the header is moved down by hand, by exactly how far the
+  // table's top has gone under the strip, and never past the table's own end.
+
+  const PINNED_TABLES = ["alerts-table"];
+
+  function pinTableHeaders() {
+    const tape = $("tape-wrap");
+    const top = tape.hidden ? 0 : tape.getBoundingClientRect().bottom;
+    for (const id of PINNED_TABLES) {
+      const head = $(id).tHead;
+      if (!head) continue;
+      const box = $(id).getBoundingClientRect();
+      // A hidden view's table has an empty box, and its header stays put.
+      const room = Math.max(box.height - head.offsetHeight, 0);
+      const offset = box.height === 0 ? 0 : Math.min(Math.max(top - box.top, 0), room);
+      head.style.transform = offset > 0 ? `translateY(${offset}px)` : "";
+      head.classList.toggle("pinned", offset > 0);
+    }
+  }
+
+  let pinFrame = 0;
+  const schedulePin = () => {
+    if (!pinFrame) pinFrame = requestAnimationFrame(() => ((pinFrame = 0), pinTableHeaders()));
+  };
+  window.addEventListener("scroll", schedulePin, { passive: true });
+  window.addEventListener("resize", schedulePin);
 
   // ---- details drawer -------------------------------------------------------
 
@@ -3049,6 +3093,7 @@
       }
     }
     for (const view of ["overview", ...BASE_VIEWS]) $(`view-${view}`).hidden = baseView !== view;
+    schedulePin();
     for (const link of document.querySelectorAll("[data-nav]")) {
       if (link.dataset.nav === baseView) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");

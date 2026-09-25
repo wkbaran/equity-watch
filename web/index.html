@@ -287,6 +287,11 @@
     font-size: 0.78rem; font-weight: 500; font-stretch: 88%; color: var(--muted); background: var(--surface);
     border-bottom: 1px solid var(--line-strong);
   }
+  /* app.js pins this header row under the strip (pinTableHeaders); the
+     sticky rule above can't, since each table's wrapper is its scroller. */
+  #alerts-table > thead { position: relative; z-index: 3; will-change: transform; }
+  #alerts-table > thead.pinned th { box-shadow: 0 1px 0 var(--line-strong); }
+  #alerts-table > tbody > tr { scroll-margin-top: calc(var(--tape-h) + 2.5rem); }
   th[aria-sort] { color: var(--ink); }
   th:first-child, td:first-child { text-align: left; }
   tr.ignored td { color: var(--muted); }
