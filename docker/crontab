@@ -1,0 +1,11 @@
+# The container's schedule, run by supercronic (see Dockerfile). Edit the
+# expression, rebuild, and the healthcheck's three-missed-runs allowance
+# (healthcheck.sh) is the one other place that assumes 15 minutes.
+#
+# There is no market-hours window here. `alert check` exits without fetching a
+# quote outside a session and `dashboard --skip-unchanged` fingerprints before it
+# fetches, so an overnight run costs nothing, and `ops pull` should drain queued
+# dashboard edits whether or not the market is open (see docs/SCHEDULING.md).
+#
+# Times are in TZ (default America/Denver); every 15 minutes doesn't care.
+*/15 * * * * /app/docker/run-check.sh

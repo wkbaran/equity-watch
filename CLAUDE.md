@@ -1216,3 +1216,31 @@ so the iframe never loads there and only the `src` we build can be checked.
 The theme fix above was made from a symptom report under exactly that
 limitation. Anything about what the widget actually *renders* has to be
 checked from a machine with real network access.
+
+## Production runs in Docker on nuc1 (since 2026-09-28), not on Windows
+
+The scheduler is the container `equity-watch-equity-watch-1` on nuc1
+(`DOCKER_HOST=ssh://core@192.168.50.207`), state in `~/equity-watch/` there
+(bind mount, no named volumes; `docker/README.md`). The Windows task
+`equity-watch check` is **disabled**, and the Windows checkout's state files are
+a stale snapshot from the cutover. Don't re-enable the task without stopping the
+container: two schedulers on two copies of `alerts.json` re-fire each other's alerts.
+
+- **Shipping code is now**: push, then `docker compose -f docker/docker-compose.yaml up -d --build`
+  with `DOCKER_HOST` set. The image builds `dist/` itself, so the "nothing
+  rebuilds `dist/`" trap above does not apply to it. A `web/`-only change still
+  waits for the next publish (`docker compose ... exec -u node equity-watch
+  /app/scripts/check-and-publish.sh` forces one; a run inside the max-stale window won't).
+- **`STATE_DIR` (in gitignored `docker/.env`) is required and has no default.**
+  Starting the container against an empty directory publishes an empty dashboard
+  over the live one. Put state there first.
+- **The weekly Schwab login** is `docker compose -f docker/docker-compose.yaml run --rm cli schwab-login`
+  (needs a TTY; paste-back flow, no browser in the container).
+- **The scheduler is supercronic** running `docker/crontab` (since 2026-09-28; it was
+  a sleep loop, `run-loop.sh`). The crontab's `*/15` is the only cadence knob;
+  `CHECK_INTERVAL_MINUTES` no longer exists, and `healthcheck.sh` hardcodes the
+  50-minute allowance that assumes it. `run-check.sh` (not the crontab) owns the
+  heartbeat and `HEALTHCHECK_URL` ping. Unlike the loop, nothing runs at container
+  start: the first run is the next quarter hour.
+- `check-and-publish.sh` passes no `--next-check`, unlike the `.ps1`; the page
+  uses the measured cadence instead.

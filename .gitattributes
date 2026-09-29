@@ -2,3 +2,4 @@
 # Windows makes them fail with "bad interpreter".
 *.sh text eol=lf
 docker/Dockerfile text eol=lf
+docker/crontab text eol=lf

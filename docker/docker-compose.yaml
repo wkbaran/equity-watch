@@ -1,11 +1,14 @@
-# Run equity-watch's scheduled check-and-publish loop on a Docker host.
+# Run equity-watch's scheduled check-and-publish job on a Docker host.
 # Setup, first login, moving existing state in, and updating: docker/README.md.
 #
 #   docker compose -f docker/docker-compose.yaml up -d --build
 #   docker compose -f docker/docker-compose.yaml logs -f
 #
-# Needs a .env in the repo root (copy .env.example) with the Schwab, AWS/S3 and
-# OPS_* values; it is read at run time and never copied into the image.
+# Two files feed it, and neither is copied into the image:
+#   ../.env       the app's settings (Schwab, AWS/S3, OPS_*), passed to the container.
+#   docker/.env   STATE_DIR, read by compose itself to fill in the volume path below.
+# Compose reads both on the machine running it, so with DOCKER_HOST=ssh://user@host
+# they need not exist on the host.
 
 name: equity-watch
 
@@ -14,10 +17,16 @@ x-common: &common
     context: ..
     dockerfile: docker/Dockerfile
   image: equity-watch:latest
-  # TZ and CHECK_INTERVAL_MINUTES can be set here too; the image defaults them.
+  # TZ can be set here too; the image defaults it. The schedule is docker/crontab.
   env_file: ../.env
   volumes:
-    - data:/data
+    # STATE_DIR is an absolute path on the Docker host holding alerts.json,
+    # revisits.json, holdings.json, ops.log.jsonl, .cache/, site/ and the Schwab
+    # tokens (.equity_watch/). Losing it loses your alerts, so back it up.
+    # It is required, with no default: a missing one would mount an empty
+    # directory, and the first run would publish an empty dashboard over the real one.
+    # :z relabels for SELinux hosts (Fedora CoreOS); other hosts ignore it.
+    - ${STATE_DIR:?set STATE_DIR in docker/.env to an absolute path on the Docker host}:/data:z
   init: true
 
 services:
@@ -40,8 +49,3 @@ services:
     profiles: ["tools"]
     entrypoint: ["/app/docker/entrypoint.sh", "equity-watch"]
     command: []
-
-volumes:
-  # alerts.json, revisits.json, holdings.json, ops.log.jsonl, .cache/, site/ and
-  # the Schwab tokens. Losing it loses your alerts, so back it up.
-  data:
