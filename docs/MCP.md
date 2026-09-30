@@ -82,6 +82,9 @@ In Open WebUI, add a tool server of type **MCP (Streamable HTTP)** with the URL
   `http://host.docker.internal:4190/mcp`. Binding beyond loopback requires
   `MCP_HTTP_TOKEN` in `.env`, which the client then sends as a bearer token.
 
+On a Docker host, the compose file's `mcp` service runs it long-lived on its own
+LAN address; see [docker/README.md](../docker/README.md#the-mcp-server-optional).
+
 Flags: `--http [port]` (default 4190), `--host`, `--site-url`, `--read-only`,
 `--allow-holdings`, `--require-approval`, `--pending-file`.
 

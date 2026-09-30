@@ -102,6 +102,40 @@ Use `run --rm cli`, or `exec -u node`, rather than a bare `exec`: `exec` starts 
 root and would leave root-owned files in `/data` (the next container start
 repairs them, but a live run in between could not write them).
 
+## The MCP server (optional)
+
+A second service, `mcp`, serves the dashboard's agent tools over Streamable
+HTTP ([docs/MCP.md](../docs/MCP.md)) for Open WebUI or any other MCP client on
+the home network. It is off unless `docker/.env` turns on its profile:
+
+```sh
+COMPOSE_PROFILES=mcp
+# optional, with these defaults:
+MCP_IPV4=192.168.40.53
+MCP_HOSTNAME=equity-watch.home
+```
+
+Then `up -d --build` as usual starts it beside the scheduler. It needs, in `.env`:
+
+- `MCP_HTTP_TOKEN`: the bearer every client must send (`openssl rand -hex 32`).
+  The server refuses to listen beyond loopback without one.
+- `OPS_TOKEN`, for write tools, and `BASIC_AUTH_USER`/`BASIC_AUTH_PASSWORD` if
+  the site has basic auth. It reads the published site like the page does, so it
+  needs nothing else from `STATE_DIR` except somewhere to keep its pending list.
+- `MCP_FLAGS`, optionally: extra server flags such as `--require-approval` or
+  `--allow-holdings`, space-separated.
+
+It joins the external macvlan network `app-network` at `MCP_IPV4`, and CoreDNS's
+docker discovery names it from the `coredns.dockerdiscovery.host` label. In Open
+WebUI, add a tool server of type **MCP (Streamable HTTP)** at
+`http://equity-watch.home:4190/mcp` with the token as its bearer. Two macvlan
+facts to know:
+
+- **The Docker host can't reach the container's address**, as with any macvlan
+  container. Containers on `app-network` (Open WebUI) and other machines can.
+- **It is plain HTTP.** The bearer crosses the LAN unencrypted, so anyone who
+  can see that traffic can queue changes with it.
+
 ## Knobs
 
 - The schedule is `docker/crontab`; change it and rebuild. `healthcheck.sh` assumes

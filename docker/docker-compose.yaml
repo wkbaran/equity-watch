@@ -41,6 +41,46 @@ services:
         max-size: 10m
         max-file: "3"
 
+  # The dashboard's agent tools over MCP (Streamable HTTP), for Open WebUI and the
+  # like: http://equity-watch.home:4190/mcp. Off unless docker/.env says
+  #   COMPOSE_PROFILES=mcp
+  # It reads the published site and queues through /api/ops like the page, so it
+  # needs OPS_TOKEN, MCP_HTTP_TOKEN (the bearer clients send; the server refuses to
+  # listen beyond loopback without one) and, with basic auth on the site,
+  # BASIC_AUTH_USER/BASIC_AUTH_PASSWORD, all from ../.env. MCP_FLAGS adds server
+  # flags, e.g. "--require-approval" or "--allow-holdings" (docs/MCP.md).
+  # /data holds only its pending-changes file.
+  #
+  # It sits on the home network's macvlan with its own address, which CoreDNS
+  # names from the label. As with any macvlan container, the Docker host itself
+  # can't reach that address; other containers on app-network (Open WebUI) can.
+  mcp:
+    <<: *common
+    profiles: ["mcp"]
+    restart: unless-stopped
+    entrypoint:
+      - /app/docker/entrypoint.sh
+      - sh
+      - -c
+      - exec equity-watch mcp --http 4190 --host 0.0.0.0 --pending-file /data/.cache/mcp-pending.json $$MCP_FLAGS
+    command: []
+    # The image's healthcheck watches scheduled runs, which this container never makes.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4190/mcp').then((r) => process.exit(r.status < 500 ? 0 : 1), () => process.exit(1))"]
+      interval: 1m
+      timeout: 10s
+      start_period: 30s
+    labels:
+      - "coredns.dockerdiscovery.host=${MCP_HOSTNAME:-equity-watch.home}"
+    networks:
+      app-network:
+        ipv4_address: ${MCP_IPV4:-192.168.40.53}
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
   # One-off CLI against the same state, e.g. the weekly Schwab login:
   #   docker compose -f docker/docker-compose.yaml run --rm cli schwab-login
   # Never started by `up`: it needs the "tools" profile, which `run` turns on.
@@ -49,3 +89,9 @@ services:
     profiles: ["tools"]
     entrypoint: ["/app/docker/entrypoint.sh", "equity-watch"]
     command: []
+
+networks:
+  # The home network's macvlan, created outside this project. Only the mcp
+  # service joins it.
+  app-network:
+    external: true

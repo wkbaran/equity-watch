@@ -1308,5 +1308,11 @@ container: two schedulers on two copies of `alerts.json` re-fire each other's al
   50-minute allowance that assumes it. `run-check.sh` (not the crontab) owns the
   heartbeat and `HEALTHCHECK_URL` ping. Unlike the loop, nothing runs at container
   start: the first run is the next quarter hour.
+- **The `mcp` service is a second container from the same image** (2026-09-30),
+  behind the `mcp` compose profile (`COMPOSE_PROFILES=mcp` in `docker/.env`), on
+  the `app-network` macvlan at 192.168.40.53. It overrides the image's
+  healthcheck, which watches scheduled runs and would mark it unhealthy. Its
+  `--pending-file` must point into `/data`: the default sits beside `dist/`,
+  which the `node` user can't write.
 - `check-and-publish.sh` passes no `--next-check`, unlike the `.ps1`; the page
   uses the measured cadence instead.
