@@ -69,26 +69,31 @@ which clients use to decide what to confirm.
 # stdio, for Claude Code (from the repo; or `node dist/cli.js mcp` after npm run build)
 claude mcp add equity-watch -- npx tsx /path/to/equity-watch/src/cli.ts mcp
 
-# Streamable HTTP on http://127.0.0.1:4190/mcp, for Open WebUI
+# Streamable HTTP on http://127.0.0.1:4180/mcp, for Open WebUI
 npx tsx src/cli.ts mcp --http --require-approval
 ```
 
 In Open WebUI, add a tool server of type **MCP (Streamable HTTP)** with the URL
-`http://localhost:4190/mcp`:
+`http://localhost:4180/mcp`:
 
 - **Open WebUI on Windows with WSL mirrored networking** reaches a WSL server on
   `localhost` directly.
 - **Open WebUI in Docker** needs `--host 0.0.0.0` and the URL
-  `http://host.docker.internal:4190/mcp`. Binding beyond loopback requires
+  `http://host.docker.internal:4180/mcp`. Binding beyond loopback requires
   `MCP_HTTP_TOKEN` in `.env`, which the client then sends as a bearer token.
 
 On a Docker host, the compose file's `mcp` service runs it long-lived on its own
 LAN address; see [docker/README.md](../docker/README.md#the-mcp-server-optional).
 
-Flags: `--http [port]` (default 4190), `--host`, `--site-url`, `--read-only`,
+Flags: `--http [port]` (default 4180), `--host`, `--site-url`, `--read-only`,
 `--allow-holdings`, `--require-approval`, `--pending-file`.
 
 ## Things that look odd and aren't
+
+- **The default port is 4180, not 4190.** 4190 (ManageSieve) is on the Fetch
+  spec's blocked-port list, so every `fetch`-based client, browsers and Node
+  alike, refused to connect to it ("bad port") before sending a byte. Don't pick
+  a port from that list.
 
 - **Pending changes live in a file** (`.cache/mcp-pending.json` by default), not
   in memory. A stdio client starts a new server for each session, and the guard

@@ -2323,7 +2323,7 @@ function buildProgram(): Command {
   program
     .command("mcp")
     .description("Serve the dashboard's agent tools over MCP (stdio, or Streamable HTTP with --http); see docs/MCP.md")
-    .option("--http [port]", "Serve Streamable HTTP at http://<host>:<port>/mcp instead of stdio (default port 4190)")
+    .option("--http [port]", "Serve Streamable HTTP at http://<host>:<port>/mcp instead of stdio (default port 4180)")
     .option("--host <address>", "Address for --http; anything but loopback also needs MCP_HTTP_TOKEN", "127.0.0.1")
     .option("--site-url <url>", "The published dashboard (default: DASHBOARD_URL, else https://CUSTOM_DOMAIN from .env)")
     .option("--read-only", "Offer no tools that change anything, even with an ops token")
@@ -2464,7 +2464,7 @@ async function cmdMcp(opts: McpCmdOpts): Promise<void> {
     allowHoldings: opts.allowHoldings === true,
     requireApproval: opts.requireApproval === true,
     pendingFile: opts.pendingFile,
-    http: opts.http === undefined ? null : opts.http === true ? 4190 : parseInt(opts.http, 10),
+    http: opts.http === undefined ? null : opts.http === true ? 4180 : parseInt(opts.http, 10),
     host: opts.host,
     httpToken: process.env.MCP_HTTP_TOKEN?.trim() || null,
   });

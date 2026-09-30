@@ -42,7 +42,7 @@ services:
         max-file: "3"
 
   # The dashboard's agent tools over MCP (Streamable HTTP), for Open WebUI and the
-  # like: http://equity-watch.home:4190/mcp. Off unless docker/.env says
+  # like: http://equity-watch.home:4180/mcp. Off unless docker/.env says
   #   COMPOSE_PROFILES=mcp
   # It reads the published site and queues through /api/ops like the page, so it
   # needs OPS_TOKEN, MCP_HTTP_TOKEN (the bearer clients send; the server refuses to
@@ -62,11 +62,11 @@ services:
       - /app/docker/entrypoint.sh
       - sh
       - -c
-      - exec equity-watch mcp --http 4190 --host 0.0.0.0 --pending-file /data/.cache/mcp-pending.json $$MCP_FLAGS
+      - exec equity-watch mcp --http 4180 --host 0.0.0.0 --pending-file /data/.cache/mcp-pending.json $$MCP_FLAGS
     command: []
     # The image's healthcheck watches scheduled runs, which this container never makes.
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4190/mcp').then((r) => process.exit(r.status < 500 ? 0 : 1), () => process.exit(1))"]
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:4180/mcp', (r) => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 1m
       timeout: 10s
       start_period: 30s

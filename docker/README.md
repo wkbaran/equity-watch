@@ -128,7 +128,7 @@ Then `up -d --build` as usual starts it beside the scheduler. It needs, in `.env
 It joins the external macvlan network `app-network` at `MCP_IPV4`, and CoreDNS's
 docker discovery names it from the `coredns.dockerdiscovery.host` label. In Open
 WebUI, add a tool server of type **MCP (Streamable HTTP)** at
-`http://equity-watch.home:4190/mcp` with the token as its bearer. Two macvlan
+`http://equity-watch.home:4180/mcp` with the token as its bearer. Two macvlan
 facts to know:
 
 - **The Docker host can't reach the container's address**, as with any macvlan
