@@ -101,7 +101,8 @@ test.describe("the unlock modal", () => {
     // Trimmed, as the prompt's answer was.
     expect(await page.evaluate(() => localStorage.getItem("equity-watch.opsToken"))).toBe(OPS_TOKEN);
     // The token doesn't linger in the DOM once the dialog closes.
-    expect(await page.locator("#unlock-token").inputValue()).toBe("");
+    // The dialog clears the field in its close event, which fires a task after it hides.
+    await expect(page.locator("#unlock-token")).toHaveValue("");
   });
 
   test("refuses an empty token in words, and stays open", async ({ page }) => {
@@ -121,13 +122,15 @@ test.describe("the unlock modal", () => {
     await page.getByLabel("Ops token").fill("half-typed");
     await modal(page).getByRole("button", { name: "Cancel" }).click();
     await expect(modal(page)).toBeHidden();
-    expect(await page.locator("#unlock-token").inputValue()).toBe("");
+    // The dialog clears the field in its close event, which fires a task after it hides.
+    await expect(page.locator("#unlock-token")).toHaveValue("");
 
     await page.locator("#ops-btn").click();
     await page.getByLabel("Ops token").fill("half-typed again");
     await page.keyboard.press("Escape");
     await expect(modal(page)).toBeHidden();
-    expect(await page.locator("#unlock-token").inputValue()).toBe("");
+    // The dialog clears the field in its close event, which fires a task after it hides.
+    await expect(page.locator("#unlock-token")).toHaveValue("");
     await expect(page.locator("#ops-btn")).toHaveText("Unlock editing");
     expect(await page.evaluate(() => localStorage.getItem("equity-watch.opsToken"))).toBeNull();
   });
