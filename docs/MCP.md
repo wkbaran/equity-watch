@@ -15,7 +15,11 @@ The server is a page with no window. It reads the published `dashboard.json`,
 `/api/ops` with the ops token, the same request the page sends. It needs:
 
 - the **site address**: `--site-url`, else `DASHBOARD_URL`, else `https://$CUSTOM_DOMAIN` from `.env`;
-- the **ops token**: `OPS_TOKEN` in `.env`. Without it the server is read-only.
+- the **ops token**: `OPS_TOKEN` in `.env`. Without it the server is read-only;
+- the **site's login**, if it has basic auth (`ENABLE_BASIC_AUTH=true`):
+  `BASIC_AUTH_USER` and `BASIC_AUTH_PASSWORD`, the same pair the stack deploy
+  reads. They go on reads only; `/api/ops` is outside the login and takes the
+  ops token instead.
 
 It needs nothing from the machine that runs the checks, so it runs wherever the
 agent does. Its data is as fresh as the last publish, and changes apply at the

@@ -30,6 +30,8 @@ import { loadToolbox, type ConfirmAnswer, type ToolApi, type Toolbox } from "./t
 export interface McpOptions {
   siteUrl: string;
   token: string | null;
+  /** "user:password" for reading a site behind basic auth. */
+  basicAuth?: string | null;
   readOnly: boolean;
   allowHoldings: boolean;
   /** Offer write tools only to clients that can ask the person (MCP elicitation). */

@@ -34,6 +34,8 @@ export interface SiteApiOptions {
   siteUrl: string;
   /** OPS_TOKEN. Without it the server is read-only whatever else is set. */
   token: string | null;
+  /** "user:password" for a site behind basic auth (EnableBasicAuth). Reads only: /api/* is outside it. */
+  basicAuth?: string | null;
   readOnly: boolean;
   allowHoldings: boolean;
   pendingFile: string;
@@ -78,7 +80,12 @@ export class SiteApi {
 
   private async getJson<T>(path: string): Promise<T> {
     // CloudFront serves these with Cache-Control: no-cache; ask the same of anything in between.
-    const resp = await this.fetch(this.url(path), { headers: { accept: "application/json", "cache-control": "no-cache" } });
+    const headers: Record<string, string> = { accept: "application/json", "cache-control": "no-cache" };
+    if (this.opts.basicAuth) headers.authorization = `Basic ${Buffer.from(this.opts.basicAuth).toString("base64")}`;
+    const resp = await this.fetch(this.url(path), { headers });
+    if (resp.status === 401) {
+      throw new Error(`${path}: HTTP 401, the site asks for a login; ${this.opts.basicAuth ? "BASIC_AUTH_USER/BASIC_AUTH_PASSWORD were refused" : "set BASIC_AUTH_USER and BASIC_AUTH_PASSWORD"}`);
+    }
     if (!resp.ok) throw new Error(`${path}: HTTP ${resp.status}`);
     return (await resp.json()) as T;
   }

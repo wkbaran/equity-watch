@@ -154,6 +154,29 @@ describe("reads", () => {
     expect(alerts.alerts[0].id).toBe("st000001");
   });
 
+  it("log in to a site behind basic auth, and never send that login to /api/ops", async () => {
+    const seen: Array<{ path: string; authorization: string | undefined }> = [];
+    const logged: string[] = [];
+    const fetchVia: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const authorization = (init?.headers as Record<string, string> | undefined)?.authorization;
+      seen.push({ path: url.pathname, authorization });
+      if (url.pathname !== "/api/ops" && authorization !== `Basic ${Buffer.from("me:pw").toString("base64")}`) {
+        return new Response("", { status: 401 });
+      }
+      return fetch(`${SITE}${url.pathname}`, init);
+    };
+    const box = await loadToolbox();
+    const refused = new SiteApi(box, { ...options(), fetch: fetchVia, log: (l) => logged.push(l) });
+    await refused.refresh(true);
+    expect(logged.join("\n")).toMatch(/asks for a login; set BASIC_AUTH_USER and BASIC_AUTH_PASSWORD/);
+
+    const { call } = await connect({}, { action: "accept", content: { confirm: true } }, new SiteApi(box, { ...options(), basicAuth: "me:pw", fetch: fetchVia, log: () => {} }));
+    expect(JSON.parse((await call("get_overview")).text).summary.liveAlerts).toBeGreaterThan(0);
+    await call("dismiss_revisit", { revisitId: "rv0000a2" });
+    expect(seen.find((s) => s.path === "/api/ops")?.authorization).toBe(`Bearer ${OPS_TOKEN}`);
+  });
+
   it("check arguments exactly as the page does", async () => {
     const { call } = await connect({ token: null });
     const r = await call("list_alerts", { limit: "abc" });

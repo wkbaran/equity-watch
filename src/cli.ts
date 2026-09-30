@@ -2452,10 +2452,14 @@ async function cmdMcp(opts: McpCmdOpts): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  // The same pair scripts/deploy-stack.sh gives CloudFront, when the site has basic auth.
+  const basicUser = process.env.BASIC_AUTH_USER?.trim();
+  const basicPassword = process.env.BASIC_AUTH_PASSWORD?.trim();
   const { runMcpServer } = await import("./mcp/server.js");
   await runMcpServer({
     siteUrl,
     token: process.env.OPS_TOKEN?.trim() || null,
+    basicAuth: basicUser && basicPassword ? `${basicUser}:${basicPassword}` : null,
     readOnly: opts.readOnly === true,
     allowHoldings: opts.allowHoldings === true,
     requireApproval: opts.requireApproval === true,
