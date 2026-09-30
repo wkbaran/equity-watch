@@ -263,6 +263,40 @@ test.describe("writes", () => {
     expect(await queuedOps(page)).toEqual([]);
   });
 
+  test("with asking switched off, a change is queued with no dialog, and the agent is told so", async ({ page }) => {
+    await openUnlocked(page);
+    const box = page.locator("#agent-auto-approve");
+    await expect(box).not.toBeChecked();
+    await box.check();
+
+    const result = json(await callTool(page, "add_alert", { symbol: "NVDA", level: 200 }));
+    expect(result).toMatchObject({ queued: true, applied: false });
+    expect(result.status).toMatch(/without asking/);
+    await expect(dialog(page)).toHaveCount(0);
+    expect(await queuedOps(page)).toHaveLength(1);
+
+    // Every other guard still holds: the same change again is refused.
+    const again = await callTool(page, "add_alert", { symbol: "NVDA", level: 200 });
+    expect(again.content[0].text).toMatch(/already queued/);
+
+    // Remembered per browser, and offered only while editing is unlocked.
+    await page.reload();
+    await expect(box).toBeChecked();
+    await page.locator("#ops-btn").click(); // Lock editing
+    await expect(page.locator("#agent-auto-approve-label")).toBeHidden();
+    await expect.poll(() => toolNames(page)).not.toContain("add_alert");
+  });
+
+  test("a scripted click can't switch asking off", async ({ page }) => {
+    await openUnlocked(page);
+    await page.evaluate(() => document.getElementById("agent-auto-approve")!.click());
+    await expect(page.locator("#agent-auto-approve")).not.toBeChecked();
+    const call = callTool(page, "add_alert", { symbol: "NVDA", level: 200 });
+    await expect(dialog(page)).toBeVisible();
+    await approve(page).click();
+    expect(json(await call).queued).toBe(true);
+  });
+
   test("the same change can't be queued twice while the first is pending", async ({ page }) => {
     await openUnlocked(page);
     const call = callTool(page, "add_alert", { symbol: "NVDA", level: 200 });

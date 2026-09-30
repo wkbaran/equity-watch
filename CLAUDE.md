@@ -700,6 +700,10 @@ simplifiable and aren't:
   no consent mechanism yet (issue #165), so the confirm dialog is the only thing
   between an agent and the ops queue. A new write tool must go through `queue()`,
   never call `api.submit` directly. The dialog ignores non-trusted clicks on purpose.
+  The one way past the dialog is the person's own "Agent changes without asking"
+  box (`api.autoApprove`, 2026-09-30), checked inside `queue()` so every other guard
+  still runs. Its untrusted-click guard is on `click`, not `change`: a scripted
+  `element.click()` on a checkbox fires a change event with `isTrusted === true`.
 - **A tool must be added to `webmcp.js` for every new op type** (or consciously left
   out): `tests/webmcp.test.ts` asserts the tools' `ops` cover `OP_TYPES` exactly, and
   that every schema property is one the worker's validator accepts (the validators

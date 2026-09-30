@@ -167,6 +167,8 @@
       "The person's holdings (positions, share counts, cost basis, stops, and stories of their trades) are private: tools for them appear only when editing is unlocked and the person ticks 'Agents may see holdings'. " +
       "If a tool you need isn't offered, tell the person which of those to do rather than guessing or sending them elsewhere.",
     approved: "The person approved this on the page and it is now queued. It has not taken effect yet.",
+    autoApproved:
+      "Queued without asking: the person has turned off confirmation of agent changes on this page. It has not taken effect yet; tell them what you queued.",
   };
 
   const lockedMessage = (api, group) => api.text?.locked?.[group] ?? PAGE_TEXT.locked[group];
@@ -215,7 +217,12 @@
       // The page asks with its dialog; another host (the MCP server) brings its own way of asking.
       // A confirm answers "approved" | "declined" | "expired" | "cancelled", or
       // { answer, status } when it has something to say about how approval was given.
-      const asked = await (api.confirm ?? confirmChange)(summary, signal);
+      // Unless the person switched asking off on the page ("Queue agent changes
+      // without asking"). Only a host offering that switch sets autoApprove, and
+      // every other guard here - arguments, duplicates, the lock - still applies.
+      const asked = api.autoApprove?.()
+        ? { answer: "approved", status: api.text?.autoApproved ?? PAGE_TEXT.autoApproved }
+        : await (api.confirm ?? confirmChange)(summary, signal);
       const answer = typeof asked === "string" ? asked : asked.answer;
       if (answer !== "approved") return refuse(NOT_APPROVED[answer]);
       approvalStatus = typeof asked === "string" ? null : (asked.status ?? null);

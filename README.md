@@ -380,7 +380,8 @@ to reach it:
 Whichever way it arrives:
 
 - **Every change needs your approval.** The page shows its own dialog; the MCP server
-  asks through the client (MCP elicitation).
+  asks through the client (MCP elicitation). On the page you can switch that off
+  with *Agent changes without asking*.
 - **An agent queues changes like the page does.** They apply at the next scheduled
   check, and the tool answers "queued", never "done".
 - **Holdings stay off by default.** An agent sees positions only after you tick

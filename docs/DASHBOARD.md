@@ -267,6 +267,14 @@ the agent. A queued change still lands only at the next scheduled check, so a wr
 tool answers "queued", never "done", and `get_pending_changes` is how an agent learns
 the outcome.
 
+**Asking can be switched off.** With editing unlocked, *Agent changes without asking*
+in the header queues every agent write with no dialog, and the tool's answer tells
+the agent it wasn't asked, so it should report what it queued. The choice is
+remembered per browser (like "Agents may see holdings") and only a real click turns
+it on. Everything else still applies: argument checks, the refusal of a duplicate,
+the lock, and the holdings switch. The MCP server has no such switch; see
+[MCP.md](MCP.md#approving-changes).
+
 **The browser can't tell the page an agent gave up.** Chrome 152 calls a tool's
 `execute` with its input alone (no `AbortSignal`), and when an agent cancels a call it
 is told "Canceled" at once while the page carries on. Approving the still-open dialog

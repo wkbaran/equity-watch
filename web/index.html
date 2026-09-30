@@ -552,6 +552,9 @@
     <label id="agent-holdings-label" class="agent-holdings" hidden title="Lets an agent using this page's WebMCP tools read your positions, lots, stops and stories, and queue changes to them. That data goes to whatever model the agent runs on.">
       <input type="checkbox" id="agent-holdings"> Agents may see holdings
     </label>
+    <label id="agent-auto-approve-label" class="agent-holdings" hidden title="Queue changes an agent asks for through this page's WebMCP tools without showing a confirmation dialog for each. They still apply only at the next scheduled check, and appear in the pending list until then.">
+      <input type="checkbox" id="agent-auto-approve"> Agent changes without asking
+    </label>
     <button id="ops-btn" hidden>Unlock editing</button>
     <button id="theme-btn">☀️ Light</button>
   </div>

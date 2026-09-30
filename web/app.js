@@ -411,6 +411,11 @@
 
   const AGENT_HOLDINGS_KEY = "equity-watch.agentHoldings";
   let agentHoldings = storageGet(AGENT_HOLDINGS_KEY) === "1";
+  // "Queue agent changes without asking": skips the confirm dialog for every
+  // write. Remembered per browser like the holdings switch, and like it only
+  // offered while editing is unlocked.
+  const AGENT_AUTO_APPROVE_KEY = "equity-watch.agentAutoApprove";
+  let agentAutoApprove = storageGet(AGENT_AUTO_APPROVE_KEY) === "1";
   let agentTools = null;
   // Settles with the first dashboard.json, so an agent calling in straight after load waits for it.
   let resolveFirstLoad;
@@ -430,6 +435,7 @@
       canEdit,
       canEditHoldings,
       holdingsShared: () => agentHoldings,
+      autoApprove: () => agentAutoApprove,
       pending: () => pendingOps,
       scheduleText: nextCheckText,
       loginExpiredSince: authExpiredSince,
@@ -445,6 +451,15 @@
       storageSet(AGENT_HOLDINGS_KEY, agentHoldings ? "1" : "0");
       syncAgentTools();
     });
+    // Turning asking off takes a person's click, as approving does in the dialog.
+    // Checked on the click: a scripted element.click() still fires a trusted change.
+    $("agent-auto-approve").addEventListener("click", (e) => {
+      if (e.target.checked && !e.isTrusted) e.preventDefault();
+    });
+    $("agent-auto-approve").addEventListener("change", (e) => {
+      agentAutoApprove = e.target.checked;
+      storageSet(AGENT_AUTO_APPROVE_KEY, agentAutoApprove ? "1" : "0");
+    });
   }
 
   function syncAgentTools() {
@@ -452,6 +467,8 @@
     // Offered only where it can matter: a vault that is open.
     $("agent-holdings-label").hidden = !canEditHoldings();
     $("agent-holdings").checked = agentHoldings;
+    $("agent-auto-approve-label").hidden = !canEdit();
+    $("agent-auto-approve").checked = agentAutoApprove;
     agentTools.sync();
   }
 
