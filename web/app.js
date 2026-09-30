@@ -3421,9 +3421,32 @@
       setToken(null);
       return;
     }
-    const token = window.prompt("Ops token (the stack's OpsToken parameter):");
-    if (token && token.trim()) setToken(token.trim());
+    openUnlockDialog();
   });
+  // An in-page modal rather than window.prompt, which some WebMCP hosts don't
+  // implement: ChatGPT desktop returns nothing from it, so the page could never
+  // be unlocked there, and nothing said why.
+  function openUnlockDialog() {
+    $("unlock-token").value = "";
+    $("unlock-error").textContent = "";
+    $("unlock-dialog").showModal();
+    $("unlock-token").focus();
+  }
+  $("unlock-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const token = $("unlock-token").value.trim();
+    if (!token) {
+      $("unlock-error").textContent = "Enter the ops token.";
+      return;
+    }
+    $("unlock-dialog").close();
+    setToken(token);
+  });
+  $("unlock-cancel").addEventListener("click", () => $("unlock-dialog").close());
+  // Don't leave the token sitting in the DOM once the dialog is gone, however it closed.
+  $("unlock-dialog").addEventListener("close", () => ($("unlock-token").value = ""));
+  // Escape closes the dialog; without this the page's own Escape handler would close the drawer behind it too.
+  $("unlock-dialog").addEventListener("keydown", (e) => e.stopPropagation());
   $("drawer-close").addEventListener("click", closeDrawer);
   $("backdrop").addEventListener("click", closeDrawer);
   $("chart-close").addEventListener("click", closeChart);

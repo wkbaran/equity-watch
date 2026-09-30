@@ -74,7 +74,7 @@
   }
   button:hover { border-color: var(--line-strong); background: color-mix(in oklab, var(--ink) 13%, var(--ground)); }
   button.danger { color: var(--signal); border-color: color-mix(in oklab, var(--signal) 50%, var(--ground)); }
-  input[type="search"], input[type="text"], input[type="number"], input[type="date"], select {
+  input[type="search"], input[type="text"], input[type="password"], input[type="number"], input[type="date"], select {
     font: inherit; font-size: 0.88rem; color: var(--ink); background: var(--ground);
     border: 1px solid var(--line-strong); border-radius: var(--radius-s); padding: 0.38rem 0.6rem;
   }
@@ -360,13 +360,22 @@
 
   /* Same trap as .chart-panel: a display rule on a class beats [hidden], so name :not([hidden]). */
   .agent-holdings:not([hidden]) { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; cursor: pointer; }
-  dialog.agent-confirm {
+  /*
+   * In-page modals: the ops-token prompt and the WebMCP agent's confirm. Never
+   * window.prompt/confirm - some WebMCP hosts (ChatGPT desktop) don't implement
+   * them, and the page would silently fail to unlock. The UA's dialog[open]
+   * rule shows and hides these; set no `display` on them (see the [hidden] trap).
+   */
+  :is(dialog.modal, dialog.agent-confirm) {
     background: var(--raised); color: var(--ink); border: 1px solid var(--line-strong); border-radius: var(--radius-m);
     box-shadow: var(--shadow); padding: 1rem 1.2rem; max-width: min(460px, calc(100vw - 32px));
   }
-  dialog.agent-confirm::backdrop { background: color-mix(in srgb, var(--ground) 70%, transparent); }
+  :is(dialog.modal, dialog.agent-confirm)::backdrop { background: color-mix(in srgb, var(--ground) 70%, transparent); }
   dialog.agent-confirm .agent-what { margin: 0.6rem 0; overflow-wrap: anywhere; }
-  dialog.agent-confirm .agent-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 0.9rem; }
+  :is(dialog.agent-confirm .agent-buttons, dialog.modal .modal-buttons) { display: flex; justify-content: flex-end; gap: 8px; margin-top: 0.9rem; }
+  dialog.modal form { display: flex; flex-direction: column; gap: 6px; }
+  dialog.modal .note { margin: 0.2rem 0 0.4rem; }
+  dialog.modal input[type="password"] { width: min(360px, 100%); font-family: ui-monospace, monospace; }
   #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 25; display: flex; flex-direction: column; gap: 8px; max-width: min(420px, calc(100vw - 32px)); }
   .toast {
     display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 0.7rem 0.95rem;
@@ -639,6 +648,21 @@
   <h2 id="chart-title" class="drawer-title"></h2>
   <iframe id="chart-frame" title="TradingView chart"></iframe>
 </aside>
+
+<!-- Unlock editing: the ops token, asked for in the page (see the modal CSS for why not window.prompt). -->
+<dialog id="unlock-dialog" class="modal" aria-labelledby="unlock-title">
+  <form id="unlock-form" novalidate>
+    <strong id="unlock-title">Unlock editing</strong>
+    <p class="note">The ops token: the stack's OpsToken parameter. It stays in this browser, and also opens your private holdings.</p>
+    <label for="unlock-token">Ops token</label>
+    <input id="unlock-token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <span id="unlock-error" class="form-error" role="alert"></span>
+    <div class="modal-buttons">
+      <button type="button" id="unlock-cancel">Cancel</button>
+      <button type="submit">Unlock</button>
+    </div>
+  </form>
+</dialog>
 
 <div id="toasts" aria-live="polite"></div>
 <script src="webmcp.js"></script>

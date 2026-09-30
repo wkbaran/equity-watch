@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { OPS_TOKEN } from "../fixtures.js";
+import { unlockWith } from "../unlock.js";
 
 const poll = (page: Page) => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
 const storeToken = (page: Page) => page.addInitScript((token) => localStorage.setItem("equity-watch.opsToken", token), OPS_TOKEN);
@@ -53,8 +54,7 @@ test("holdings stay private while locked", async ({ page }) => {
 
 test("a token that can't open the vault is refused before anything is sent", async ({ page }) => {
   await page.goto("/#/holdings");
-  page.once("dialog", (d) => d.accept("y".repeat(64)));
-  await page.locator("#ops-btn").click();
+  await unlockWith(page, "y".repeat(64));
   await expect(page.locator("#toasts .toast.bad")).toContainText("didn't open the holdings");
   await expect(page.locator("#ops-btn")).toHaveText("Unlock editing");
   await expect(page.locator("#nav-holdings")).toBeHidden();
@@ -65,8 +65,7 @@ test("a token that can't open the vault is refused before anything is sent", asy
 test("unlocking shows positions, and a position expands to its lots and stops", async ({ page }) => {
   await page.goto("/#/");
   await expect(page.locator("#nav-holdings")).toBeHidden();
-  page.once("dialog", (d) => d.accept(OPS_TOKEN));
-  await page.locator("#ops-btn").click();
+  await unlockWith(page, OPS_TOKEN);
   await expect(page.locator("#nav-holdings")).toBeVisible();
   await expect(page.locator("#nav-holdings-count")).toHaveText("2");
   await expect(page.locator("#tiles")).toContainText("positions held");

@@ -734,6 +734,12 @@ simplifiable and aren't:
 - **On stdio, stdout is the protocol.** Anything `equity-watch mcp` prints must
   go to stderr. `tests/mcp.test.ts` spawns the real process and fails on a stray
   line. The CLI's other commands print freely, so watch shared helpers.
+- **No native dialogs on the page: no `window.prompt`, `confirm` or `alert`.**
+  ChatGPT desktop runs WebMCP but doesn't implement `prompt()`, so the ops token
+  prompt left the page impossible to unlock there, with nothing saying why
+  (2026-09-30). The token is asked for in `#unlock-dialog`; the agent's confirm is
+  in-page too. Tests unlock through `playwright/unlock.ts`, and the unlock-modal
+  tests fail on any native dialog.
 - **Tools exist before the data does.** They register when the script runs, ahead
   of the first `dashboard.json`. Over the real network an immediate call got "hasn't
   loaded yet"; the local fixture server is always faster, so no test saw it until

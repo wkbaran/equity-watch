@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { OPS_TOKEN } from "../fixtures.js";
+import { unlockWith } from "../unlock.js";
 
 /**
  * Stable Chromium has no WebMCP, so each test installs a stand-in for the
@@ -81,8 +82,7 @@ test.describe("what is registered", () => {
 
   test("unlocking adds the alert writes and locking withdraws them", async ({ page }) => {
     await page.goto("/#/");
-    page.once("dialog", (d) => d.accept(OPS_TOKEN));
-    await page.locator("#ops-btn").click();
+    await unlockWith(page, OPS_TOKEN);
     await expect.poll(() => toolNames(page)).toEqual([...READS, ...WRITES].sort());
 
     await page.locator("#ops-btn").click(); // Lock editing

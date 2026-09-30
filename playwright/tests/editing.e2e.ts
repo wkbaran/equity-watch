@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_REVISITS, MOVING_AVERAGE, OPS_TOKEN, STATIC, STATIC_WITH_VOLUME, TRAILING, VOLUME_ONLY } from "../fixtures.js";
+import { unlockWith } from "../unlock.js";
 
 // poll() runs on visibilitychange while the page is visible; it's the only
 // hook into the page's IIFE, and saves waiting a minute for the interval.
@@ -9,10 +10,7 @@ async function queuedOps(page: Page): Promise<Array<Record<string, any>>> {
   return (await page.request.get("/__ops")).json();
 }
 
-async function unlock(page: Page, token = OPS_TOKEN) {
-  page.once("dialog", (dialog) => dialog.accept(token));
-  await page.locator("#ops-btn").click();
-}
+const unlock = (page: Page, token = OPS_TOKEN) => unlockWith(page, token);
 
 async function openAlerts(page: Page) {
   await page.goto("/#/alerts");
@@ -75,6 +73,63 @@ test.describe("locked", () => {
     await unlock(page);
     await expect(page.locator("#alert-add").getByLabel("Symbol")).toHaveValue("gmed");
     expect(await queuedOps(page)).toEqual([]);
+  });
+});
+
+test.describe("the unlock modal", () => {
+  // The token used to come from window.prompt, which some WebMCP hosts
+  // (ChatGPT desktop) don't implement. Nothing here may raise a native dialog.
+  test.beforeEach(({ page }) => {
+    page.on("dialog", (d) => {
+      errors.push(`native ${d.type()} dialog: ${d.message()}`);
+      void d.dismiss();
+    });
+  });
+
+  const modal = (page: Page) => page.locator("#unlock-dialog");
+
+  test("unlocks with the token typed into it, and leaves nothing behind", async ({ page }) => {
+    await openAlerts(page);
+    await page.locator("#ops-btn").click();
+    await expect(modal(page)).toBeVisible();
+    await expect(page.getByLabel("Ops token")).toBeFocused();
+    await page.getByLabel("Ops token").fill(`  ${OPS_TOKEN}  `);
+    await page.getByLabel("Ops token").press("Enter");
+    await expect(modal(page)).toBeHidden();
+    await expect(page.locator("#ops-btn")).toHaveText("Lock editing");
+    await expect(page.locator("#alert-add")).toBeVisible();
+    // Trimmed, as the prompt's answer was.
+    expect(await page.evaluate(() => localStorage.getItem("equity-watch.opsToken"))).toBe(OPS_TOKEN);
+    // The token doesn't linger in the DOM once the dialog closes.
+    expect(await page.locator("#unlock-token").inputValue()).toBe("");
+  });
+
+  test("refuses an empty token in words, and stays open", async ({ page }) => {
+    await openAlerts(page);
+    await page.locator("#ops-btn").click();
+    await page.getByLabel("Ops token").fill("   ");
+    await modal(page).getByRole("button", { name: "Unlock", exact: true }).click();
+    await expect(page.locator("#unlock-error")).toHaveText("Enter the ops token.");
+    await expect(modal(page)).toBeVisible();
+    await expect(page.locator("#ops-btn")).toHaveText("Unlock editing");
+  });
+
+  test("Cancel and Escape leave the page locked, and clear what was typed", async ({ page }) => {
+    await openAlerts(page);
+
+    await page.locator("#ops-btn").click();
+    await page.getByLabel("Ops token").fill("half-typed");
+    await modal(page).getByRole("button", { name: "Cancel" }).click();
+    await expect(modal(page)).toBeHidden();
+    expect(await page.locator("#unlock-token").inputValue()).toBe("");
+
+    await page.locator("#ops-btn").click();
+    await page.getByLabel("Ops token").fill("half-typed again");
+    await page.keyboard.press("Escape");
+    await expect(modal(page)).toBeHidden();
+    expect(await page.locator("#unlock-token").inputValue()).toBe("");
+    await expect(page.locator("#ops-btn")).toHaveText("Unlock editing");
+    expect(await page.evaluate(() => localStorage.getItem("equity-watch.opsToken"))).toBeNull();
   });
 });
 

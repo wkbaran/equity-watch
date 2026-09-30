@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { OPS_TOKEN } from "../fixtures.js";
+import { unlockWith } from "../unlock.js";
 import { hasWebMcp, resultText, WebMcpAgent } from "../webmcpAgent.js";
 
 /**
@@ -50,8 +51,7 @@ test("the browser sees the tools the page's state allows, with their read-only h
   expect(agent.names()).toEqual(READS);
   for (const name of READS) expect(agent.tools.get(name)?.annotations?.readOnly, name).toBe(true);
 
-  page.once("dialog", (d) => d.accept(OPS_TOKEN));
-  await page.locator("#ops-btn").click();
+  await unlockWith(page, OPS_TOKEN);
   await expect.poll(() => agent.names()).toEqual([...READS, ...WRITES].sort());
   for (const name of WRITES) expect(agent.tools.get(name)?.annotations?.readOnly, name).toBe(false);
 
