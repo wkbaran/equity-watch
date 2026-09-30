@@ -10,6 +10,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { OPS_TOKEN } from "../playwright/fixtures.js";
+import { OP_TYPES } from "../src/ops/apply.js";
 import { runMcpServer, sessionServer, type McpOptions } from "../src/mcp/server.js";
 import { SiteApi } from "../src/mcp/siteApi.js";
 import { loadToolbox } from "../src/mcp/toolbox.js";
@@ -226,6 +227,49 @@ describe("writes and approval", () => {
     const after = JSON.parse((await call("get_pending_changes")).text);
     expect(after.waiting).toEqual([]);
     expect(after.recentOutcomes.find((o: { opId: string }) => o.opId === opId)).toMatchObject({ ok: true });
+  });
+});
+
+describe("every write tool, through the server", () => {
+  // One case per write tool: what an agent sends, and the op that must reach
+  // /api/ops for it. Holdings cases run with --allow-holdings, so their guards
+  // (lotExpect, the stop's price, the position's lot ids) come from the
+  // fixture vault decrypted in Node rather than in the browser.
+  const CASES: Array<{ tool: string; args: Record<string, unknown>; op: Record<string, unknown> }> = [
+    { tool: "add_alert", args: { symbol: "NVDA", level: 200, direction: "up", volumeAtLeast: "2.5M" }, op: { type: "alert.add", params: { symbol: "NVDA", level: 200, direction: "up", volumeAtLeast: 2_500_000 } } },
+    { tool: "edit_alert", args: { alertId: "st000001", level: 60 }, op: { type: "alert.edit", target: { alertId: "st000001" }, expect: { condition: "price crosses above 55" }, params: { level: 60 } } },
+    { tool: "remove_alert", args: { alertId: "st000001" }, op: { type: "alert.remove", target: { alertId: "st000001" }, expect: { condition: "price crosses above 55" } } },
+    { tool: "dismiss_revisit", args: { revisitId: "rv0000a2" }, op: { type: "revisit.dismiss", target: { revisitId: "rv0000a2", alertId: "st000001" } } },
+    { tool: "relevel_revisit", args: { revisitId: "rv0000a2" }, op: { type: "revisit.relevel", target: { revisitId: "rv0000a2" } } },
+    { tool: "apply_revisit", args: { revisitId: "rv0000a2" }, op: { type: "revisit.apply", target: { revisitId: "rv0000a2", alertId: "st000001" }, expect: { suggestedLevel: 61, condition: "price crosses above 55" } } },
+    { tool: "add_lot", args: { symbol: "spy", count: 3, basisPerShare: 570, stopPrice: 540 }, op: { type: "lot.add", params: { symbol: "SPY", count: 3, basisPerShare: 570, stopPrice: 540 } } },
+    { tool: "edit_lot", args: { lotId: "lot00001", count: 12, account: "" }, op: { type: "lot.edit", target: { lotId: "lot00001" }, expect: { count: 10, basisPerShare: 40, purchaseDate: "2026-09-01", account: "roth" }, params: { count: 12, account: "" } } },
+    { tool: "remove_lot", args: { lotId: "lot00002" }, op: { type: "lot.remove", target: { lotId: "lot00002" }, expect: { count: 5, basisPerShare: 44, purchaseDate: "2026-09-08", account: "margin" } } },
+    { tool: "remove_position", args: { symbol: "AA" }, op: { type: "position.remove", target: { symbol: "AA" }, expect: { lotIds: ["lot00001", "lot00002"] } } },
+    { tool: "add_stop", args: { symbol: "TSLA", stopPrice: 230 }, op: { type: "stop.add", params: { symbol: "TSLA", stopPrice: 230 } } },
+    { tool: "edit_stop", args: { stopId: "stop0001", stopPrice: 36, count: 5 }, op: { type: "stop.edit", target: { stopId: "stop0001" }, expect: { stopPrice: 38 }, params: { stopPrice: 36, count: 5 } } },
+    { tool: "remove_stop", args: { stopId: "stop0001" }, op: { type: "stop.remove", target: { stopId: "stop0001" }, expect: { stopPrice: 38 } } },
+    { tool: "cover_position", args: { symbol: "TSLA" }, op: { type: "holdings.cover", target: { symbol: "TSLA" } } },
+  ];
+
+  it("has a case for every write tool the server offers, and covers every op type", async () => {
+    const box = await loadToolbox();
+    const writes = box.TOOLS.filter((t) => t.ops !== undefined).map((t) => t.name).sort();
+    expect(CASES.map((c) => c.tool).sort()).toEqual(writes);
+    expect([...new Set(CASES.map((c) => c.op.type as string))].sort()).toEqual([...OP_TYPES].sort());
+  });
+
+  it.each(CASES)("$tool queues $op.type with the page's guards", async ({ tool, args, op }) => {
+    const { call, names, asked } = await connect({ allowHoldings: true }, { action: "accept", content: { confirm: true } });
+    expect(await names()).toContain(tool);
+    const r = await call(tool, args);
+    expect(r.isError, r.text).toBe(false);
+    expect(asked).toHaveLength(1); // the person was asked, once
+    const ops = await queued();
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject(op);
+    // The fake Lambda accepted it, so it is a real op type with an id, as the page sends.
+    expect(ops[0].id).toBe(JSON.parse(r.text).opId);
   });
 });
 
