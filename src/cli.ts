@@ -4,7 +4,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
+import { config as loadDotenv } from "dotenv";
 import { stringify } from "csv-stringify/sync";
 import { analyzeAlert, AnalysisParams } from "./analysis.js";
 import { revisitsToBreakoutAlerts } from "./alerts/bridge.js";
@@ -2318,6 +2320,18 @@ function buildProgram(): Command {
     .requiredOption("--file <path>", "The op, as JSON")
     .action((opts: OpsApplyOpts) => cmdOpsApply(opts));
 
+  program
+    .command("mcp")
+    .description("Serve the dashboard's agent tools over MCP (stdio, or Streamable HTTP with --http); see docs/MCP.md")
+    .option("--http [port]", "Serve Streamable HTTP at http://<host>:<port>/mcp instead of stdio (default port 4190)")
+    .option("--host <address>", "Address for --http; anything but loopback also needs MCP_HTTP_TOKEN", "127.0.0.1")
+    .option("--site-url <url>", "The published dashboard (default: DASHBOARD_URL, else https://CUSTOM_DOMAIN from .env)")
+    .option("--read-only", "Offer no tools that change anything, even with an ops token")
+    .option("--allow-holdings", "Offer the holdings tools (positions, lots, stops, stories): their output goes to the agent's model")
+    .option("--require-approval", "Offer write tools only to clients that can ask the person to approve each change (MCP elicitation)")
+    .option("--pending-file <path>", "Where changes queued through this server are remembered until they apply", DEFAULT_MCP_PENDING)
+    .action((opts: McpCmdOpts) => cmdMcp(opts));
+
   const holdingsCmd = program.command("holdings").description("Track holdings (lots, stops) and basis-relative alerts");
 
   const withHoldingsCommon = (cmd: Command): Command =>
@@ -2410,6 +2424,46 @@ function buildProgram(): Command {
     .action((opts: ProfileShowOpts) => cmdProfileShow(opts));
 
   return program;
+}
+
+/** Beside the repo's other caches, wherever the process was started from. */
+const DEFAULT_MCP_PENDING = fileURLToPath(new URL("../.cache/mcp-pending.json", import.meta.url));
+
+interface McpCmdOpts {
+  http?: string | true;
+  host: string;
+  siteUrl?: string;
+  readOnly?: boolean;
+  allowHoldings?: boolean;
+  requireApproval?: boolean;
+  pendingFile: string;
+}
+
+async function cmdMcp(opts: McpCmdOpts): Promise<void> {
+  // An MCP client starts this from wherever it likes, so dotenv's working-
+  // directory .env may not be this repo's. Fall back to the one beside the
+  // code; values already in the environment win, as usual.
+  loadDotenv({ path: fileURLToPath(new URL("../.env", import.meta.url)), quiet: true });
+  const domain = process.env.CUSTOM_DOMAIN?.trim();
+  const siteUrl = opts.siteUrl ?? process.env.DASHBOARD_URL?.trim() ?? (domain ? `https://${domain}` : null);
+  if (!siteUrl) {
+    // stderr, never stdout: on stdio stdout is the protocol.
+    process.stderr.write("equity-watch mcp: no site to serve. Pass --site-url, or set DASHBOARD_URL or CUSTOM_DOMAIN in .env.\n");
+    process.exitCode = 1;
+    return;
+  }
+  const { runMcpServer } = await import("./mcp/server.js");
+  await runMcpServer({
+    siteUrl,
+    token: process.env.OPS_TOKEN?.trim() || null,
+    readOnly: opts.readOnly === true,
+    allowHoldings: opts.allowHoldings === true,
+    requireApproval: opts.requireApproval === true,
+    pendingFile: opts.pendingFile,
+    http: opts.http === undefined ? null : opts.http === true ? 4190 : parseInt(opts.http, 10),
+    host: opts.host,
+    httpToken: process.env.MCP_HTTP_TOKEN?.trim() || null,
+  });
 }
 
 // Not a string comparison of import.meta.url and argv[1]: that never matches

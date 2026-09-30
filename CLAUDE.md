@@ -722,6 +722,18 @@ simplifiable and aren't:
   cancel never reaches the page. `checkArgs`, the confirm expiry and the
   identical-change refusal in `queue()` exist because of that. Don't remove them on
   the grounds that "the browser handles it".
+- **`web/webmcp.js` has two hosts** (2026-09-30): the page, and `equity-watch mcp`
+  (`src/mcp/`, docs/MCP.md), which imports the file in Node and serves the same
+  TOOLS through `callTool`. Keep the core free of the DOM: the dialog and browser
+  registration are the page adapter's; the server asks through MCP elicitation
+  via `api.confirm`. Any sentence that names *how* a person grants access or
+  approves ("Unlock editing", "--allow-holdings") goes through `api.text`
+  (`PAGE_TEXT` is the page's), or one host tells agents about the other's buttons.
+  `settlePending` is the one copy of the drain-watermark rule: `app.js` and the
+  server's pending file both use it.
+- **On stdio, stdout is the protocol.** Anything `equity-watch mcp` prints must
+  go to stderr. `tests/mcp.test.ts` spawns the real process and fails on a stray
+  line. The CLI's other commands print freely, so watch shared helpers.
 - **Tools exist before the data does.** They register when the script runs, ahead
   of the first `dashboard.json`. Over the real network an immediate call got "hasn't
   loaded yet"; the local fixture server is always faster, so no test saw it until

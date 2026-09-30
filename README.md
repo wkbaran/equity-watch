@@ -8,7 +8,8 @@ A self-hosted alert engine for US equities. It watches price levels, trailing st
 volume and moving averages against Schwab market data, and every firing lands in a
 **revisit queue**: a ranked list of levels that got taken out and now need a decision.
 A static browser dashboard shows the queue, your holdings and every live alert, and
-lets you act on them from any device.
+lets you act on them from any device, or lets an AI agent act on them for you, with
+your approval, through WebMCP in the browser or an MCP server.
 
 ![Node 22](https://img.shields.io/badge/node-22-339933?logo=nodedotjs&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
@@ -17,7 +18,7 @@ lets you act on them from any device.
 ![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Worked example](#a-worked-example) · [Alerts](docs/ALERTS.md) · [Holdings](docs/HOLDINGS.md) · [Dashboard](docs/DASHBOARD.md) · [Architecture](docs/ARCHITECTURE.md)
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Worked example](#a-worked-example) · [Alerts](docs/ALERTS.md) · [Holdings](docs/HOLDINGS.md) · [Dashboard](docs/DASHBOARD.md) · [MCP server](docs/MCP.md) · [Architecture](docs/ARCHITECTURE.md)
 
 <img src="docs/images/queue-row.png" alt="A revisit queue row: priority 47, the English headline, the held tag, the fired line with a suggested level, price since the fire, the position, the signal breakdown, and the Details, Chart, Re-suggest, Apply and Dismiss actions" width="900">
 
@@ -44,11 +45,13 @@ Only Schwab is required. Everything else is optional, and the engine runs withou
 | Custom domain | AWS Route 53 + Certificate Manager | Optional. Otherwise the site serves from its `*.cloudfront.net` URL |
 | Scheduled runs | Windows Task Scheduler, cron, or Docker | One of them, to run unattended |
 | Run monitoring | [healthchecks.io](https://healthchecks.io) or any ping URL | Optional dead-man's switch for scheduled runs |
+| AI agents | [WebMCP](https://github.com/webmachinelearning/webmcp) (Chrome 149+, behind a flag) or any [MCP](https://modelcontextprotocol.io/) client | Optional. The same tools either way; see [Agents](#agents-webmcp-and-mcp) |
 | Importing existing data | TradingView alert CSV exports, Webull holdings CSV exports | One-time migration only. There is no brokerage sync |
 
 The CLI is TypeScript on Node.js 22, with [commander](https://github.com/tj/commander.js),
 [csv-parse](https://csv.js.org/parse/)/[csv-stringify](https://csv.js.org/stringify/),
-[dotenv](https://github.com/motdotla/dotenv) and the AWS SDK v3 (S3, CloudFront, SQS).
+[dotenv](https://github.com/motdotla/dotenv), the AWS SDK v3 (S3, CloudFront, SQS) and
+the [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk).
 The dashboard is plain HTML, CSS and JavaScript with no framework or bundler; it
 loads Archivo from Google Fonts and decrypts private holdings and stories in the
 browser with WebCrypto. Tests use [Vitest](https://vitest.dev/) and [Playwright](https://playwright.dev/).
@@ -107,6 +110,8 @@ On a Docker host, `docker/` runs the same loop in one container; see
 | **Dashboard edits** | |
 | `ops pull` | Apply changes queued from the browser (no-op without `OPS_QUEUE_URL`) |
 | `ops apply` | Apply one op from a JSON file, no AWS involved |
+| **Agents** | |
+| `mcp` | Serve the dashboard's agent tools over MCP: stdio, or Streamable HTTP with `--http` |
 | **Reference data** | |
 | `profile fetch` / `list` / `show` | Sector/industry/exchange cache from Financial Modeling Prep |
 
@@ -355,6 +360,33 @@ of the same name is easy to pick by mistake and works for neither.
   the stories of when you bought and sold are not published in the clear. Turn on basic auth if that isn't acceptable. The full model:
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#what-the-token-protects-and-what-it-doesnt).
 
+## Agents (WebMCP and MCP)
+
+The dashboard's reads and queued edits are also **tools an AI agent can call**:
+reading the queue, adding or editing alerts, applying a suggested level, and, only if
+you allow it, your holdings. There is one set of tools (`web/webmcp.js`) and two ways
+to reach it:
+
+- **In the browser, through [WebMCP](https://github.com/webmachinelearning/webmcp).**
+  The page registers the tools with the browser, for an assistant working beside you
+  in the tab. Today that means Chrome with `chrome://flags/#enable-webmcp-testing`;
+  DevTools → Application → WebMCP lists and runs them.
+  [Details](docs/DASHBOARD.md#agent-tools-webmcp).
+- **Anywhere else, through MCP.** `node dist/cli.js mcp` serves the same tools to
+  Claude Code (stdio) or Open WebUI (`--http`), reading the published site and queueing
+  through the same `/api/ops` with the ops token from `.env`.
+  [Details](docs/MCP.md).
+
+Whichever way it arrives:
+
+- **Every change needs your approval.** The page shows its own dialog; the MCP server
+  asks through the client (MCP elicitation).
+- **An agent queues changes like the page does.** They apply at the next scheduled
+  check, and the tool answers "queued", never "done".
+- **Holdings stay off by default.** An agent sees positions only after you tick
+  "Agents may see holdings" on the page, or start the server with `--allow-holdings`,
+  because tool output goes to the agent's model.
+
 ## When something breaks
 
 - **Everything that needs a quote exits with code 3, or the page says "checks paused,
@@ -382,7 +414,8 @@ of the same name is easy to pick by mistake and works for neither.
 | [`docker/README.md`](docker/README.md) | Running the scheduled loop in a container, and moving existing state into it |
 | [`docs/ALERTS.md`](docs/ALERTS.md) | Alert kinds in depth, volume baselines, moving averages, market hours, re-fire rules, the revisit queue and its scoring, `alert seed` |
 | [`docs/HOLDINGS.md`](docs/HOLDINGS.md) | Lots and stops, `holdings cover`, the Webull import, basis-relative alerts |
-| [`docs/DASHBOARD.md`](docs/DASHBOARD.md) | Terminal and browser dashboard, views, notifications, headlines and stories |
+| [`docs/DASHBOARD.md`](docs/DASHBOARD.md) | Terminal and browser dashboard, views, notifications, headlines and stories, the WebMCP tools |
+| [`docs/MCP.md`](docs/MCP.md) | The MCP server: access flags, approval, running it for Claude Code and Open WebUI |
 | [`docs/ANALYSIS.md`](docs/ANALYSIS.md) | `analyze` breakout confirmation, `analysis.config.json` tuning, the FMP profile cache |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The Lambda/SQS edit round trip, the encrypted holdings vault, the Schwab login expiry, encryption and threat model |
 
@@ -392,7 +425,8 @@ of the same name is easy to pick by mistake and works for neither.
 npm test          # eslint over web/ and src/, typecheck of src/ and tests/, then vitest
 npm run lint      # eslint alone
 npm run typecheck
-npm run test:ui   # Playwright tests of the page's editing controls
+npm run test:ui   # Playwright tests of the page; with Google Chrome installed, also its real WebMCP
+npx tsx playwright/agentEval.ts [--via mcp]   # a local model (Ollama) driving the agent tools
 ```
 
 Real financial data stays out of git (`holdings.json`, `alerts.json`, `revisits.json`,

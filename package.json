@@ -19,6 +19,7 @@
     "@aws-sdk/client-cloudfront": "^3.1131.0",
     "@aws-sdk/client-s3": "^3.1131.0",
     "@aws-sdk/client-sqs": "^3.1132.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "commander": "^12.1.0",
     "csv-parse": "^5.5.6",
     "csv-stringify": "^6.5.1",

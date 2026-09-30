@@ -23,9 +23,13 @@
 // document.modelContext), and the registration call with it. Detect both, and
 // keep everything version-specific in host()/add()/drop() below.
 //
-// Loaded before app.js as a classic script. It exports through one global so
-// tests/webmcp.test.ts can evaluate it in Node and check every schema against
-// src/ops/validate.ts.
+// Two hosts share this file. The page loads it before app.js as a classic
+// script and registers the tools with the browser (start()). The MCP server
+// (src/mcp/) imports it in Node and serves the same tools over MCP, calling
+// callTool() exactly as the page does. So the core - TOOLS, checkArgs, queue,
+// callTool, settlePending - must not touch the DOM, and wording that names how
+// a person grants access goes through `api.text` (see PAGE_TEXT). It exports
+// through one global, which is also how tests/webmcp.test.ts evaluates it.
 
 (function (root) {
   "use strict";
@@ -145,18 +149,52 @@
     holdings: (api) => api.canEditHoldings() && api.holdingsShared(),
   };
 
-  const LOCKED_MESSAGE = {
-    read: "",
-    write: "Editing is locked. The person has to unlock editing on the dashboard first.",
-    holdings: "Holdings aren't shared with agents. The person has to unlock editing and turn on 'Agents may see holdings' on the dashboard.",
+  // ---- wording that depends on the host ------------------------------------------
+  //
+  // This file serves two hosts: the page (WebMCP) and the Node MCP server
+  // (src/mcp/), which imports it. Everything else here is the same for both;
+  // these are the few sentences that name how a person grants access or
+  // approves a change, which differ. A host overrides them with `api.text`.
+
+  const PAGE_TEXT = {
+    locked: {
+      read: "",
+      write: "Editing is locked. The person has to unlock editing on the dashboard first.",
+      holdings: "Holdings aren't shared with agents. The person has to unlock editing and turn on 'Agents may see holdings' on the dashboard.",
+    },
+    access:
+      "Which tools this page offers depends on what the person has allowed. Tools that add, edit or remove alerts or act on the revisit queue appear only once the person clicks 'Unlock editing' on the page. " +
+      "The person's holdings (positions, share counts, cost basis, stops, and stories of their trades) are private: tools for them appear only when editing is unlocked and the person ticks 'Agents may see holdings'. " +
+      "If a tool you need isn't offered, tell the person which of those to do rather than guessing or sending them elsewhere.",
+    approved: "The person approved this on the page and it is now queued. It has not taken effect yet.",
   };
+
+  const lockedMessage = (api, group) => api.text?.locked?.[group] ?? PAGE_TEXT.locked[group];
+
+  /** A tool's description as this host tells it: get_overview's access paragraph is host wording. */
+  const descriptionFor = (tool, api) => (tool.accessNote ? `${tool.description} ${api.text?.access ?? PAGE_TEXT.access}` : tool.description);
+
+  /**
+   * MCP tool annotations, derived from what a tool queues. Chrome reads
+   * `readOnlyHint` (it reports `readOnly`); MCP clients use the rest to decide
+   * what to ask the person before a call.
+   */
+  function annotationsFor(tool) {
+    if (tool.ops === undefined) return { readOnlyHint: true, openWorldHint: false };
+    return {
+      readOnlyHint: false,
+      destructiveHint: tool.ops.some((op) => op.endsWith(".remove") || op === "revisit.dismiss"),
+      idempotentHint: false,
+      openWorldHint: false,
+    };
+  }
 
   /** Summaries of changes asked about or being sent right now; see queue(). */
   const inFlight = new Set();
 
   /** Queue an op after the person has agreed to it; the shared tail of every write tool. */
   async function queue(api, group, signal, { op, symbol, alertId = null, revisitId = null, summary }) {
-    if (!AVAILABLE[group](api)) return refuse(LOCKED_MESSAGE[group]);
+    if (!AVAILABLE[group](api)) return refuse(lockedMessage(api, group));
     // An agent that retries - after a timeout, or a cancel the page never heard
     // about (see CONFIRM_TIMEOUT_MS) - must not queue the same change twice. A
     // second identical lot.add would double a position.
@@ -172,11 +210,17 @@
     }
     inFlight.add(summary);
     let result;
+    let approvalStatus;
     try {
-      const answer = await confirmChange(summary, signal);
+      // The page asks with its dialog; another host (the MCP server) brings its own way of asking.
+      // A confirm answers "approved" | "declined" | "expired" | "cancelled", or
+      // { answer, status } when it has something to say about how approval was given.
+      const asked = await (api.confirm ?? confirmChange)(summary, signal);
+      const answer = typeof asked === "string" ? asked : asked.answer;
       if (answer !== "approved") return refuse(NOT_APPROVED[answer]);
+      approvalStatus = typeof asked === "string" ? null : (asked.status ?? null);
       // Locking, or turning holdings off, while the dialog was open withdraws the permission.
-      if (!AVAILABLE[group](api)) return refuse(LOCKED_MESSAGE[group]);
+      if (!AVAILABLE[group](api)) return refuse(lockedMessage(api, group));
       result = await api.submit(op, { symbol, alertId, revisitId, summary });
     } finally {
       inFlight.delete(summary);
@@ -186,7 +230,7 @@
       queued: true,
       // Models read "applies at the next check" as "done", or as still awaiting the person's OK. It is neither.
       applied: false,
-      status: "The person approved this on the page and it is now queued. It has not taken effect yet.",
+      status: approvalStatus ?? api.text?.approved ?? PAGE_TEXT.approved,
       opId: result.id,
       change: summary,
       applies: api.scheduleText() ?? "at the next scheduled check",
@@ -374,10 +418,9 @@
       name: "get_overview",
       group: "read",
       description:
-        "The dashboard at a glance: counts of live alerts, open and actionable revisit entries, triggers in the window, when the next scheduled check runs, and whether the Schwab login has expired (checks are paused while it has). " +
-        "Which tools this page offers depends on what the person has allowed. Tools that add, edit or remove alerts or act on the revisit queue appear only once the person clicks 'Unlock editing' on the page. " +
-        "The person's holdings (positions, share counts, cost basis, stops, and stories of their trades) are private: tools for them appear only when editing is unlocked and the person ticks 'Agents may see holdings'. " +
-        "If a tool you need isn't offered, tell the person which of those to do rather than guessing or sending them elsewhere.",
+        "The dashboard at a glance: counts of live alerts, open and actionable revisit entries, triggers in the window, when the next scheduled check runs, and whether the Schwab login has expired (checks are paused while it has).",
+      // descriptionFor() appends the host's paragraph on how access is granted.
+      accessNote: true,
       inputSchema: object({}),
       async run(api) {
         const d = await loadedDashboard(api);
@@ -895,6 +938,45 @@
     },
   ];
 
+  // ---- entry points both hosts use ---------------------------------------------------
+
+  /** Whether the host's current state offers this tool. */
+  const available = (tool, api) => AVAILABLE[tool.group](api);
+
+  /**
+   * Runs one call the way every host must: the tool's own gate (a reference
+   * kept past a lock still refuses), then its inputSchema (no host enforces
+   * it for us; see checkArgs), then the tool. An exception is reported as a
+   * refusal rather than thrown back into the host.
+   */
+  async function callTool(tool, api, args, signal) {
+    if (!available(tool, api)) return refuse(lockedMessage(api, tool.group));
+    const checked = checkArgs(tool.inputSchema, args);
+    if (checked.error) return refuse(`${tool.name}: ${checked.error}`);
+    try {
+      return await tool.run(api, checked.args, signal);
+    } catch (err) {
+      return refuse(`The dashboard failed while running ${tool.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Splits a host's pending changes by what the published document says about
+   * them: `done` have a result, `processed` were queued before the last drain
+   * started and so were applied even though their result has aged out of the
+   * document, and `waiting` are neither. The page's resolvePending and the MCP
+   * server's pending file both settle through this, so the watermark rule has
+   * one home.
+   */
+  function settlePending(pending, results, processedThrough) {
+    const byId = new Map((results ?? []).map((r) => [r.id, r]));
+    const done = pending.filter((p) => byId.has(p.id)).map((p) => ({ pending: p, result: byId.get(p.id) }));
+    const cutoff = processedThrough ? new Date(processedThrough).getTime() : null;
+    const processed = cutoff === null ? [] : pending.filter((p) => !byId.has(p.id) && new Date(p.queuedAt).getTime() < cutoff);
+    const retired = new Set([...done.map((d) => d.pending.id), ...processed.map((p) => p.id)]);
+    return { done, processed, waiting: pending.filter((p) => !retired.has(p.id)) };
+  }
+
   /** What a lot looked like when read, so the worker can refuse an edit to something else. Mirrors lotExpect in app.js. */
   const lotExpect = (lot) => ({ count: lot.count, basisPerShare: lot.basisPerShare, purchaseDate: lot.purchaseDate, account: lot.account ?? null });
 
@@ -922,26 +1004,14 @@
   function start(api) {
     const live = new Map(); // tool name -> AbortController
 
-    const execute = (tool) => async (args, options) => {
-      if (!AVAILABLE[tool.group](api)) return refuse(LOCKED_MESSAGE[tool.group]);
-      const checked = checkArgs(tool.inputSchema, args);
-      if (checked.error) return refuse(`${tool.name}: ${checked.error}`);
-      try {
-        return await tool.run(api, checked.args, options?.signal);
-      } catch (err) {
-        return refuse(`The dashboard failed while running ${tool.name}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    };
-
     function add(mc, tool) {
       const controller = new AbortController();
       const descriptor = {
         name: tool.name,
-        description: tool.description,
+        description: descriptionFor(tool, api),
         inputSchema: tool.inputSchema,
-        // A tool that queues no op changes nothing. Chrome reads this hint (it reports `readOnly`).
-        annotations: { readOnlyHint: tool.ops === undefined },
-        execute: execute(tool),
+        annotations: annotationsFor(tool),
+        execute: (args, options) => callTool(tool, api, args, options?.signal),
       };
       const failed = (err) => {
         live.delete(tool.name);
@@ -972,7 +1042,7 @@
       const mc = host();
       if (!mc) return;
       for (const tool of TOOLS) {
-        const wanted = AVAILABLE[tool.group](api);
+        const wanted = available(tool, api);
         if (wanted && !live.has(tool.name)) add(mc, tool);
         else if (!wanted && live.has(tool.name)) drop(mc, tool.name);
       }
@@ -982,5 +1052,5 @@
     return { sync, registered: () => [...live.keys()] };
   }
 
-  root.equityWatchWebMcp = { start, supported, checkArgs, TOOLS };
+  root.equityWatchWebMcp = { start, supported, checkArgs, callTool, available, descriptionFor, annotationsFor, settlePending, TOOLS };
 })(typeof window !== "undefined" ? window : globalThis);

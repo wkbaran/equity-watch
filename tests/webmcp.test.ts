@@ -318,3 +318,33 @@ describe("checkArgs: the browser doesn't enforce inputSchema, so the tools do", 
     }
   });
 });
+
+describe("settlePending: one watermark rule for the page and the MCP server", () => {
+  type Settle = (
+    pending: Array<{ id: string; queuedAt: string }>,
+    results: Array<{ id: string; ok: boolean; message: string }> | null,
+    through: string | null
+  ) => { done: Array<{ pending: { id: string }; result: { id: string } }>; processed: Array<{ id: string }>; waiting: Array<{ id: string }> };
+  const settle = (webmcp as unknown as { settlePending: Settle }).settlePending;
+  const pending = [
+    { id: "a", queuedAt: "2026-09-30T10:00:00Z" },
+    { id: "b", queuedAt: "2026-09-30T10:05:00Z" },
+    { id: "c", queuedAt: "2026-09-30T10:20:00Z" },
+  ];
+
+  it("a published result settles its change, whenever it was queued", () => {
+    const r = settle(pending, [{ id: "c", ok: false, message: "rejected" }], null);
+    expect(r.done.map((d) => [d.pending.id, d.result.id])).toEqual([["c", "c"]]);
+    expect(r.waiting.map((p) => p.id)).toEqual(["a", "b"]);
+  });
+
+  it("anything queued before the drain watermark was applied, even with its result aged out", () => {
+    const r = settle(pending, [], "2026-09-30T10:10:00Z");
+    expect(r.processed.map((p) => p.id)).toEqual(["a", "b"]);
+    expect(r.waiting.map((p) => p.id)).toEqual(["c"]);
+  });
+
+  it("with neither, everything is still waiting", () => {
+    expect(settle(pending, null, null).waiting).toHaveLength(3);
+  });
+});
