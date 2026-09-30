@@ -29,6 +29,8 @@ schwab_tokens.json
 # against its own directory, but a run started elsewhere lands it at the root.
 .playwright-mcp/
 /playwright/test-results/
+# Transcripts from playwright/agentEval.ts (a model driving the WebMCP tools).
+/playwright/agent-results/
 /test-results/
 /playwright-report/
 

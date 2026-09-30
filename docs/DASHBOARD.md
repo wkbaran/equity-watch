@@ -237,6 +237,87 @@ fetching quotes, so a quiet run costs no API calls. Last-publish state lives in
 */2 * * * 1-5 /path/to/repo/scripts/check-and-publish.sh >> /path/to/repo/logs/cron.log 2>&1
 ```
 
+### Agent tools (WebMCP)
+
+A proof of concept for [WebMCP](https://github.com/webmachinelearning/webmcp), the
+browser API that lets a page hand an in-browser agent a set of typed tools.
+`web/webmcp.js` registers the page's reads and queued edits as tools; nothing else
+changes. There is no new backend, token or op type: a tool can do exactly what the
+unlocked page can, through the same `submitOp`, the same `expect` guards and the
+same worker-side validation. Where a browser has no WebMCP the page is unchanged
+and shows no extra control.
+
+| Tools | Registered when | What they do |
+|---|---|---|
+| `get_overview`, `list_revisit_queue`, `list_alerts`, `get_alert`, `get_pending_changes` | always | Read `dashboard.json` and `alerts.json`. Public data only. |
+| `add_alert`, `edit_alert`, `remove_alert`, `dismiss_revisit`, `relevel_revisit`, `apply_revisit` | editing is unlocked | Queue the matching op. |
+| `list_positions`, `get_position`, `get_stories`, `add_lot`, `edit_lot`, `remove_lot`, `remove_position`, `add_stop`, `edit_stop`, `remove_stop`, `cover_position` | editing is unlocked, the vault is open **and** "Agents may see holdings" is ticked | Read the decrypted vault; queue holdings ops. |
+
+Tools come and go with the page's state: locking editing, or unticking the box,
+unregisters them at once. A tool also re-checks its own permission when called, for
+an agent that kept a reference.
+
+**Every write asks first.** The spec's answer to user consent is still an open issue
+(#165), so the page shows its own dialog with the same summary line the pending list
+uses, and queues nothing until the person clicks *Queue this change*. Requests are
+asked one at a time, Escape declines, and the button ignores a scripted
+`element.click()` (`isTrusted`). An agent that drives the browser with real input
+events can still press it; the dialog is a check on the tools, not a sandbox for
+the agent. A queued change still lands only at the next scheduled check, so a write
+tool answers "queued", never "done", and `get_pending_changes` is how an agent learns
+the outcome.
+
+**The browser can't tell the page an agent gave up.** Chrome 152 calls a tool's
+`execute` with its input alone (no `AbortSignal`), and when an agent cancels a call it
+is told "Canceled" at once while the page carries on. Approving the still-open dialog
+then queued a change the agent believed hadn't happened. So a question expires
+unanswered after 2 minutes, and a change identical to one already pending, or still
+being asked about, is refused with a pointer to `get_pending_changes` rather than
+queued twice.
+
+**The browser doesn't check arguments either.** Chrome passes a wrong type, an unknown
+key or a missing required field straight to `execute`, so every call is checked
+against the tool's own `inputSchema` first (`checkArgs`) and refused with the reason.
+The one leniency is a number sent as a string ("200"), which models do often.
+
+**Holdings are opt-in because the disclosure is new.** The vault is decrypted in the
+browser so that no server sees it. A tool's output goes to whatever model the agent
+runs on, so the holdings tools stay off until you tick the box in the left rail (a
+per-browser choice). Nothing published changes: `dashboard.json` still carries no
+holdings or stories, and `tests`/`playwright` assert it.
+
+**Trying it.** Chrome 149+ has WebMCP behind `chrome://flags/#enable-webmcp-testing`,
+and Edge 150+ likewise; DevTools then has a WebMCP panel listing the page's tools. To
+use it on the deployed site, register its origin for the
+[origin trial](https://developer.chrome.com/blog/ai-webmcp-origin-trial) and serve
+the token as `<meta http-equiv="origin-trial" content="…">` in `web/index.html`
+(it isn't committed: the token is per origin, and the current ones expire
+2026-11-17).
+
+**Testing it, three ways:**
+
+- `playwright/tests/webmcp.e2e.ts` runs on Playwright's Chromium, which has no WebMCP,
+  so it installs a stand-in `modelContext`. It covers the page's half anywhere.
+- `playwright/tests/webmcp.chrome.e2e.ts` runs in the `chrome-webmcp` project: an
+  installed Google Chrome launched with `--enable-features=WebMCPTesting,…`, calling
+  every tool through the DevTools protocol's `WebMCP` domain (`invokeTool`,
+  `toolsAdded`, `toolResponded`), which is the route an agent host takes. `npm run
+  test:ui` includes it when Chrome is installed; `PW_CHROME=0` leaves it out.
+  `playwright/webmcpAgent.ts` wraps the protocol and records the shapes it was seen
+  to use, since they come from Chrome rather than a spec.
+- `npx tsx playwright/agentEval.ts` puts a model in the agent's seat (Ollama, default
+  `qwen3.6-27b-ctx131k:latest` on `localhost:11434`; `--model`, `--task`, `--repeat`,
+  `--no-think`). It gives the model only the tools' own names, descriptions and
+  schemas under an app-agnostic prompt, plays the person at the confirm dialog, and
+  checks each task against what reached the fake Lambda. Transcripts go to
+  `playwright/agent-results/`. It isn't part of `npm test`: it needs a model server
+  and takes minutes.
+
+**The API is unsettled.** The spec's current text puts it on `document.modelContext`
+and unregisters by aborting the `registerTool` signal; earlier write-ups and previews
+use `navigator.modelContext` and `unregisterTool`. `host()`, `add()` and `drop()` in
+`web/webmcp.js` handle both and are the only version-specific code.
+
 ## Narrative
 
 Every queue row carries a `headline` — a plain-English sentence rather than a row of

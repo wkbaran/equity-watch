@@ -690,6 +690,49 @@ Things that look simplifiable and aren't:
     the fixtures) or kill whatever is listening on 4178 and re-run. Editing
     `web/` alone is safe: those files are read per request.
 
+## WebMCP tools are a second door to `submitOp`, and the consent step is ours
+
+`web/webmcp.js` (added 2026-09-29, docs in `docs/DASHBOARD.md`) registers the page's
+reads and queued edits as tools for an in-browser agent. Things that look
+simplifiable and aren't:
+
+- **Every write tool ends in `queue()`, which asks the person first.** The spec has
+  no consent mechanism yet (issue #165), so the confirm dialog is the only thing
+  between an agent and the ops queue. A new write tool must go through `queue()`,
+  never call `api.submit` directly. The dialog ignores non-trusted clicks on purpose.
+- **A tool must be added to `webmcp.js` for every new op type** (or consciously left
+  out): `tests/webmcp.test.ts` asserts the tools' `ops` cover `OP_TYPES` exactly, and
+  that every schema property is one the worker's validator accepts (the validators
+  reject unknown fields, so a stale schema fails only after an agent tries it).
+- **Holdings tools have a second gate** (`holdingsShared`, the "Agents may see
+  holdings" box) on top of the open vault. Tool output leaves the browser for the
+  agent's model, which the vault's design exists to prevent. Don't fold the gate
+  into `canEditHoldings`, which the page's own UI uses.
+- **Register through `host()`.** The host object was `navigator.modelContext` and is
+  `document.modelContext` in the current spec; registration went from
+  `unregisterTool` to an `AbortSignal`. Don't hardcode either.
+- **Stable Chromium has no WebMCP; installed Chrome 152 does.** `webmcp.e2e.ts` stubs
+  `modelContext` and covers the page's half anywhere. `webmcp.chrome.e2e.ts` (project
+  `chrome-webmcp`) drives the real thing through CDP's `WebMCP` domain, and
+  `playwright/agentEval.ts` puts an Ollama model in the agent's seat. Playwright's own
+  typings for that CDP domain are from an older Chrome and wrong for 152, which is why
+  `webmcpAgent.ts` listens untyped.
+- **Chrome enforces nothing about a tool call** (verified 2026-09-30 on 152): no
+  `inputSchema` check, and `execute(input)` gets no `AbortSignal`, so an agent's
+  cancel never reaches the page. `checkArgs`, the confirm expiry and the
+  identical-change refusal in `queue()` exist because of that. Don't remove them on
+  the grounds that "the browser handles it".
+- **Tools exist before the data does.** They register when the script runs, ahead
+  of the first `dashboard.json`. Over the real network an immediate call got "hasn't
+  loaded yet"; the local fixture server is always faster, so no test saw it until
+  one held the fetch back. Reads go through `loadedDashboard`, which waits for the
+  first load. A new tool reading `api.dashboard()` directly will reintroduce it.
+- **The New alert form can't add a moving-average *touch* left on its default
+  "Either side".** `parseAddInput` accepts only `above|below` for `from` when adding
+  (an edit also takes `either`), and the form sends `either`, so the worker rejects it
+  ("Invalid --from"). Found while writing the tools, whose `add_alert` schema offers
+  `above|below` for that reason. Not fixed.
+
 ## README screenshots are generated, and nothing tells you when they rot
 
 `docs/images/*.png` are the fragments embedded in README.md's worked example and

@@ -366,6 +366,7 @@
 
   function rerenderOps() {
     renderOpsControls();
+    syncAgentTools();
     syncStoriesAccess();
     renderStories();
     if (current) {
@@ -396,6 +397,64 @@
     btn.textContent = opsToken ? "Lock editing" : "Unlock editing";
   }
 
+  // ---- agent tools (WebMCP) ---------------------------------------------------
+  //
+  // web/webmcp.js registers this page's reads and queued edits as tools for a
+  // browser-side agent. It is handed a narrow view of the state above rather
+  // than the closure, and it can only change anything through submitOp, so an
+  // agent has exactly the reach of an unlocked page and no more.
+  //
+  // Holdings are the exception to "same reach": the vault is decrypted here in
+  // the browser precisely so no server sees it, and tool output goes to
+  // whatever model the agent runs on. So those tools stay off until the person
+  // switches them on, and the choice is remembered per browser.
+
+  const AGENT_HOLDINGS_KEY = "equity-watch.agentHoldings";
+  let agentHoldings = storageGet(AGENT_HOLDINGS_KEY) === "1";
+  let agentTools = null;
+  // Settles with the first dashboard.json, so an agent calling in straight after load waits for it.
+  let resolveFirstLoad;
+  const firstLoad = new Promise((resolve) => (resolveFirstLoad = resolve)); // { sync } once web/webmcp.js has registered against a browser that has WebMCP
+
+  function startAgentTools() {
+    const webmcp = window.equityWatchWebMcp;
+    if (!webmcp?.supported()) return;
+    agentTools = webmcp.start({
+      dashboard: () => current,
+      loaded: () => firstLoad,
+      alerts: async () => {
+        await ensureAlerts(true);
+        return alertsDoc;
+      },
+      vault: () => vaultData,
+      canEdit,
+      canEditHoldings,
+      holdingsShared: () => agentHoldings,
+      pending: () => pendingOps,
+      scheduleText: nextCheckText,
+      loginExpiredSince: authExpiredSince,
+      parseVolume,
+      formatVolume,
+      submit: async (op, meta) => {
+        const ok = await submitOp(op, meta);
+        return ok ? { ok: true, id: lastSubmit.id } : { ok: false, error: lastSubmit.error ?? "unknown error" };
+      },
+    });
+    $("agent-holdings").addEventListener("change", (e) => {
+      agentHoldings = e.target.checked;
+      storageSet(AGENT_HOLDINGS_KEY, agentHoldings ? "1" : "0");
+      syncAgentTools();
+    });
+  }
+
+  function syncAgentTools() {
+    if (agentTools === null) return;
+    // Offered only where it can matter: a vault that is open.
+    $("agent-holdings-label").hidden = !canEditHoldings();
+    $("agent-holdings").checked = agentHoldings;
+    agentTools.sync();
+  }
+
   function notice(text, ok, alertId = null) {
     const el = h(
       "div",
@@ -407,8 +466,14 @@
     setTimeout(() => el.remove(), ok ? 15_000 : 60_000);
   }
 
+  // What the last submitOp did, for callers that need the reason and not just
+  // the boolean (the WebMCP tools tell an agent why a change wasn't queued).
+  // Every other caller only branches on the return value, so this stays out of it.
+  let lastSubmit = { id: null, error: null };
+
   async function submitOp(op, { symbol, alertId = null, revisitId = null, summary }) {
     const body = { ...op, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
+    lastSubmit = { id: body.id, error: null };
     let resp;
     try {
       resp = await fetch("api/ops", {
@@ -417,10 +482,12 @@
         body: JSON.stringify(body),
       });
     } catch (err) {
+      lastSubmit.error = `the request failed (${err.message})`;
       notice(`Couldn't queue ${summary} (${err.message}).`, false);
       return false;
     }
     if (resp.status === 401) {
+      lastSubmit.error = "the ops token was rejected, so editing is locked again";
       setToken(null);
       notice("The ops token was rejected. Unlock editing with the right one.", false);
       return false;
@@ -432,6 +499,7 @@
       } catch {
         /* not JSON */
       }
+      lastSubmit.error = reason;
       notice(`Couldn't queue ${summary}: ${reason}.`, false);
       return false;
     }
@@ -2438,6 +2506,7 @@
 
   function render(d) {
     current = d;
+    resolveFirstLoad();
     renderUpdated();
     renderAuthBanner();
     $("nav-alerts-count").textContent = String(d.summary.liveAlerts);
@@ -2455,6 +2524,7 @@
     renderApproaching(d.approaching ?? [], d.approachingTotal ?? 0);
     renderQuiet(d.quietWatches, d.quietTotal);
     renderOpsControls();
+    syncAgentTools();
     renderHoldingsView();
     renderDrawer(parseRoute().drawer);
   }
@@ -3370,6 +3440,7 @@
   window.addEventListener("hashchange", applyRoute);
 
   renderNotifyControls();
+  startAgentTools();
   applyRoute();
   poll();
   // Browsers throttle background-tab timers to about once a minute, which is
