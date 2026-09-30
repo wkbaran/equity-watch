@@ -3104,7 +3104,10 @@
     if (d.type === "trigger" && freshIds.delete(d.id) && current) {
       renderTriggers(current.recentTriggers ?? [], current.summary.windowDays);
     }
-    $("drawer-body").replaceChildren(...(d.type === "trigger" ? triggerDetail(d.id) : alertDetail(d.id)));
+    // companyLine is null for a symbol with no cached profile, and replaceChildren
+    // would print that as the text "null".
+    const parts = d.type === "trigger" ? triggerDetail(d.id) : alertDetail(d.id);
+    $("drawer-body").replaceChildren(...parts.filter((part) => part != null));
     if (key !== openDrawerKey) {
       openDrawerKey = key;
       drawer.scrollTop = 0;

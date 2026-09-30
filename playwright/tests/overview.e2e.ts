@@ -161,6 +161,15 @@ test("a trigger on a symbol that is neither held nor a thread shows neither bloc
   await expect(story(page)).toHaveCount(0);
 });
 
+// AA has no cached profile in the fixtures, so companyLine is null in both drawers.
+test("a drawer for a symbol with no company profile prints no stray null", async ({ page }) => {
+  for (const hash of ["/#/trigger/rv0000a2", "/#/alert/st000001"]) {
+    await page.goto(hash);
+    await expect(page.locator("#drawer-body .kv-list")).toBeVisible();
+    expect(await page.locator("#drawer-body").evaluate((el) => [...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent))).toEqual([]);
+  }
+});
+
 // The rule this is here to hold: size and value are private, being held is not.
 // Stories tell your buys and sales, so they are for the unlocked page only.
 test("a locked drawer still says held, but tells no story and carries no numbers", async ({ page }) => {
