@@ -775,6 +775,11 @@ out. Two things that cost time the first time:
   below the drawer's facts, story and recent triggers, so a shot of
   `#drawer-body` misses it entirely. Both were silent — a hidden element and a
   clipped one, not an error.
+- **The drawer animates in, so the context runs with `reducedMotion: "reduce"`.**
+  Without it the drawer shot was taken mid-fade and mid-slide: every label was
+  cut off on the left and the page behind showed through the text
+  (fixed 2026-09-30). Anything else given an entry animation needs the same
+  `prefers-reduced-motion` opt-out in `index.html`, or it will do the same.
 
 ## The Schwab login expires weekly, and the whole run has to cope with it
 

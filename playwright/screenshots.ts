@@ -5,13 +5,14 @@
  */
 import { chromium, type Page } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 // Hardcoded rather than imported, so this script can live outside the repo.
 const OPS_TOKEN = "x".repeat(32);
 const STATIC = { id: "st000001" };
 
 const BASE = "http://localhost:4178";
-const OUT = "C:/Users/billb/projects/equity-watch/docs/images";
+const OUT = fileURLToPath(new URL("../docs/images", import.meta.url));
 
 async function shot(page: Page, selector: string, name: string, padding = 12) {
   const el = page.locator(selector).first();
@@ -33,7 +34,10 @@ async function shot(page: Page, selector: string, name: string, padding = 12) {
 async function main() {
   await mkdir(OUT, { recursive: true });
   const browser = await chromium.launch();
-  const ctx = await browser.newContext({ viewport: { width: 1100, height: 900 }, deviceScaleFactor: 2 });
+  // Reduced motion: the drawer slides and fades in over 0.22s, and a shot taken
+  // during it caught the drawer half-transparent over the page behind, and
+  // measured mid-slide, so the clip cut off the labels' left edge.
+  const ctx = await browser.newContext({ viewport: { width: 1100, height: 900 }, deviceScaleFactor: 2, reducedMotion: "reduce" });
   const page = await ctx.newPage();
   await page.request.get(`${BASE}/__reset`);
 
