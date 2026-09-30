@@ -18,7 +18,7 @@ your approval, through WebMCP in the browser or an MCP server.
 ![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Worked example](#a-worked-example) · [Alerts](docs/ALERTS.md) · [Holdings](docs/HOLDINGS.md) · [Dashboard](docs/DASHBOARD.md) · [MCP server](docs/MCP.md) · [Architecture](docs/ARCHITECTURE.md)
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Worked example](#a-worked-example) · [Alerts](docs/ALERTS.md) · [Holdings](docs/HOLDINGS.md) · [Dashboard](docs/DASHBOARD.md) · [MCP server](docs/MCP.md) · [Docker](docker/README.md) · [Architecture](docs/ARCHITECTURE.md)
 
 <img src="docs/images/queue-row.png" alt="A revisit queue row: priority 47, the English headline, the held tag, the fired line with a suggested level, price since the fire, the position, the signal breakdown, and the Details, Chart, Re-suggest, Apply and Dismiss actions" width="900">
 
