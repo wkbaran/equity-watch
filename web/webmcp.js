@@ -578,14 +578,24 @@
       name: "get_pending_changes",
       group: "read",
       description:
-        "Changes queued from this page that the worker hasn't confirmed yet, plus the most recent outcomes it published (applied or rejected, with its message). Queued changes only apply at the next scheduled check, so poll this rather than assuming a write took effect.",
+        "Changes queued from this page that the worker hasn't confirmed yet, plus the most recent outcomes it published (applied or rejected, with its message). Each waiting change names what it targets: its symbol, the alert (for get_alert) and the revisit entry, where it has them; an add has no alert until it applies. Queued changes only apply at the next scheduled check, so poll this rather than assuming a write took effect.",
       inputSchema: object({}),
       async run(api) {
         const results = (await loadedDashboard(api))?.opResults ?? [];
         return say({
           nextCheck: api.scheduleText(),
           schwabLoginExpiredSince: api.loginExpiredSince(),
-          waiting: api.pending().map((p) => ({ opId: p.id, type: p.type, change: p.summary, queuedAt: p.queuedAt })),
+          // What each change targets, as the page's pending drawer links to it.
+          // `?? null`: a list saved before these were recorded may lack them.
+          waiting: api.pending().map((p) => ({
+            opId: p.id,
+            type: p.type,
+            change: p.summary,
+            symbol: p.symbol ?? null,
+            alertId: p.alertId ?? null,
+            revisitId: p.revisitId ?? null,
+            queuedAt: p.queuedAt,
+          })),
           recentOutcomes: results.slice(-15).map((r) => ({ opId: r.id, type: r.type, ok: r.ok, message: r.message, appliedAt: r.appliedAt })),
         });
       },

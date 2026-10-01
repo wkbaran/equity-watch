@@ -263,12 +263,24 @@ describe("writes and approval", () => {
   it("a queued change settles when the published results say it applied", async () => {
     const { call, api } = await connect({}, accept(true));
     const { opId } = JSON.parse((await call("add_alert", { symbol: "NVDA", level: 200 })).text);
-    expect(JSON.parse((await call("get_pending_changes")).text).waiting.map((w: { opId: string }) => w.opId)).toEqual([opId]);
+    expect(JSON.parse((await call("get_pending_changes")).text).waiting).toEqual([
+      expect.objectContaining({ opId, type: "alert.add", symbol: "NVDA", alertId: null, revisitId: null }),
+    ]);
     await fetch(`${SITE}/__release`);
     await api.refresh(true);
     const after = JSON.parse((await call("get_pending_changes")).text);
     expect(after.waiting).toEqual([]);
     expect(after.recentOutcomes.find((o: { opId: string }) => o.opId === opId)).toMatchObject({ ok: true });
+  });
+
+  it("a waiting edit names the alert it targets, from the pending file", async () => {
+    const first = await connect({}, accept(true));
+    const { opId } = JSON.parse((await first.call("edit_alert", { alertId: "st000001", level: 60 })).text);
+    // A fresh server reads the target back from the file, not from memory.
+    const second = await connect({}, accept(true));
+    expect(JSON.parse((await second.call("get_pending_changes")).text).waiting).toEqual([
+      expect.objectContaining({ opId, type: "alert.edit", symbol: "AA", alertId: "st000001", revisitId: null }),
+    ]);
   });
 });
 

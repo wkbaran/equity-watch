@@ -272,7 +272,8 @@ asked one at a time, Escape declines, and the button ignores a scripted
 events can still press it; the dialog is a check on the tools, not a sandbox for
 the agent. A queued change still lands only at the next scheduled check, so a write
 tool answers "queued", never "done", and `get_pending_changes` is how an agent learns
-the outcome.
+the outcome. It lists the same changes as the rail's pending drawer, each with the
+symbol, alert id and revisit entry it targets (an add has no alert id until it applies).
 
 **Asking can be switched off.** With editing unlocked, *Agent changes without asking*
 in the header queues every agent write with no dialog, and the tool's answer tells

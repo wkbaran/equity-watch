@@ -425,6 +425,30 @@ test.describe("writes", () => {
     expect(done.waiting).toEqual([]);
     expect(done.recentOutcomes.find((o: any) => o.opId === opId)).toMatchObject({ ok: true, type: "alert.add" });
   });
+
+  test("each waiting change names what it targets", async ({ page }) => {
+    await openUnlocked(page);
+    let call = callTool(page, "add_alert", { symbol: "NVDA", level: 200 });
+    await approve(page).click();
+    const add = json(await call).opId;
+    call = callTool(page, "dismiss_revisit", { revisitId: "rv0000a2" });
+    await approve(page).click();
+    const dismiss = json(await call).opId;
+
+    const { waiting } = json(await callTool(page, "get_pending_changes"));
+    // An add has no alert until the worker creates it.
+    expect(waiting.find((w: any) => w.opId === add)).toMatchObject({ type: "alert.add", symbol: "NVDA", alertId: null, revisitId: null });
+    expect(waiting.find((w: any) => w.opId === dismiss)).toMatchObject({ type: "revisit.dismiss", symbol: "AA", alertId: "st000001", revisitId: "rv0000a2" });
+  });
+
+  test("a pending list saved before targets were recorded still reads", async ({ page }) => {
+    await page.addInitScript(() =>
+      localStorage.setItem("equity-watch.pendingOps", JSON.stringify([{ id: "old1", type: "alert.add", summary: "add GMED", queuedAt: new Date().toISOString() }]))
+    );
+    await openUnlocked(page);
+    const { waiting } = json(await callTool(page, "get_pending_changes"));
+    expect(waiting).toEqual([expect.objectContaining({ opId: "old1", symbol: null, alertId: null, revisitId: null })]);
+  });
 });
 
 test.describe("holdings writes", () => {
