@@ -1108,6 +1108,28 @@ test.describe("the rail's pending drawer", () => {
     await expect(page).toHaveURL(/#\/alerts$/);
   });
 
+  test("the panel a row opens can forget that change", async ({ page }) => {
+    await storeToken(page);
+    await seed(page, [
+      { id: "p1", type: "alert.edit", symbol: STATIC.symbol, alertId: STATIC.id, revisitId: null, summary: `${STATIC.symbol}: level to 99`, queuedAt },
+      { id: "p2", type: "revisit.dismiss", symbol: "AA", alertId: STATIC.id, revisitId: "rv0000a2", summary: "AA: dismiss a fire", queuedAt },
+    ]);
+    await page.goto(`/#/alert/${STATIC.id}`);
+    const note = (text: string) => page.locator("#drawer-body p.note", { hasText: text });
+    // The alert's panel lists only what changes the alert; a dismiss leaves it alone.
+    await expect(note("level to 99")).toBeVisible();
+    await expect(note("dismiss a fire")).toHaveCount(0);
+    await note("level to 99").getByRole("button", { name: "Forget" }).click();
+    await expect(note("level to 99")).toHaveCount(0);
+    await expect(page.locator("#rail-pending-summary")).toHaveText("1 pending change");
+
+    // The fire's panel carries the dismiss, which is where the rail sends it.
+    await page.goto("/#/trigger/rv0000a2");
+    await note("dismiss a fire").getByRole("button", { name: "Forget" }).click();
+    await expect(note("dismiss a fire")).toHaveCount(0);
+    await expect(drawer(page)).toBeHidden();
+  });
+
   test("goes away when the last change is forgotten", async ({ page }) => {
     await seed(page, [{ id: "p1", type: "alert.add", symbol: "GMED", alertId: null, revisitId: null, summary: "add GMED", queuedAt }]);
     await openAlerts(page);

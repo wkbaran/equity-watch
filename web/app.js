@@ -637,6 +637,24 @@
     );
   }
 
+  /**
+   * Stops this page waiting on one change. It is local: the op stays on the
+   * queue and still applies, but no toast will say so, since the page is no
+   * longer watching for its result.
+   */
+  function forgetButton(p, className = null) {
+    return h("button", {
+      class: className,
+      text: "Forget",
+      title: "Stop waiting for this result here. The change stays queued.",
+      onclick: () => {
+        pendingOps = pendingOps.filter((x) => x.id !== p.id);
+        savePending();
+        rerenderOps();
+      },
+    });
+  }
+
   function renderPendingList(box, items) {
     box.hidden = items.length === 0;
     const schedule = items.length === 0 ? null : opsScheduleNote();
@@ -648,15 +666,7 @@
           h("span", { class: "tag pending", text: "pending" }),
           p.summary,
           muted(`· queued ${ago(p.queuedAt)}`),
-          h("button", {
-            text: "Forget",
-            title: "Stop waiting for this result here. The change stays queued.",
-            onclick: () => {
-              pendingOps = pendingOps.filter((x) => x.id !== p.id);
-              savePending();
-              rerenderOps();
-            },
-          })
+          forgetButton(p)
         )
       ),
     ];
@@ -813,8 +823,14 @@
    */
   function editSection(a, revisitId = null, slot = "drawer") {
     if (!canEdit()) return null;
-    const queued = pendingFor(a.id);
-    const pending = queued.map((p) => h("p", { class: "note" }, h("span", { class: "tag pending", text: "pending" }), ` ${p.summary}, queued ${ago(p.queuedAt)}`));
+    // In a trigger's panel, a queued dismiss or re-level of that fire too: they
+    // don't change the alert, but the rail's pending drawer links them here.
+    const queued = pendingOps.filter(
+      (p) => (p.alertId === a.id && CHANGES_ALERT(p)) || (revisitId !== null && p.revisitId === revisitId && !CHANGES_ALERT(p))
+    );
+    const pending = queued.map((p) =>
+      h("p", { class: "note" }, h("span", { class: "tag pending", text: "pending" }), ` ${p.summary}, queued ${ago(p.queuedAt)} `, forgetButton(p, "inline-link"))
+    );
     // The drawer is where a revisit-queue edit is made, so it is where "when
     // does this land?" gets asked first.
     if (queued.length > 0) pending.push(opsScheduleNote());
