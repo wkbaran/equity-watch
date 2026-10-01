@@ -82,6 +82,9 @@ function documents() {
     // Approaching section is only ever exercised as empty.
     includeApproaching: true,
     profiles: FIXTURE_PROFILES,
+    // One symbol with a known listing, so chart links (and get_chart_url) are
+    // exercised with an exchange prefix as well as without.
+    exchanges: new Map([["MSFT", "NASDAQ Global Select"]]),
   });
   const heldSymbols = new Set(HOLDINGS.lots.map((l) => l.symbol.toUpperCase()));
   return {

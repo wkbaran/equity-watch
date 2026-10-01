@@ -52,7 +52,7 @@ async function openUnlocked(page: Page) {
   await expect.poll(() => toolNames(page)).toContain("add_alert");
 }
 
-const READS = ["get_alert", "get_overview", "get_pending_changes", "list_alerts", "list_revisit_queue"];
+const READS = ["get_alert", "get_chart_url", "get_overview", "get_pending_changes", "list_alerts", "list_revisit_queue"];
 const WRITES = ["add_alert", "apply_revisit", "dismiss_revisit", "edit_alert", "relevel_revisit", "remove_alert"];
 const HOLDINGS = ["add_lot", "add_stop", "cover_position", "edit_lot", "edit_stop", "get_position", "get_stories", "list_positions", "remove_lot", "remove_position", "remove_stop"];
 
@@ -150,6 +150,12 @@ test.describe("reads", () => {
     const one = json(await callTool(page, "get_alert", { symbol: "AA" }));
     expect(one[0].id).toBe("st000001");
     expect(one[0].recentFires.length).toBeGreaterThan(0);
+  });
+
+  test("get_chart_url uses the page's own exchange prefixes, and asks for dark mode", async ({ page }) => {
+    await page.goto("/#/");
+    expect(json(await callTool(page, "get_chart_url", { symbol: "MSFT" })).url).toBe("https://www.tradingview.com/chart/?symbol=NASDAQ%3AMSFT&theme=dark");
+    expect(json(await callTool(page, "get_chart_url", { symbol: "AA" })).exchange).toBeNull();
   });
 
   test("a read called before the first dashboard.json arrives waits for it", async ({ page }) => {

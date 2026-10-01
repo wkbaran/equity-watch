@@ -94,7 +94,7 @@ async function connect(over: Partial<McpOptions> = {}, answer: Answer = "none", 
   return { client, names, call, asked, api };
 }
 
-const READS = ["get_alert", "get_overview", "get_pending_changes", "list_alerts", "list_revisit_queue"];
+const READS = ["get_alert", "get_chart_url", "get_overview", "get_pending_changes", "list_alerts", "list_revisit_queue"];
 const WRITES = ["add_alert", "apply_revisit", "dismiss_revisit", "edit_alert", "relevel_revisit", "remove_alert"];
 
 describe("what the server offers", () => {
@@ -175,6 +175,25 @@ describe("reads", () => {
     expect(JSON.parse((await call("get_overview")).text).summary.liveAlerts).toBeGreaterThan(0);
     await call("dismiss_revisit", { revisitId: "rv0000a2" });
     expect(seen.find((s) => s.path === "/api/ops")?.authorization).toBe(`Bearer ${OPS_TOKEN}`);
+  });
+
+  it("get_chart_url links a dark chart, with the exchange the dashboard knows, one given, or none", async () => {
+    const { call } = await connect({ token: null });
+    expect(JSON.parse((await call("get_chart_url", { symbol: "msft" })).text)).toEqual({
+      symbol: "MSFT",
+      exchange: "NASDAQ",
+      exchangeFrom: "dashboard",
+      url: "https://www.tradingview.com/chart/?symbol=NASDAQ%3AMSFT&theme=dark",
+    });
+    expect(JSON.parse((await call("get_chart_url", { symbol: "AA", exchange: "nyse" })).text)).toMatchObject({
+      exchangeFrom: "given",
+      url: "https://www.tradingview.com/chart/?symbol=NYSE%3AAA&theme=dark",
+    });
+    expect(JSON.parse((await call("get_chart_url", { symbol: "AA" })).text)).toMatchObject({
+      exchange: null,
+      url: "https://www.tradingview.com/chart/?symbol=AA&theme=dark",
+    });
+    expect((await call("get_chart_url", { symbol: "not a ticker" })).text).toMatch(/doesn't look like a ticker/);
   });
 
   it("check arguments exactly as the page does", async () => {

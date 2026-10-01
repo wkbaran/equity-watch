@@ -545,6 +545,36 @@
       },
     },
     {
+      name: "get_chart_url",
+      group: "read",
+      description:
+        "A link to a symbol's TradingView chart, in dark mode, for the person to open. The exchange comes from the dashboard's company profiles when it knows the symbol; pass exchange (e.g. NYSE, NASDAQ, AMEX) to choose one yourself. Without either the link is the bare symbol and TradingView picks the listing, which for some tickers is a foreign one; the result says which happened.",
+      inputSchema: object(
+        {
+          symbol: symbolProp,
+          exchange: { type: "string", description: "TradingView exchange prefix, e.g. NYSE or NASDAQ. Optional; overrides the dashboard's own." },
+        },
+        ["symbol"]
+      ),
+      async run(api, args) {
+        const symbol = args.symbol.trim().toUpperCase();
+        if (!/^[A-Z0-9$^][A-Z0-9.\-/$^]{0,19}$/.test(symbol)) return refuse("That doesn't look like a ticker symbol.");
+        const chosen = typeof args.exchange === "string" ? args.exchange.trim().toUpperCase() : "";
+        if (chosen !== "" && !/^[A-Z0-9_]{1,20}$/.test(chosen)) return refuse("exchange should be a TradingView prefix such as NYSE or NASDAQ.");
+        const known = (await loadedDashboard(api))?.tradingViewPrefixes?.[symbol] ?? null;
+        const exchange = chosen || known;
+        const query = exchange ? `${exchange}:${symbol}` : symbol;
+        return say({
+          symbol,
+          exchange,
+          exchangeFrom: chosen ? "given" : known ? "dashboard" : "none: TradingView picks the listing",
+          // theme=dark: verified 2026-09-30 to switch the chart page to its dark theme
+          // for a visitor who isn't logged in; a logged-in account's own theme may win.
+          url: `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(query)}&theme=dark`,
+        });
+      },
+    },
+    {
       name: "get_pending_changes",
       group: "read",
       description:

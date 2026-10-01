@@ -249,7 +249,7 @@ and shows no extra control.
 
 | Tools | Registered when | What they do |
 |---|---|---|
-| `get_overview`, `list_revisit_queue`, `list_alerts`, `get_alert`, `get_pending_changes` | always | Read `dashboard.json` and `alerts.json`. Public data only. |
+| `get_overview`, `list_revisit_queue`, `list_alerts`, `get_alert`, `get_chart_url`, `get_pending_changes` | always | Read `dashboard.json` and `alerts.json`. Public data only. |
 | `add_alert`, `edit_alert`, `remove_alert`, `dismiss_revisit`, `relevel_revisit`, `apply_revisit` | editing is unlocked | Queue the matching op. |
 | `list_positions`, `get_position`, `get_stories`, `add_lot`, `edit_lot`, `remove_lot`, `remove_position`, `add_stop`, `edit_stop`, `remove_stop`, `cover_position` | editing is unlocked, the vault is open **and** "Agents may see holdings" is ticked | Read the decrypted vault; queue holdings ops. |
 

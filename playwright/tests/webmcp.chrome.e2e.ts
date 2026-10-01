@@ -14,7 +14,7 @@ import { hasWebMcp, resultText, WebMcpAgent } from "../webmcpAgent.js";
  * Chromium. This file is what says the browser agrees with it.
  */
 
-const READS = ["get_alert", "get_overview", "get_pending_changes", "list_alerts", "list_revisit_queue"];
+const READS = ["get_alert", "get_chart_url", "get_overview", "get_pending_changes", "list_alerts", "list_revisit_queue"];
 const WRITES = ["add_alert", "apply_revisit", "dismiss_revisit", "edit_alert", "relevel_revisit", "remove_alert"];
 
 const storeToken = (page: Page) => page.addInitScript((token) => localStorage.setItem("equity-watch.opsToken", token), OPS_TOKEN);
@@ -61,7 +61,7 @@ test("the browser sees the tools the page's state allows, with their read-only h
 
 test("every read answers through the browser with JSON", async ({ page }) => {
   await open(page, { unlocked: false });
-  const inputs: Record<string, Record<string, unknown>> = { get_alert: { symbol: "AA" }, list_alerts: { sort: "closest", limit: 3 } };
+  const inputs: Record<string, Record<string, unknown>> = { get_alert: { symbol: "AA" }, get_chart_url: { symbol: "MSFT" }, list_alerts: { sort: "closest", limit: 3 } };
   for (const name of READS) {
     const r = resultText(await agent.call(name, inputs[name] ?? {}));
     expect(r.isError, `${name}: ${r.text}`).toBe(false);

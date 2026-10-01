@@ -33,7 +33,7 @@ how MCP clients usually start it.
 
 | Tools | Offered when |
 |---|---|
-| `get_overview`, `list_revisit_queue`, `list_alerts`, `get_alert`, `get_pending_changes` | always |
+| `get_overview`, `list_revisit_queue`, `list_alerts`, `get_alert`, `get_chart_url`, `get_pending_changes` | always |
 | alert and revisit-queue writes | there's an `OPS_TOKEN`, the site accepts ops, and no `--read-only` |
 | holdings: positions, lots, stops, stories | also `--allow-holdings`, and the token opens the vault |
 
