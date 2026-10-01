@@ -1066,3 +1066,53 @@ test.describe("the alphabet rail", () => {
     await expect(page.locator("#alerts-table tbody tr.jumped")).toContainText("AA");
   });
 });
+
+// The rail's drawer lists what this browser has queued, so a change can be
+// found again once its toast has gone. It reads the page's own pending list.
+test.describe("the rail's pending drawer", () => {
+  const drawer = (page: Page) => page.locator("#rail-pending");
+  const seed = (page: Page, ops: Array<Record<string, unknown>>) =>
+    page.addInitScript((v) => localStorage.setItem("equity-watch.pendingOps", v), JSON.stringify(ops));
+  const queuedAt = new Date().toISOString();
+
+  test("is absent with nothing pending", async ({ page }) => {
+    await page.goto("/#/");
+    await expect(page.locator("#updated")).not.toHaveText("loading…");
+    await expect(drawer(page)).toBeHidden();
+  });
+
+  test("starts closed, and each row opens the item it changes", async ({ page }) => {
+    await seed(page, [
+      { id: "p1", type: "alert.edit", symbol: STATIC.symbol, alertId: STATIC.id, revisitId: null, summary: `${STATIC.symbol}: level to 99`, queuedAt },
+      { id: "p2", type: "revisit.dismiss", symbol: "AA", alertId: STATIC.id, revisitId: "rv0000a2", summary: "AA: dismiss a fire", queuedAt },
+      { id: "p3", type: "alert.add", symbol: "GMED", alertId: null, revisitId: null, summary: "add GMED", queuedAt },
+    ]);
+    await page.goto("/#/");
+    await expect(drawer(page)).toBeVisible();
+    await expect(page.locator("#rail-pending-summary")).toHaveText("3 pending changes");
+    await expect(page.locator("#rail-pending-list")).toBeHidden();
+
+    await page.locator("#rail-pending-summary").click();
+    await page.locator("#rail-pending-list").getByRole("link", { name: `${STATIC.symbol}: level to 99` }).click();
+    await expect(page).toHaveURL(new RegExp(`#/alert/${STATIC.id}$`));
+    await expect(page.locator("#drawer")).toBeVisible();
+    // The details drawer sits over a backdrop, so it is closed before the next row.
+    await page.locator("#drawer-close").click();
+
+    await page.locator("#rail-pending-list").getByRole("link", { name: "AA: dismiss a fire" }).click();
+    await expect(page).toHaveURL(/#\/trigger\/rv0000a2$/);
+    await expect(page.locator("#drawer-body")).not.toContainText("Trigger not found");
+    await page.locator("#drawer-close").click();
+
+    await page.locator("#rail-pending-list").getByRole("link", { name: "add GMED" }).click();
+    await expect(page).toHaveURL(/#\/alerts$/);
+  });
+
+  test("goes away when the last change is forgotten", async ({ page }) => {
+    await seed(page, [{ id: "p1", type: "alert.add", symbol: "GMED", alertId: null, revisitId: null, summary: "add GMED", queuedAt }]);
+    await openAlerts(page);
+    await expect(page.locator("#rail-pending-summary")).toHaveText("1 pending change");
+    await page.locator("#ops-pending").getByRole("button", { name: "Forget" }).click();
+    await expect(drawer(page)).toBeHidden();
+  });
+});

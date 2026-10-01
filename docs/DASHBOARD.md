@@ -76,6 +76,13 @@ and **Holdings** (`#/holdings`). All are routes in the same page, so polling and
 notifications keep running on any of them. Each view's count sits beside it in
 the rail, so the rail doubles as the day's scoreboard.
 
+**Pending changes** fold up under the rail's "next check" line: a closed drawer,
+"N pending changes", listing every change this browser has queued and not yet seen
+applied, so one can be found again after its toast is gone. Each row links to what
+it changes (the fire, the alert, or the position; an add goes to the Alerts view).
+It is the page's own record of what it sent, not a read of SQS, and it disappears
+when nothing is waiting.
+
 **The queue strip** runs across the top of every view: each open revisit as one
 cell (symbol, direction and level, a dot when held, `↩` when reversed), in the
 queue view's order, each linking to its decision. It sticks while you scroll, so

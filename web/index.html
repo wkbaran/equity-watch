@@ -127,6 +127,14 @@
   #nav-queue-count { color: var(--signal); font-weight: 400; }
   .meta { color: var(--muted); font-size: 0.8rem; }
   #updated { margin: 0 1.4rem; display: block; }
+  /* Everything this browser has queued and not yet seen applied (renderRailPending). */
+  .rail-pending { margin: -1rem 1.4rem 0; font-size: 0.8rem; }
+  .rail-pending summary { padding: 0.2rem 0; color: var(--signal); }
+  .rail-pending ul { margin: 0.3rem 0 0; padding: 0; list-style: none; color: var(--sub); }
+  .rail-pending li { padding: 0.3rem 0; line-height: 1.35; }
+  .rail-pending li + li { border-top: 1px solid var(--line); }
+  .rail-pending a { color: var(--ink); text-decoration: none; }
+  .rail-pending a:hover { text-decoration: underline; text-decoration-color: var(--signal); }
   .spacer { flex: 1; }
   .header-right { display: flex; flex-direction: column; align-items: stretch; gap: 0.45rem; margin: 0 1.4rem; }
   .header-right .meta:empty { display: none; }
@@ -499,6 +507,7 @@
     .site-nav a[aria-current="page"] { border-bottom-color: var(--signal); }
     .nav-count { font-size: 1.05rem; font-stretch: 75%; font-weight: 400; }
     #updated { margin: 0; }
+    .rail-pending { margin: 0; flex-basis: 100%; }
     .spacer { display: none; }
     .header-right { flex-direction: row; flex-wrap: wrap; margin: 0 0 0 auto; }
     main { padding: 1.5rem 1rem 5rem; }
@@ -545,6 +554,10 @@
     <a href="#/holdings" data-nav="holdings" id="nav-holdings" hidden><span>Holdings</span> <span id="nav-holdings-count" class="nav-count"></span></a>
   </nav>
   <span id="updated" class="meta">loading…</span>
+  <details id="rail-pending" class="rail-pending" hidden>
+    <summary id="rail-pending-summary"></summary>
+    <ul id="rail-pending-list"></ul>
+  </details>
   <span class="spacer"></span>
   <div class="header-right">
     <span id="notify-state" class="meta"></span>

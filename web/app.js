@@ -596,6 +596,45 @@
   function renderPending() {
     renderPendingList($("ops-pending"), pendingOps.filter((p) => !isHoldingsOp(p)));
     renderPendingList($("holdings-pending"), pendingOps.filter(isHoldingsOp));
+    renderRailPending();
+  }
+
+  /**
+   * Where a pending change came from: the fire it acts on, the alert it
+   * edits, or the position it touches. An add has no alert yet, so it goes to
+   * the Alerts view, where its pending row is.
+   */
+  function pendingHash(p) {
+    if (p.revisitId) return triggerHash(p.revisitId);
+    if (p.alertId) return alertHash(p.alertId);
+    if (isHoldingsOp(p)) return p.symbol ? holdingsHash(p.symbol) : "#/holdings";
+    return "#/alerts";
+  }
+
+  /**
+   * The rail's drawer of everything this browser has queued and not yet seen
+   * applied, so a change can be found again after its toast is gone. It is
+   * pendingOps, not the SQS queue: the page can't read the queue, and what it
+   * knows is what it sent. Closed by default, and absent when nothing waits.
+   */
+  function renderRailPending() {
+    const box = $("rail-pending");
+    box.hidden = pendingOps.length === 0;
+    if (box.hidden) {
+      box.open = false;
+      return;
+    }
+    $("rail-pending-summary").textContent = `${pendingOps.length} pending ${pendingOps.length === 1 ? "change" : "changes"}`;
+    $("rail-pending-list").replaceChildren(
+      ...pendingOps.map((p) =>
+        h(
+          "li",
+          {},
+          h("a", { href: pendingHash(p), title: `Queued ${new Date(p.queuedAt).toLocaleString()}`, text: p.summary }),
+          muted(` · ${ago(p.queuedAt)}`)
+        )
+      )
+    );
   }
 
   function renderPendingList(box, items) {
