@@ -184,6 +184,12 @@ direction, a touch watches which side price came from. A moving average's edit f
 is prefilled from the published alert, so opening it to read the spec and saving is
 "Nothing changed." rather than a silent rewrite.
 
+An alert's panel has the same *Kind* choice for anything but a moving average:
+switching a price or volume alert to *Trailing from a high/low* makes it trailing
+from the live price when the edit lands, and switching a trailing alert to *Price
+level* asks for the level. A trailing alert's direction and distance are prefilled,
+and changing its direction restarts it from the live price.
+
 What stays CLI-only is the batch and file work: `alert seed`, `holdings import`,
 `alert migrate-directions`, and `profile fetch`. Those are one-time, read files that
 live on the machine, or touch every row at once.

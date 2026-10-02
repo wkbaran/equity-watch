@@ -101,6 +101,8 @@ export interface StaticAlert extends BaseAlert {
   lastKnownSide: AlertSide;
   /** Optional AND condition: both the price crossing and this must hold. */
   volumeCondition?: VolumeCondition;
+  /** See TrailingAlert.lastEvaluatedAt. */
+  lastEvaluatedAt?: string;
 }
 
 export interface TrailingAlert extends BaseAlert {
@@ -113,6 +115,14 @@ export interface TrailingAlert extends BaseAlert {
   extremeAt: string;
   /** Optional AND condition: both the trailing bounce and this must hold. */
   volumeCondition?: VolumeCondition;
+  /**
+   * Every price before this instant has been judged (src/alerts/pricePath.ts).
+   * The next check replays the minute bars from here. Absent on alerts from
+   * before bars were read, which start from the live quote. Anything that
+   * re-seeds the alert against a live price must move it to now, or bars from
+   * before the change are replayed against the new settings.
+   */
+  lastEvaluatedAt?: string;
 }
 
 /**

@@ -68,6 +68,11 @@ export interface AlertRow {
    * Not volatile: unlike `movingLevel`, none of this moves with price.
    */
   ma: MaRow | null;
+  /**
+   * A trailing alert's settings, for the edit form to prefill from. Null for
+   * every other kind. Not volatile: the extreme it follows is `movingLevel`.
+   */
+  trail: { type: "percent" | "amount"; value: number; direction: "up" | "down" } | null;
   triggerCount: number;
   lastTriggeredAt: string | null;
   lastTriggerPrice: number | null;
@@ -119,6 +124,7 @@ export function buildAlertRows(
           a.kind === "ma"
             ? { maType: a.maType, period: a.period, timeframe: a.timeframe, trigger: a.trigger, from: a.from, marginPct: a.marginPct }
             : null,
+        trail: a.kind === "trailing" ? { type: a.trailType, value: a.trailValue, direction: a.side === "below" ? "up" : "down" } : null,
         triggerCount: a.triggerCount,
         lastTriggeredAt: a.lastTriggeredAt,
         lastTriggerPrice: a.lastTriggerPrice,

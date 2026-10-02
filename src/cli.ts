@@ -532,7 +532,6 @@ interface RevisitApplyOpts extends AlertCommonOpts {
 interface AlertAddOpts extends AlertCommonOpts {
   symbol: string;
   level?: string;
-  near?: string;
   trailPercent?: string;
   trailAmount?: string;
   volumeAtLeast?: string;
@@ -2128,17 +2127,16 @@ function buildProgram(): Command {
 
   withAlertCommon(alertCmd.command("add [symbol] [level]"))
     .description(
-      "Add a static (--level), trailing (--near), or standalone volume (--volume-at-least alone) alert; " +
-        "side is inferred vs. the live price. 'alert add GMED 80.5' is shorthand for --symbol GMED --level 80.5"
+      "Add a static (--level), trailing (--trail-percent/--trail-amount with --direction), or standalone volume " +
+        "(--volume-at-least alone) alert; a level's side is inferred vs. the live price. 'alert add GMED 80.5' is shorthand for --symbol GMED --level 80.5"
     )
     .option("--symbol <symbol>", "Ticker symbol (or give it as the first argument)")
     .option("--level <price>", "Static alert: fire when price crosses this level in --direction (default up)")
-    .option("--near <price>", "Trailing alert: reference price used to seed the watermark and infer side")
-    .option("--trail-percent <n>", "Trailing alert: trail distance as a percent")
+    .option("--trail-percent <n>", "Trailing alert: fire this percent off the low (--direction up) or high (down) since it was set")
     .option("--trail-amount <n>", "Trailing alert: trail distance as a dollar amount")
     .option(
       "--volume-at-least <shares>",
-      "Absolute volume threshold, K/M/B accepted (e.g. 2.5M); standalone if --level/--near are omitted, otherwise ANDed onto that alert"
+      "Absolute volume threshold, K/M/B accepted (e.g. 2.5M); standalone if no level or trail is given, otherwise ANDed onto that alert"
     )
     .option(
       "--volume-ratio <multiple>",
@@ -2159,7 +2157,8 @@ function buildProgram(): Command {
     )
     .option(
       "--direction <dir>",
-      `With --level: which crossings fire, up|down|either (default ${DEFAULT_ALERT_DIRECTION}). With --ma (cross): up|down`
+      `With --level: which crossings fire, up|down|either (default ${DEFAULT_ALERT_DIRECTION}). ` +
+        "Trailing: up (rise off the low) or down (fall off the high). With --ma (cross): up|down"
     )
     .option("--from <above|below>", "With --ma --touch: only fire when price approaches from this side")
     .action((symbol: string | undefined, level: string | undefined, opts: AlertAddOpts) => {
@@ -2237,11 +2236,11 @@ function buildProgram(): Command {
         "A bare [level] is shorthand for --level: 'alert edit MELI 1960'. " +
         "Only a moved --level needs a live quote; to change an alert's kind, remove it and add a new one"
     )
-    .option("--level <price>", "Static: move the level (side and crossing baseline are re-seeded against the live price). Volume: add one, making it a static alert with its volume as the AND condition")
+    .option("--level <price>", "Static: move the level (side and crossing baseline are re-seeded against the live price). Volume or trailing: add one, making it a static alert (keeping any volume condition)")
     .option("--clear-level", "Static with a volume condition: drop the level, leaving a volume-only alert")
-    .option("--direction <dir>", "Static: up|down|either. Moving-average cross: up|down")
-    .option("--trail-percent <n>", "Trailing: trail distance as a percent")
-    .option("--trail-amount <n>", "Trailing: trail distance as a dollar amount")
+    .option("--direction <dir>", "Static: up|down|either. Trailing: up|down (a change restarts it from the live price). Moving-average cross: up|down")
+    .option("--trail-percent <n>", "Trailing: trail distance as a percent. On a static or volume alert, with --direction up|down, makes it trailing")
+    .option("--trail-amount <n>", "Trailing: trail distance as a dollar amount. On a static or volume alert, with --direction, makes it trailing")
     .option("--volume-at-least <shares>", "Replace the volume condition with an absolute threshold, K/M/B accepted (e.g. 2.5M)")
     .option("--volume-ratio <multiple>", "Replace the volume condition with a multiple of typical volume")
     .option("--volume-period <Nunit>", "With --volume-at-least/--volume-ratio: a trailing window (e.g. 30m, 2h, 1d). Over 10 days, use days")

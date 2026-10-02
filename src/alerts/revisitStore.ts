@@ -209,6 +209,8 @@ export function applyRevisitLevel(
   // Re-seed the crossing baseline against the new level so the alert doesn't
   // immediately fire (or immediately go quiet) purely because the level moved.
   alert.lastKnownSide = entry.triggerPrice > alert.level ? "above" : "below";
+  // Bars from before the move must not be replayed against the new level.
+  alert.lastEvaluatedAt = new Date().toISOString();
   alert.mutedUntil = null;
   saveAlerts(alertsPath, alerts);
   resolveRevisit(revisitsPath, id, "applied");

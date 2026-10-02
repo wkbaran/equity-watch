@@ -18,14 +18,26 @@ node dist/cli.js alert add --symbol AAPL --level 150 --direction down
 node dist/cli.js alert add --symbol AAPL --level 150 --direction either
 ```
 
-**Trailing** — track a running low/high since the alert was created, and fire on a
-bounce or pullback of a given percent or dollar amount from that extreme. Like a
-trailing-stop-buy, as a notification instead of a trade:
+**Trailing** — track the low (or high) since the alert was set, and fire when price
+rises off that low (or falls off that high) by a percent or dollar amount. Like a
+trailing stop, as a notification instead of a trade. You give only the direction
+and the distance: the alert starts from the live price when it is added, and the
+low moves down with each lower price a check sees.
 
 ```bash
-node dist/cli.js alert add --symbol AAPL --near 150 --trail-percent 3
-node dist/cli.js alert add --symbol AAPL --near 150 --trail-amount 2.50
+node dist/cli.js alert add --symbol ADC --trail-percent 5 --direction up      # 5% off the low
+node dist/cli.js alert add --symbol AAPL --trail-amount 2.50 --direction down # $2.50 off the high
 ```
+
+Each check replays the minute bars since the last one, so the low is the real
+low, and a rise that comes and goes between checks still fires (see
+[Between checks](#between-checks-minute-bars)). After firing, it starts again from
+the price it fired at.
+
+There is no starting price to give (`--near` was removed 2026-10-01: it set the
+starting low *and*, by which side of the price it sat on, the direction, which made
+both easy to get wrong). Alerts created with it keep the starting price they were
+given.
 
 **Volume** — fire when volume reaches a threshold, as either an absolute share
 count or a multiple of typical volume. Standalone, or AND-ed onto a static or
@@ -83,13 +95,54 @@ Share counts accept `K`/`M`/`B` shorthand (`2.5M`) everywhere — CLI and browse
 form alike. Ratios never do: "1.5M x normal volume" is meaningless, and the two
 modes reject bad input with their own messages.
 
+## Between checks: minute bars
+
+Static and trailing alerts are judged over every completed 1-minute bar since the
+alert was last checked, not just the quote at the moment of the check. A level
+crossed and crossed back between two checks fires (and the crossing back is
+folded onto it as usual). A dip that recovered before the next check still moves a
+trailing alert's low. Moving-average alerts already worked this way. Volume alerts
+do not need to.
+
+Only each bar's **close** is read, never its high or low, to keep the queue quiet:
+
+- **A wick is not a cross.** A spike through a level and back inside one minute
+  doesn't fire, the same rule moving-average crosses use. A level counts as
+  crossed when a minute closes on the other side of it.
+- **A trailing low is the lowest close.** One stray print can't set a low the
+  stock didn't hold for a minute, and the alert fires when a close is the distance
+  above it. The mirror applies to a fall off the high.
+- **The time recorded** is the minute it happened in, which can be several
+  minutes before the check that found it. The price is that minute's close.
+
+In effect it is the old once-per-check rule applied once a minute.
+
+Details that matter:
+
+- **Regular session only.** Schwab's minute bars here exclude extended hours, so
+  pre- and post-market prices are still judged on the quote at each check, as
+  before.
+- **Volume is judged as of the check**, even for a crossing found in an earlier
+  bar. The quote's volume is the only figure there is.
+- **Cost.** Each check asks for bars only for symbols where the day's high and
+  low (from the quote) reach a level, a trigger or a trailing low. Most levels
+  on most days don't, so most symbols cost nothing extra. Schwab allows 120 calls
+  a minute. No bars are fetched outside the regular session, except once just
+  after the close for the last few minutes.
+- **No bars, no change.** If the bars can't be fetched, or there are none yet,
+  the alert is judged on the quote exactly as before, and the check prints a
+  warning.
+- An alert added or re-levelled starts from that moment. Bars from before the
+  change are never replayed against the new settings.
+
 ## Sides, directions, and the one-per-symbol rule
 
-For static and trailing alerts, whether it's an "above" or "below" alert is
-*inferred* by comparing `--level`/`--near` to the live price at the moment you add
-it. You don't choose it, and **for a static alert the side is not the direction**:
+For a static alert, whether it's an "above" or "below" alert is *inferred* by
+comparing `--level` to the live price at the moment you add it. You don't choose
+it, and **for a static alert the side is not the direction**:
 a level below the price with the default `--direction up` fires only when price
-drops under it and then comes back up through it.
+drops under it and then comes back up through it. A trailing alert's side follows
+its direction: `up` watches a low, so it is a "below" alert, and `down` is "above".
 
 Only one live alert watches a given symbol+side, so adding another replaces it
 (regardless of kind). How that conflict is settled depends on who is adding:
@@ -124,15 +177,24 @@ node dist/cli.js alert list [--all]          # live only by default
 node dist/cli.js alert edit MELI 1960        # shorthand for --level 1960
 node dist/cli.js alert edit <id> --direction either --volume-ratio 2
 node dist/cli.js alert edit <id> --clear-volume
+node dist/cli.js alert edit <id> --trail-percent 5 --direction up   # make it trailing
 node dist/cli.js alert remove <id>
 ```
 
 `alert edit` keeps the alert's id, watch start, and trigger history. Only a moved
-`--level` needs a live quote (to re-seed the side and the crossing baseline). It
-converts kinds in place: giving a volume alert a level makes it static with the
-volume as its AND condition, and `--clear-level` turns a static-with-volume alert
-back into a volume-only one. Changing between static, trailing, and moving average
-is not an edit — remove it and add a new one.
+`--level`, a new trailing alert, or a trailing alert's new direction needs a live
+quote (to re-seed the side and the crossing baseline, or the starting low or
+high). It converts kinds in place, carrying any volume condition along:
+
+- a level on a volume alert makes it static, with the volume as its AND condition;
+- `--clear-level` turns a static-with-volume alert back into a volume-only one;
+- a trail (`--trail-percent`/`--trail-amount`) with `--direction up|down` makes a
+  static or volume alert trailing, starting from the live price;
+- a level on a trailing alert makes it static again;
+- a new `--direction` on a trailing alert flips it (low to high, or back) and
+  restarts it from the live price.
+
+Changing to or from a moving average is not an edit: remove it and add a new one.
 
 **Every edit closes that alert's open revisit entries**, wherever it is made,
 marking them `applied` and recording the level move.

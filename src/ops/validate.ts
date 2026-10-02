@@ -25,7 +25,6 @@ type Scalar = string | number;
 export interface RawAddFields {
   symbol?: string;
   level?: Scalar;
-  near?: Scalar;
   trailPercent?: Scalar;
   trailAmount?: Scalar;
   volumeAtLeast?: Scalar;
@@ -193,54 +192,57 @@ function addInput(raw: RawAddFields): AddAlertInput {
   }
 
   const hasLevel = raw.level !== undefined;
-  const hasNear = raw.near !== undefined;
-  if (hasLevel && hasNear) {
-    fail("Specify at most one of --level (static alert) or --near (trailing alert).");
-  }
-  // --direction means "which crossings fire" for both a static level and a
-  // moving-average cross, but a static level also accepts "either". Trailing
-  // and volume alerts have their direction built in.
-  if (raw.direction !== undefined && !hasLevel) {
-    fail("--direction applies to --level (up|down|either) or --ma crosses (up|down).");
+  // A trail distance with no level is a trailing alert. It starts from the
+  // live price when it's added; there is no starting price to give.
+  const isTrailing = !hasLevel && (raw.trailPercent !== undefined || raw.trailAmount !== undefined);
+  // --direction means "which crossings fire" for a static level and a
+  // moving-average cross (a static level also accepts "either"), and which
+  // way a trailing alert watches. A volume alert has its direction built in.
+  if (raw.direction !== undefined && !hasLevel && !isTrailing) {
+    fail("--direction applies to --level (up|down|either), a trailing alert (up|down), or --ma crosses (up|down).");
   }
   // Parse the volume fields first: they decide whether a bare add is a
   // standalone volume alert, and they own their own validation messages.
   const volume = volumeCondition(raw);
-  if (!hasLevel && !hasNear && volume === undefined) {
-    fail("Specify --level, --near, or --volume-at-least/--volume-ratio (a standalone volume alert).");
+  if (!hasLevel && !isTrailing && volume === undefined) {
+    fail("Specify --level, --trail-percent/--trail-amount, or --volume-at-least/--volume-ratio (a standalone volume alert).");
   }
 
   if (hasLevel) {
     if (raw.trailPercent !== undefined || raw.trailAmount !== undefined) {
-      fail("--trail-percent/--trail-amount only apply to trailing alerts (--near).");
+      fail("--trail-percent/--trail-amount only apply to trailing alerts, not --level.");
     }
     const direction = raw.direction === undefined ? DEFAULT_ALERT_DIRECTION : staticDirection(raw.direction);
     return { kind: "static", symbol, level: positive("--level", raw.level!), direction, volume };
   }
-  if (hasNear) {
+  if (isTrailing) {
     const hasPercent = raw.trailPercent !== undefined;
     if (hasPercent === (raw.trailAmount !== undefined)) {
       fail("Specify exactly one of --trail-percent or --trail-amount for a trailing alert.");
     }
+    // Up vs down is the whole question for a trailing alert, so it has no default.
+    if (raw.direction === undefined) {
+      fail("Specify --direction for a trailing alert: up (a rise off the low) or down (a fall off the high).");
+    }
+    if (raw.direction !== "up" && raw.direction !== "down") {
+      fail(`Invalid --direction "${raw.direction}" — a trailing alert watches up or down.`);
+    }
     return {
       kind: "trailing",
       symbol,
-      near: positive("--near", raw.near!),
+      direction: raw.direction,
       trailType: hasPercent ? "percent" : "amount",
       trailValue: hasPercent ? positive("--trail-percent", raw.trailPercent!) : positive("--trail-amount", raw.trailAmount!),
       volume,
     };
   }
-  if (raw.trailPercent !== undefined || raw.trailAmount !== undefined) {
-    fail("--trail-percent/--trail-amount require --near.");
-  }
   return { kind: "volume", symbol, volume: volume! };
 }
 
 function maInput(symbol: string, raw: RawAddFields): AddAlertInput {
-  const conflicting = [raw.level, raw.near, raw.trailPercent, raw.trailAmount, raw.volumeAtLeast, raw.volumeRatio, raw.volumePeriod];
+  const conflicting = [raw.level, raw.trailPercent, raw.trailAmount, raw.volumeAtLeast, raw.volumeRatio, raw.volumePeriod];
   if (conflicting.some((v) => v !== undefined)) {
-    fail("--ma can't be combined with --level, --near, --trail-*, or --volume-* (no volume condition on moving averages yet).");
+    fail("--ma can't be combined with --level, --trail-*, or --volume-* (no volume condition on moving averages yet).");
   }
   const spec = maSpec(raw.ma!);
 
@@ -320,7 +322,7 @@ function alertEdit(raw: RawEditFields): AlertEdit {
   return edit;
 }
 
-const ADD_KEYS = ["symbol", "level", "near", "trailPercent", "trailAmount", "volumeAtLeast", "volumeRatio", "volumePeriod", "ma", "touch", "direction", "from"] as const;
+const ADD_KEYS = ["symbol", "level", "trailPercent", "trailAmount", "volumeAtLeast", "volumeRatio", "volumePeriod", "ma", "touch", "direction", "from"] as const;
 const EDIT_KEYS = ["level", "clearLevel", "direction", "trailPercent", "trailAmount", "volumeAtLeast", "volumeRatio", "volumePeriod", "clearVolume", "ma", "touch", "from"] as const;
 
 /**

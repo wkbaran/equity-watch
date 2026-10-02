@@ -284,6 +284,57 @@ test.describe("edit", () => {
     });
   });
 
+  test("a trailing alert's panel shows its trail, and saving it untouched changes nothing", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${TRAILING.id}`);
+    const form = page.locator("#drawer-body form");
+    await expect(form.getByLabel("Kind")).toHaveValue("trailing");
+    await expect(form.getByLabel("Watch for")).toHaveValue("up");
+    await expect(form.getByLabel("Distance")).toHaveValue("3");
+    await expect(form.getByLabel("Level")).toBeHidden();
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText("Nothing changed.");
+  });
+
+  test("a price alert's panel can make it trailing", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${STATIC.id}`);
+    const form = page.locator("#drawer-body form");
+    await expect(form.getByLabel("Watch for")).toBeHidden();
+    await form.getByLabel("Kind").selectOption("trailing");
+    await expect(form.getByLabel("Level")).toBeHidden();
+    await form.getByLabel("Distance").fill("5");
+    await form.locator("button[type=submit]").click();
+    await expect(page.locator("#drawer-body")).toContainText("edit AA level 55 → trailing 5% off the low");
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.edit", target: { alertId: STATIC.id }, params: { trailPercent: 5, direction: "up" } });
+  });
+
+  test("a trailing alert's panel can flip its direction", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${TRAILING.id}`);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Watch for").selectOption("down");
+    await form.locator("button[type=submit]").click();
+    const [flip] = await queuedOps(page);
+    expect(flip).toMatchObject({ params: { direction: "down" } });
+    expect(Object.keys(flip.params)).toEqual(["direction"]);
+  });
+
+  test("a trailing alert needs a level to become a price alert", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${TRAILING.id}`);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Kind").selectOption("static");
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText("Enter the level to watch instead of the trail.");
+    await form.getByLabel("Level").fill("240");
+    await form.getByLabel("Fires on").selectOption("down");
+    await form.locator("button[type=submit]").click();
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ params: { level: 240, direction: "down" } });
+  });
+
   // The revisit queue's details panel edits the alert behind the fire, and the
   // same op closes the entry: acting on the trigger is what the queue asks for.
   test("an open trigger's panel edits the alert it fired from and closes the entry", async ({ page }) => {
@@ -348,15 +399,15 @@ test.describe("trailing and moving-average alerts from the page", () => {
     await openAlerts(page);
     const kind = addForm(page).getByLabel("Kind");
     await expect(addForm(page).getByLabel("Level")).toBeVisible();
-    await expect(addForm(page).getByLabel("Near")).toBeHidden();
+    await expect(addForm(page).getByLabel("Watch for")).toBeHidden();
 
     await kind.selectOption("trailing");
     await expect(addForm(page).getByLabel("Level")).toBeHidden();
-    await expect(addForm(page).getByLabel("Near")).toBeVisible();
+    await expect(addForm(page).getByLabel("Watch for")).toBeVisible();
     await expect(addForm(page).getByLabel("Distance")).toBeVisible();
 
     await kind.selectOption("ma");
-    await expect(addForm(page).getByLabel("Near")).toBeHidden();
+    await expect(addForm(page).getByLabel("Watch for")).toBeHidden();
     await expect(addForm(page).getByLabel("Period")).toBeVisible();
     // A cross watches a direction; a touch watches the side it came from.
     await expect(addForm(page).getByLabel("Direction")).toBeVisible();
@@ -371,13 +422,14 @@ test.describe("trailing and moving-average alerts from the page", () => {
     await openAlerts(page);
     await addForm(page).getByLabel("Symbol").fill("tsla");
     await addForm(page).getByLabel("Kind").selectOption("trailing");
-    await addForm(page).getByLabel("Near").fill("250");
     await addForm(page).getByLabel("Distance").fill("3");
     await addForm(page).locator("button[type=submit]").click();
 
+    // No starting price: the worker starts the low from the live price.
     const [op] = await queuedOps(page);
-    expect(op).toMatchObject({ type: "alert.add", params: { symbol: "TSLA", near: 250, trailPercent: 3 } });
-    await expect(page.locator("#ops-pending")).toContainText("add TSLA trailing 3% from 250");
+    expect(op).toMatchObject({ type: "alert.add", params: { symbol: "TSLA", direction: "up", trailPercent: 3 } });
+    expect(op.params).not.toHaveProperty("near");
+    await expect(page.locator("#ops-pending")).toContainText("add TSLA 3% off the low");
   });
 
   test("adds a trailing alert in dollars, and can AND a volume condition onto it", async ({ page }) => {
@@ -385,7 +437,7 @@ test.describe("trailing and moving-average alerts from the page", () => {
     await openAlerts(page);
     await addForm(page).getByLabel("Symbol").fill("tsla");
     await addForm(page).getByLabel("Kind").selectOption("trailing");
-    await addForm(page).getByLabel("Near").fill("250");
+    await addForm(page).getByLabel("Watch for").selectOption("down");
     await addForm(page).getByLabel("Trail by").selectOption("amount");
     await addForm(page).getByLabel("Distance").fill("8");
     await addForm(page).getByLabel("Volume", { exact: true }).selectOption("ratio");
@@ -393,7 +445,7 @@ test.describe("trailing and moving-average alerts from the page", () => {
     await addForm(page).locator("button[type=submit]").click();
 
     const [op] = await queuedOps(page);
-    expect(op).toMatchObject({ type: "alert.add", params: { symbol: "TSLA", near: 250, trailAmount: 8, volumeRatio: 1.5 } });
+    expect(op).toMatchObject({ type: "alert.add", params: { symbol: "TSLA", direction: "down", trailAmount: 8, volumeRatio: 1.5 } });
   });
 
   test("adds a moving-average cross, sending the spec the worker parses", async ({ page }) => {

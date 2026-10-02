@@ -241,7 +241,7 @@ interface PriceHistoryResponse {
 }
 
 interface QuoteResponse {
-  [symbol: string]: { quote?: { lastPrice: number; totalVolume: number } };
+  [symbol: string]: { quote?: { lastPrice: number; totalVolume: number; highPrice?: number; lowPrice?: number } };
 }
 
 interface InstrumentsResponse {
@@ -252,6 +252,12 @@ export interface Quote {
   lastPrice: number;
   /** Cumulative shares traded so far in the current session. */
   totalVolume: number;
+  /**
+   * The day's high and low. Only used to skip fetching minute bars for a
+   * symbol whose range reaches none of its alerts; absent means "fetch".
+   */
+  dayHigh?: number;
+  dayLow?: number;
 }
 
 function candlesToBars(candles: Candle[]): PriceBar[] {
@@ -373,7 +379,12 @@ export class SchwabProvider implements PriceDataProvider {
     const result = new Map<string, Quote>();
     for (const [symbol, data] of Object.entries(payload)) {
       if (data.quote?.lastPrice !== undefined) {
-        result.set(symbol, { lastPrice: data.quote.lastPrice, totalVolume: data.quote.totalVolume ?? 0 });
+        const { highPrice, lowPrice } = data.quote;
+        result.set(symbol, {
+          lastPrice: data.quote.lastPrice,
+          totalVolume: data.quote.totalVolume ?? 0,
+          ...(highPrice !== undefined && lowPrice !== undefined ? { dayHigh: highPrice, dayLow: lowPrice } : {}),
+        });
       }
     }
     return result;

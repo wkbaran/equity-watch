@@ -999,7 +999,14 @@
     const level = numberInput(null, { placeholder: "80.50" });
     const direction = directionSelect("up");
 
-    const near = numberInput(null, { placeholder: "150" });
+    // A trailing alert starts from the live price when the worker adds it, so
+    // the page asks only which way to watch and how far.
+    const trailDirection = h(
+      "select",
+      {},
+      h("option", { value: "up", text: "A rise off the low" }),
+      h("option", { value: "down", text: "A fall off the high" })
+    );
     const trailType = h("select", {}, h("option", { value: "percent", text: "Percent" }), h("option", { value: "amount", text: "Dollars" }));
     const trailValue = numberInput(null, { placeholder: "3" });
 
@@ -1017,7 +1024,7 @@
 
     const groups = {
       static: [field("Level", level), field("Fires on", direction)],
-      trailing: [field("Near", near), field("Trail by", trailType), field("Distance", trailValue)],
+      trailing: [field("Watch for", trailDirection), field("Trail by", trailType), field("Distance", trailValue)],
       ma: [
         field("Average", maType),
         field("Period", maPeriod),
@@ -1047,14 +1054,13 @@
         return { params: { level: lvl, direction: direction.value }, describe: `${DIRECTION_LABEL[direction.value].toLowerCase()} ${lvl}` };
       }
       if (kind.value === "trailing") {
-        const n = positive(near.value);
-        if (n === null) return { error: "Enter the price to watch from, above 0." };
         const v = positive(trailValue.value);
         if (v === null) return { error: "Enter a trail distance above 0." };
         const isPct = trailType.value === "percent";
+        const up = trailDirection.value === "up";
         return {
-          params: { near: n, ...(isPct ? { trailPercent: v } : { trailAmount: v }) },
-          describe: `trailing ${isPct ? `${v}%` : `$${v}`} from ${n}`,
+          params: { direction: trailDirection.value, ...(isPct ? { trailPercent: v } : { trailAmount: v }) },
+          describe: `${isPct ? `${v}%` : `$${v}`} ${up ? "off the low" : "off the high"}`,
         };
       }
       const period = positive(maPeriod.value);
@@ -1069,7 +1075,6 @@
 
     const reset = () => {
       level.value = "";
-      near.value = "";
       trailValue.value = "";
     };
 
@@ -1164,30 +1169,64 @@
    * 2026-09-18): a static or volume alert shows both a level and a volume
    * condition, so volume can be added to a price alert and a price level to a
    * volume alert. Leaving the level empty makes a volume-only alert; the
-   * worker (editAlert) does the conversion, keeping the id and history. A
-   * trailing alert shows its trail in place of the level.
+   * worker (editAlert) does the conversion, keeping the id and history.
+   *
+   * Since 2026-10-02 the same goes for trailing: the Kind select switches a
+   * price or volume alert to trailing (from the live price, when the edit
+   * lands) and a trailing alert back to a level. Its trail is prefilled from
+   * AlertRow.trail, so saving it untouched is "Nothing changed."
    */
   function buildEditForm(a, revisitId = null) {
     const error = h("span", { class: "form-error" });
     const button = h("button", { type: "submit", text: "Queue edit" });
     const fields = [];
-    const hasLevel = a.kind === "static" || a.kind === "volume";
+    const wasTrailing = a.kind === "trailing";
+    // A document published before AlertRow.trail existed: the trail is unknown,
+    // so an empty distance means "unchanged" as it always did.
+    const trail = a.trail ?? null;
 
+    const kind = h(
+      "select",
+      {},
+      h("option", { value: "static", text: "Price level" }),
+      h("option", { value: "trailing", text: "Trailing from a high/low" })
+    );
+    kind.value = wasTrailing ? "trailing" : "static";
     const level = numberInput(a.kind === "static" ? a.level : null, { placeholder: a.kind === "volume" ? "none" : "" });
-    const direction = directionSelect(a.direction);
+    const direction = directionSelect(a.direction ?? "up");
+    const trailDirection = h(
+      "select",
+      {},
+      h("option", { value: "up", text: "A rise off the low" }),
+      h("option", { value: "down", text: "A fall off the high" })
+    );
+    trailDirection.value = trail?.direction ?? "up";
     const trailType = h("select", {}, h("option", { value: "percent", text: "Percent" }), h("option", { value: "amount", text: "Dollars" }));
-    const trailValue = numberInput(null, { placeholder: "unchanged" });
+    trailType.value = trail?.type ?? "percent";
+    const trailValue = numberInput(trail?.value ?? null, { placeholder: wasTrailing && trail === null ? "unchanged" : "3" });
+
     // Prefilled from AlertRow.ma, so opening the form to read it and saving is
     // "Nothing changed." rather than a silent rewrite of the spec.
     const maFields = a.kind === "ma" ? buildMaFields(a.ma) : null;
+    const priceFields = [field("Level", level), field("Fires on", direction)];
+    const trailFields = [field("Watch for", trailDirection), field("Trail by", trailType), field("Distance", trailValue)];
     if (a.kind === "ma") fields.push(...maFields.fields);
-    else if (hasLevel) fields.push(field("Level", level), field("Fires on", direction));
-    else fields.push(field("Trail by", trailType), field("Distance", trailValue));
+    else {
+      fields.push(field("Kind", kind), ...priceFields, ...trailFields);
+      const sync = () => {
+        for (const f of priceFields) f.hidden = kind.value !== "static";
+        for (const f of trailFields) f.hidden = kind.value !== "trailing";
+      };
+      kind.addEventListener("change", sync);
+      sync();
+    }
 
     // A moving average has no volume condition, and never has had one.
     const old = a.volume ?? null;
     const volumeFields = a.kind === "ma" ? null : buildVolumeFields(old);
     if (volumeFields) fields.push(...volumeFields.fields);
+
+    const trailText = (type, v, dir) => `trailing ${type === "percent" ? `${v}%` : `$${v}`} off the ${dir === "up" ? "low" : "high"}`;
 
     const collect = () => {
       const params = {};
@@ -1201,10 +1240,11 @@
       if (read.error) return { error: read.error };
       const volume = read.volume;
 
-      if (hasLevel) {
+      if (kind.value === "static") {
         const raw = level.value.trim();
         const lvl = raw === "" ? null : positive(raw);
         if (raw !== "" && lvl === null) return { error: "Enter a level above 0, or leave it empty for a volume-only alert." };
+        if (wasTrailing && lvl === null) return { error: "Enter the level to watch instead of the trail." };
         if (lvl === null && volume === null) return { error: "Set a level, a volume condition, or both." };
         const was = a.kind === "static" ? a.level : null;
         if (lvl === null && was !== null) {
@@ -1212,19 +1252,34 @@
           changes.push(`drop level ${was}`);
         } else if (lvl !== null && lvl !== was) {
           params.level = lvl;
-          changes.push(was === null ? `add level ${lvl}` : `level ${was} → ${lvl}`);
+          changes.push(wasTrailing ? `trailing → level ${lvl}` : was === null ? `add level ${lvl}` : `level ${was} → ${lvl}`);
         }
-        // A volume alert gaining a level states its direction outright: it
-        // has none yet, so "unchanged" would mean the worker's default.
-        if (lvl !== null && (a.kind === "volume" || direction.value !== a.direction)) {
+        // An alert gaining a level states its direction outright: it has none
+        // yet, so "unchanged" would mean the worker's default.
+        if (lvl !== null && (a.kind !== "static" || direction.value !== a.direction)) {
           params.direction = direction.value;
-          changes.push(a.kind === "volume" ? DIRECTION_LABEL[direction.value].toLowerCase() : `${DIRECTION_LABEL[a.direction].toLowerCase()} → ${DIRECTION_LABEL[direction.value].toLowerCase()}`);
+          changes.push(a.kind !== "static" ? DIRECTION_LABEL[direction.value].toLowerCase() : `${DIRECTION_LABEL[a.direction].toLowerCase()} → ${DIRECTION_LABEL[direction.value].toLowerCase()}`);
         }
-      } else if (trailValue.value.trim() !== "") {
-        const v = positive(trailValue.value);
-        if (v === null) return { error: "Enter a trail distance above 0, or leave it empty." };
-        Object.assign(params, trailType.value === "percent" ? { trailPercent: v } : { trailAmount: v });
-        changes.push(`trail ${trailType.value === "percent" ? `${v}%` : `$${v}`}`);
+      } else {
+        const raw = trailValue.value.trim();
+        const v = raw === "" ? null : positive(raw);
+        if (raw !== "" && v === null) return { error: "Enter a trail distance above 0." };
+        if (!wasTrailing) {
+          // Becomes trailing: the worker starts it from the live price.
+          if (v === null) return { error: "Enter a trail distance above 0." };
+          Object.assign(params, trailType.value === "percent" ? { trailPercent: v } : { trailAmount: v });
+          params.direction = trailDirection.value;
+          changes.push(`${a.kind === "static" ? `level ${a.level}` : "volume only"} → ${trailText(trailType.value, v, trailDirection.value)}`);
+        } else {
+          if (v !== null && (trail === null || v !== trail.value || trailType.value !== trail.type)) {
+            Object.assign(params, trailType.value === "percent" ? { trailPercent: v } : { trailAmount: v });
+            changes.push(`trail ${trailType.value === "percent" ? `${v}%` : `$${v}`}`);
+          }
+          if (trail !== null && trailDirection.value !== trail.direction) {
+            params.direction = trailDirection.value;
+            changes.push(`off the ${trailDirection.value === "up" ? "low" : "high"}, starting from now`);
+          }
+        }
       }
 
       if (volume === null && old !== null) {

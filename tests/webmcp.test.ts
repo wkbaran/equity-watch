@@ -55,7 +55,6 @@ const text = (r: { content: { text: string }[] }) => r.content[0].text;
 const SAMPLE: Record<string, unknown> = {
   symbol: "GMED",
   level: 80,
-  near: 100,
   count: 10,
   basisPerShare: 5,
   purchaseDate: "2026-09-01",

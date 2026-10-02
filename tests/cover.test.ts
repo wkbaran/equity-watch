@@ -190,9 +190,11 @@ describe("holdings.cover op", () => {
   // must never name is the basis or the share count.
   it("names the level but never the basis or the share count", async () => {
     const r = await applyCoverOp(op("MKS"), holdingsFile, alertsFile, market({ MKS: 30 }));
-    expect(r.message).toContain("44");
-    expect(r.message).not.toContain("40"); // basis
-    expect(r.message).not.toMatch(/\b5\b/); // share count
+    // The alert id is random hex, and "20405605" contains the basis.
+    const text = r.message.replace(/alert [0-9a-f]{8}/, "alert <id>");
+    expect(text).toContain("44");
+    expect(text).not.toContain("40"); // basis
+    expect(text).not.toMatch(/\b5\b/); // share count
   });
 });
 

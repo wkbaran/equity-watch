@@ -198,6 +198,18 @@ Re-fire suppression differs per kind and is *not* uniform: static alerts use
 use `mutedUntil` because a crossed volume threshold stays crossed and would
 otherwise fire on every poll.
 
+## A trailing alert's `near` is stored, but nothing accepts it any more
+
+`--near` was removed from every add path on 2026-10-01 (CLI, page, ops, agent
+tool): it set the starting low *and*, by which side of the live price it sat on,
+the direction, and the user found that made no sense. A trailing add now takes a
+required `direction` (`up` = rise off the low, `down` = fall off the high) and
+starts from the live price. `TrailingAlert.near` still exists and is written
+(the live price at creation) because old alerts carry it and
+`describeAlertCondition` says "started near X", which is the edit conflict
+guard. Don't rename the field without a migration, and don't bring the input
+back. A queued op that still sends `near` is rejected as an unknown field.
+
 ## The one-alert-per-symbol+side rule is settled differently per caller
 
 `addAlert` takes an `onConflict` option (2026-09-16), and the two callers that
@@ -592,6 +604,12 @@ Things that look simplifiable and aren't:
   `AlertRow.volume` carries the condition so the form can prefill it; the
   condition text can't be parsed back. Moving averages have no volume
   condition and still aren't editable from the page.
+  Since 2026-10-02 trailing joins in: a *Kind* select switches a static or
+  volume alert to trailing (`trail` + required `direction`, starting from the
+  live price) and a trailing alert back to static (`level`). A trailing alert
+  given a new `direction` flips side and restarts from the live price, so it
+  goes through `displaceRival` like a moved level. The form prefills from
+  `AlertRow.trail`, not from `condition`, for the same reason as `volume`.
 - **The New alert form shares those three controls** (`buildVolumeFields` in
   `web/app.js`), so a new alert can carry an absolute share count and a window,
   not only a ratio. Keep them shared rather than writing a second copy: the two
@@ -979,6 +997,41 @@ Things that look like bugs and aren't:
   from `getDailyBars`, which takes a date range and has no such ceiling. That
   asymmetry is why the dashboard's window list offers 10 days as `10d` and
   never as `240h`.
+
+## Static and trailing alerts replay minute bars too, and must never read one twice
+
+Since 2026-10-02 `checkAlerts` judges static and trailing alerts over the
+completed minute bars since `lastEvaluatedAt` (`src/alerts/pricePath.ts`, user
+docs in docs/ALERTS.md "Between checks"). Before that they compared one quote per
+check, which the user had assumed was never the case. Things that look
+simplifiable and aren't:
+
+- **Bars or the quote, never both.** The quote falls inside a bar that is still
+  forming. Judge the quote now and that bar at the next check, and one move counts
+  twice: a static cross, then its own crossing back. When the quote is used the
+  watermark becomes now, which can leave up to a minute unseen. That is the right
+  side of the trade. Don't "add the live quote to the end of the path" the way
+  `maEngine` does.
+- **Anything that re-seeds an alert against a live price moves the watermark to
+  now**: `addAlert`, a level edit, `applyRevisitLevel`. Otherwise bars from before
+  the change are replayed against the new level, and a level moved through the
+  price fires on history.
+- **Closes only, never highs or lows** (the user's call, 2026-10-02: "I don't want
+  to get overwhelmed with noise"). A first version read highs and lows, which
+  needed rules for a bar whose order is unknown (a new low and a high 5% above it
+  in one bar must not fire). Closes come in order, so that went away. It costs
+  nothing in API calls either way, since the fetch is per symbol. Don't bring
+  wicks back to "improve resolution" without asking.
+- **The fetch is gated twice, for the 120-calls-a-minute limit.** There are 540+
+  symbols. `rangeReaches` skips a symbol whose quote range reaches none of its
+  alerts, and `barsMayExist` skips everything outside the regular session except
+  the first check after a close. The second gate exists because Schwab reports
+  `highPrice`/`lowPrice` as **0** overnight for some symbols (ADC, verified
+  2026-10-02 02:00 ET), and no range means fetch. Without it every overnight
+  check (the container runs `*/15` around the clock) would request bars for all of
+  them.
+- **One bar fetch per symbol per check, shared** with volume windows and moving
+  averages through `sharedIntradayBars`.
 
 ## A zero volume baseline must mean "cannot evaluate", never "no threshold"
 

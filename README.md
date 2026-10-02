@@ -287,8 +287,8 @@ to read your pending alerts back out.
 node dist/cli.js alert add GMED 80.5
 node dist/cli.js alert add --symbol AAPL --level 150 --direction down    # or: either
 
-# Trailing: fires on a bounce or pullback of N% or $N from a running low/high
-node dist/cli.js alert add --symbol AAPL --near 150 --trail-percent 3
+# Trailing: fires on a rise of N% or $N off the low since it was set (or a fall off the high)
+node dist/cli.js alert add --symbol AAPL --trail-percent 3 --direction up
 
 # Volume: an absolute share count (2.5M) or a multiple of typical volume; standalone
 # or AND-ed onto a static/trailing alert

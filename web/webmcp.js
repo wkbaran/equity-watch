@@ -382,10 +382,10 @@
     direction: {
       type: "string",
       enum: ["up", "down", "either"],
-      description: "Which crossings of `level` fire it (default up). For a moving-average cross: up or down.",
+      description:
+        "Which crossings of `level` fire it (default up). For a trailing alert (required): up fires on a rise off the low since it was added, down on a fall off the high. For a moving-average cross: up or down.",
     },
-    near: { type: "number", description: "Trailing alert: the price to trail from. Give it with exactly one of trailPercent or trailAmount." },
-    trailPercent: { type: "number", description: "Trailing alert: trail distance as a percent." },
+    trailPercent: { type: "number", description: "Trailing alert: trail distance as a percent. Give it or trailAmount, with a direction, and no level." },
     trailAmount: { type: "number", description: "Trailing alert: trail distance in dollars." },
     ma: {
       type: "string",
@@ -407,7 +407,7 @@
     },
   };
 
-  const ADD_KEYS = ["level", "direction", "near", "trailPercent", "trailAmount", "ma", "touch", "from", "volumeAtLeast", "volumeRatio", "volumePeriod"];
+  const ADD_KEYS = ["level", "direction", "trailPercent", "trailAmount", "ma", "touch", "from", "volumeAtLeast", "volumeRatio", "volumePeriod"];
   const EDIT_KEYS = ["level", "direction", "trailPercent", "trailAmount", "ma", "touch", "from", "volumeAtLeast", "volumeRatio", "volumePeriod"];
   const pick = (keys) => Object.fromEntries(keys.map((k) => [k, ALERT_FIELDS[k]]));
 
@@ -607,7 +607,7 @@
       group: "write",
       ops: ["alert.add"],
       description:
-        "Queue a new alert. Give exactly one shape: a `level` (with optional `direction`); `near` with one of trailPercent/trailAmount (trailing); `ma` (moving average); or only a volume condition. A level can also carry a volume condition. Replaces any live alert already on the same side of the price for that symbol. The person is asked to approve; the change applies at the next scheduled check.",
+        "Queue a new alert. Give exactly one shape: a `level` (with optional `direction`); one of trailPercent/trailAmount with a `direction` (trailing, starting from the live price); `ma` (moving average); or only a volume condition. A level can also carry a volume condition. Replaces any live alert already on the same side of the price for that symbol. The person is asked to approve; the change applies at the next scheduled check.",
       // The worker's add path takes a touch's approach as above|below only; an edit also takes either.
       inputSchema: object({ symbol: symbolProp, ...pick(ADD_KEYS), from: { ...ALERT_FIELDS.from, enum: ["above", "below"] } }, ["symbol"]),
       run(api, args, signal) {
@@ -615,7 +615,7 @@
         if (symbol === "") return refuse("Give the symbol.");
         const built = alertParams(api, args, ADD_KEYS);
         if (built.error) return refuse(built.error);
-        if (Object.keys(built.params).length === 0) return refuse("Give a level, near + a trail, ma, or a volume condition.");
+        if (Object.keys(built.params).length === 0) return refuse("Give a level, a trail with a direction, ma, or a volume condition.");
         return queue(api, "write", signal, {
           op: { type: "alert.add", params: { symbol, ...built.params } },
           symbol,
@@ -628,7 +628,7 @@
       group: "write",
       ops: ["alert.edit"],
       description:
-        "Queue a change to one alert, by id. Send only what changes. `clearLevel` turns a price alert with a volume condition into a volume alert; `clearVolume` drops the volume condition. Rejected at apply time if the alert has changed since this call read it. The person is asked to approve.",
+        "Queue a change to one alert, by id. Send only what changes. `clearLevel` turns a price alert with a volume condition into a volume alert; `clearVolume` drops the volume condition. A trail (trailPercent or trailAmount) with a `direction` of up or down turns a price or volume alert into a trailing one, starting from the live price; a `level` turns a trailing alert back into a price alert. A new `direction` on a trailing alert restarts it from the live price. Rejected at apply time if the alert has changed since this call read it. The person is asked to approve.",
       inputSchema: object(
         {
           alertId: alertIdProp,

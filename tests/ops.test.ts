@@ -55,6 +55,19 @@ function makeStatic(overrides: Partial<StaticAlert> = {}): StaticAlert {
 }
 
 describe("parseAddInput", () => {
+  it("builds a trailing alert from a direction and a distance, with no starting price", () => {
+    const r = parseAddInput({ symbol: "ADC", trailPercent: 5, direction: "up" });
+    expect(r).toEqual({
+      ok: true,
+      value: { kind: "trailing", symbol: "ADC", direction: "up", trailType: "percent", trailValue: 5, volume: undefined },
+    });
+  });
+
+  it("refuses the retired --near field from a queued op", () => {
+    const r = addFieldsFromJson({ symbol: "ADC", near: 70, trailPercent: 5, direction: "up" });
+    expect(r).toEqual({ ok: false, error: 'Unknown field "near".' });
+  });
+
   it("builds a static alert with the default direction", () => {
     const r = parseAddInput({ symbol: " gmed ", level: "80.5" });
     expect(r).toEqual({ ok: true, value: { kind: "static", symbol: "GMED", level: 80.5, direction: "up", volume: undefined } });
@@ -76,13 +89,14 @@ describe("parseAddInput", () => {
     [{ symbol: "A B", level: 10 }, 'Invalid symbol "A B"'],
     [{ symbol: "X", level: "abc" }, 'Invalid --level "abc"'],
     [{ symbol: "X", level: 0 }, 'Invalid --level "0"'],
-    [{ symbol: "X", level: 10, near: 10 }, "at most one of --level"],
-    [{ symbol: "X", near: 10, direction: "up" }, "--direction applies to --level"],
-    [{ symbol: "X" }, "Specify --level, --near"],
+    [{ symbol: "X", direction: "up" }, "--direction applies to --level"],
+    [{ symbol: "X", volumeRatio: 2, direction: "up" }, "--direction applies to --level"],
+    [{ symbol: "X" }, "Specify --level, --trail-percent"],
     [{ symbol: "X", level: 10, direction: "sideways" }, 'Invalid --direction "sideways"'],
     [{ symbol: "X", level: 10, trailPercent: 3 }, "only apply to trailing alerts"],
-    [{ symbol: "X", near: 10 }, "exactly one of --trail-percent or --trail-amount"],
-    [{ symbol: "X", trailPercent: 3, volumeRatio: 2 }, "require --near"],
+    [{ symbol: "X", trailPercent: 3, trailAmount: 1, direction: "up" }, "exactly one of --trail-percent or --trail-amount"],
+    [{ symbol: "X", trailPercent: 3, volumeRatio: 2 }, "Specify --direction for a trailing alert"],
+    [{ symbol: "X", trailPercent: 3, direction: "either" }, "a trailing alert watches up or down"],
     [{ symbol: "X", level: 10, volumeAtLeast: 5, volumeRatio: 2 }, "not both"],
     [{ symbol: "X", level: 10, volumeRatio: -1 }, 'Invalid --volume-ratio "-1"'],
     [{ symbol: "X", level: 10, volumePeriod: "30m" }, "--volume-period requires"],
@@ -141,7 +155,7 @@ describe("addFieldsFromJson", () => {
     expect(addFieldsFromJson({ symbol: "X", level: 1, evil: 1 })).toEqual({ ok: false, error: 'Unknown field "evil".' });
     expect(addFieldsFromJson({ symbol: { a: 1 } })).toMatchObject({ ok: false });
     expect(addFieldsFromJson([])).toMatchObject({ ok: false });
-    expect(addFieldsFromJson({ symbol: "X", level: 5, volumeRatio: "", near: null })).toEqual({ ok: true, value: { symbol: "X", level: 5 } });
+    expect(addFieldsFromJson({ symbol: "X", level: 5, volumeRatio: "", direction: null })).toEqual({ ok: true, value: { symbol: "X", level: 5 } });
   });
 });
 
@@ -656,11 +670,12 @@ describe("applyOp", () => {
     expect(loadOpLog(opLogFile)).toHaveLength(3);
   });
 
-  it("rejects an edit the alert's kind doesn't support", async () => {
+  it("rejects an edit the alert can't take, as a result", async () => {
     saveAlerts(alertsFile, [makeStatic()]);
+    // A trail would make it trailing, which needs a direction.
     const { result } = await applyOp(edit("s1abcdef", "price crosses above 100", { trailPercent: 3 }), { alertsFile, opLogFile, market: fakeMarket({}) });
     expect(result.ok).toBe(false);
-    expect(result.message).toContain("has no trail to edit");
+    expect(result.message).toContain("Give the direction");
   });
 
   it("lets an exception propagate without logging, so the op is retried", async () => {
