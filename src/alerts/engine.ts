@@ -865,9 +865,13 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
     if (refused !== null) return reject(refused);
   } else if (alert.kind === "trailing") {
     if (edit.level === null) {
-      return reject("A trailing alert has no level to remove.");
-    }
-    if (edit.level !== undefined) {
+      // Dropping the price condition. It becomes a volume alert further down,
+      // after this edit's own change to the volume condition, as a static
+      // alert's does; a trail or direction would be thrown away with it.
+      if (edit.trail !== undefined || edit.direction !== undefined) {
+        return reject("Give a trail or drop the price condition, not both.");
+      }
+    } else if (edit.level !== undefined) {
       if (edit.trail !== undefined) {
         return reject("Give a level or a trail, not both.");
       }
@@ -988,17 +992,21 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
     alert.trailValue = edit.trail.value;
   }
 
-  if (alert.kind === "static" && edit.level === null) {
+  if ((alert.kind === "static" || alert.kind === "trailing") && edit.level === null) {
     // Becomes a volume alert: its volume condition, after this edit's own
     // change to it, is all that is left to watch.
     if (edit.direction !== undefined) {
       return reject("A direction needs a level. Keep the level, or drop the direction change.");
     }
-    const { kind: _kind, side: _side, direction: _direction, level: _level, lastKnownSide: _lastKnownSide, volumeCondition, ...base } = alert;
-    if (volumeCondition === undefined) {
-      return reject("Without a level or a volume condition the alert would watch nothing. Remove it instead.");
+    if (alert.volumeCondition === undefined) {
+      return reject("Without a price condition or a volume condition the alert would watch nothing. Remove it instead.");
     }
-    const demoted: VolumeAlert = { ...base, kind: "volume", volume: volumeCondition, mutedUntil: null };
+    const base =
+      alert.kind === "static"
+        ? (({ kind: _k, side: _s, direction: _d, level: _l, lastKnownSide: _lk, volumeCondition: _vc, lastEvaluatedAt: _le, ...rest }) => rest)(alert)
+        : (({ kind: _k, side: _s, near: _n, trailType: _tt, trailValue: _tv, extremePrice: _e, extremeAt: _ea, volumeCondition: _vc, lastEvaluatedAt: _le, ...rest }) =>
+            rest)(alert);
+    const demoted: VolumeAlert = { ...base, kind: "volume", volume: alert.volumeCondition, mutedUntil: null };
     alerts[alerts.indexOf(alert)] = demoted;
     alert = demoted;
   }

@@ -2237,7 +2237,7 @@ function buildProgram(): Command {
         "Only a moved --level needs a live quote; to change an alert's kind, remove it and add a new one"
     )
     .option("--level <price>", "Static: move the level (side and crossing baseline are re-seeded against the live price). Volume or trailing: add one, making it a static alert (keeping any volume condition)")
-    .option("--clear-level", "Static with a volume condition: drop the level, leaving a volume-only alert")
+    .option("--clear-level", "Static or trailing with a volume condition: drop the price condition, leaving a volume-only alert")
     .option("--direction <dir>", "Static: up|down|either. Trailing: up|down (a change restarts it from the live price). Moving-average cross: up|down")
     .option("--trail-percent <n>", "Trailing: trail distance as a percent. On a static or volume alert, with --direction up|down, makes it trailing")
     .option("--trail-amount <n>", "Trailing: trail distance as a dollar amount. On a static or volume alert, with --direction, makes it trailing")

@@ -188,7 +188,8 @@ quote (to re-seed the side and the crossing baseline, or the starting low or
 high). It converts kinds in place, carrying any volume condition along:
 
 - a level on a volume alert makes it static, with the volume as its AND condition;
-- `--clear-level` turns a static-with-volume alert back into a volume-only one;
+- `--clear-level` drops a static or trailing alert's price condition, leaving its
+  volume condition as a volume-only alert (refused if it has none);
 - a trail (`--trail-percent`/`--trail-amount`) with `--direction up|down` makes a
   static or volume alert trailing, starting from the live price;
 - a level on a trailing alert makes it static again;

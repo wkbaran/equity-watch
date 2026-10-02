@@ -532,6 +532,25 @@ test.describe("trailing and moving-average alerts from the page", () => {
     expect(op.params).toMatchObject({ touch: MOVING_AVERAGE.marginPct, from: "below" });
   });
 
+  test("the New alert form adds a volume-only alert, and requires its volume condition", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    const form = page.locator("#alert-add form");
+    await form.getByLabel("Symbol").fill("nvda");
+    await form.getByLabel("Kind").selectOption("volume");
+    await expect(form.getByLabel("Level")).toBeHidden();
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText("Set a volume condition: it is all a volume-only alert watches.");
+    expect(await queuedOps(page)).toEqual([]);
+
+    await form.getByLabel("Volume", { exact: true }).selectOption("shares");
+    await form.getByLabel("Volume at least").fill("2.5M");
+    await form.locator("button[type=submit]").click();
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.add", params: { symbol: "NVDA", volumeAtLeast: 2_500_000 } });
+    expect(Object.keys(op.params).sort()).toEqual(["symbol", "volumeAtLeast"]);
+  });
+
   test("a price alert's panel can make it a moving-average cross, stating the whole spec", async ({ page }) => {
     await storeToken(page);
     await page.goto(`/#/alert/${STATIC.id}`);
@@ -1027,7 +1046,8 @@ test.describe("price and volume in one edit form", () => {
     await storeToken(page);
     await page.goto(`/#/alert/${VOLUME_ONLY.id}`);
     const form = page.locator("#drawer-body form");
-    await expect(form.getByLabel("Level")).toHaveValue("");
+    await expect(form.getByLabel("Kind")).toHaveValue("volume");
+    await expect(form.getByLabel("Level")).toBeHidden();
     await expect(form.getByRole("combobox", { name: /^Volume/ })).toHaveValue("shares");
     await expect(form.getByLabel("Volume at least")).toHaveValue("5M");
     await expect(form.getByLabel("Over")).toHaveValue("30m");
@@ -1035,6 +1055,7 @@ test.describe("price and volume in one edit form", () => {
     await form.locator("button[type=submit]").click();
     await expect(form.locator(".form-error")).toHaveText("Nothing changed.");
 
+    await form.getByLabel("Kind").selectOption("static");
     await form.getByLabel("Level").fill("200");
     await form.locator("button[type=submit]").click();
     await expect(page.locator("#drawer-body")).toContainText("edit NVDA add level 200, crosses up");
@@ -1092,21 +1113,47 @@ test.describe("price and volume in one edit form", () => {
     expect(await queuedOps(page)).toEqual([]);
   });
 
-  test("emptying a price alert's level leaves a volume alert, and emptying both is refused", async ({ page }) => {
+  test("Volume only drops a price alert's level, and needs a volume condition", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${STATIC_WITH_VOLUME.id}`);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Kind").selectOption("volume");
+    await expect(form.getByLabel("Level")).toBeHidden();
+    await form.getByRole("combobox", { name: /^Volume/ }).selectOption("none");
+    await form.locator("button[type=submit]").click();
+    await expect(form.locator(".form-error")).toHaveText("Set a volume condition: it is all a volume-only alert watches.");
+    expect(await queuedOps(page)).toEqual([]);
+
+    await form.getByRole("combobox", { name: /^Volume/ }).selectOption("ratio");
+    await expect(form.locator(".edit-preview")).toHaveText("drop level 400, volume only");
+    await form.locator("button[type=submit]").click();
+    await expect(page.locator("#drawer-body")).toContainText("edit MSFT drop level 400, volume only");
+    const [op] = await queuedOps(page);
+    expect(op.params).toEqual({ clearLevel: true });
+  });
+
+  test("an empty level is an error now, not a volume-only alert", async ({ page }) => {
     await storeToken(page);
     await page.goto(`/#/alert/${STATIC_WITH_VOLUME.id}`);
     const form = page.locator("#drawer-body form");
     await form.getByLabel("Level").fill("");
-    await form.getByRole("combobox", { name: /^Volume/ }).selectOption("none");
     await form.locator("button[type=submit]").click();
-    await expect(form.locator(".form-error")).toHaveText("Set a level, a volume condition, or both.");
+    await expect(form.locator(".form-error")).toHaveText("Enter a level above 0.");
     expect(await queuedOps(page)).toEqual([]);
+  });
 
-    await form.getByRole("combobox", { name: /^Volume/ }).selectOption("ratio");
+  test("a trailing alert can become volume-only, sending its new volume condition with it", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${TRAILING.id}`);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Kind").selectOption("volume");
+    await expect(form.getByLabel("Distance")).toBeHidden();
+    await form.getByRole("combobox", { name: /^Volume/ }).selectOption("shares");
+    await form.getByLabel("Volume at least").fill("3M");
     await form.locator("button[type=submit]").click();
-    await expect(page.locator("#drawer-body")).toContainText("edit MSFT drop level 400");
+    await expect(page.locator("#drawer-body")).toContainText("edit TSLA trailing → volume only, volume ≥ 3M shares today");
     const [op] = await queuedOps(page);
-    expect(op.params).toEqual({ clearLevel: true });
+    expect(op.params).toEqual({ clearLevel: true, volumeAtLeast: 3_000_000 });
   });
 });
 

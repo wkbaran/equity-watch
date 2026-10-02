@@ -884,6 +884,28 @@ describe("editAlert", () => {
     expect(stored).not.toHaveProperty("extremePrice");
   });
 
+  it("turns a trailing alert with volume into a volume alert, without a quote", async () => {
+    const added = await addAlert(
+      path,
+      { kind: "trailing", symbol: "TEST", direction: "up", trailType: "percent", trailValue: 3, volume: { ratio: 2, mode: "today" } },
+      fakeMarket({ prices: { TEST: 100 } })
+    );
+    const result = await editAlert(path, added.added!.id, { level: null, volume: { threshold: 2_000_000, mode: "today" } }, offline);
+    expect(result.rejectedReason).toBeNull();
+    const [stored] = loadAlerts(path);
+    expect(stored).toMatchObject({ id: added.added!.id, kind: "volume", volume: { threshold: 2_000_000, mode: "today" } });
+    for (const gone of ["side", "near", "trailType", "trailValue", "extremePrice", "volumeCondition", "lastEvaluatedAt"]) expect(stored).not.toHaveProperty(gone);
+  });
+
+  it("won't drop a trailing alert's price condition with nothing left to watch, or with a trail", async () => {
+    const added = await addAlert(path, { kind: "trailing", symbol: "TEST", direction: "up", trailType: "percent", trailValue: 3 }, fakeMarket({ prices: { TEST: 100 } }));
+    const id = added.added!.id;
+    expect((await editAlert(path, id, { level: null }, offline)).rejectedReason).toMatch(/would watch nothing/);
+    const both = await editAlert(path, id, { level: null, trail: { type: "percent", value: 4 }, volume: { ratio: 2, mode: "today" } }, offline);
+    expect(both.rejectedReason).toMatch(/not both/);
+    expect(loadAlerts(path)[0].kind).toBe("trailing");
+  });
+
   it("restarts a trailing alert from the live price when its direction flips", async () => {
     saveAlerts(path, [makeTrailing({ side: "below", extremePrice: 90 })]);
     await editAlert(path, "t1", { direction: "down" }, fakeMarket({ prices: { TEST: 100 } }));

@@ -793,8 +793,11 @@
           const read = volumeFields.read();
           if (read.error) return (error.textContent = read.error);
           const volume = read.volume;
+          if (kindRead.volumeOnly && volume === null) return (error.textContent = "Set a volume condition: it is all a volume-only alert watches.");
           const params = { symbol: sym, ...kindRead.params, ...(volume === null ? {} : volumeParams(volume)) };
-          const summary = `add ${sym} ${kindRead.describe}` + (volume === null ? "" : ` with volume ${volumeConditionText(volume)}`);
+          const summary = kindRead.volumeOnly
+            ? `add ${sym} volume ${volumeConditionText(volume)}`
+            : `add ${sym} ${kindRead.describe}` + (volume === null ? "" : ` with volume ${volumeConditionText(volume)}`);
           button.disabled = true;
           const queued = await submitOp({ type: "alert.add", params }, { symbol: sym, summary });
           button.disabled = false;
@@ -994,7 +997,8 @@
       {},
       h("option", { value: "static", text: "Price level" }),
       h("option", { value: "trailing", text: "Trailing from a high/low" }),
-      h("option", { value: "ma", text: "Moving average" })
+      h("option", { value: "ma", text: "Moving average" }),
+      h("option", { value: "volume", text: "Volume only" })
     );
     kind.value = existing ?? "static";
 
@@ -1049,7 +1053,10 @@
     maTrigger.addEventListener("change", sync);
     sync();
 
+    // `volumeOnly` tells the caller the volume condition is the whole alert,
+    // so it is required rather than optional.
     const read = () => {
+      if (kind.value === "volume") return { params: {}, describe: "volume only", volumeOnly: true };
       if (kind.value === "static") {
         const lvl = positive(level.value);
         if (lvl === null) return { error: "Enter a level above 0." };
@@ -1219,6 +1226,11 @@
    * drops its volume condition (a moving average has none). The way back
    * isn't offered: the worker has no conversion out of a moving average.
    *
+   * *Volume only* is a Kind too (2026-10-02). Before, a volume-only alert was
+   * made by leaving Level empty, which nothing on the form said, and a
+   * trailing alert couldn't become one at all. An empty Level is now just an
+   * error; dropping the price condition is choosing Volume only.
+   *
    * The form reads as a sentence, "Watch <what> and volume <condition>", with
    * a line beside the button saying what Queue edit would send. That line is
    * collect()'s own change list, so it can't describe a different edit from
@@ -1238,10 +1250,11 @@
       {},
       h("option", { value: "static", text: "Price level" }),
       h("option", { value: "trailing", text: "Trailing from a high/low" }),
-      h("option", { value: "ma", text: "Moving average" })
+      h("option", { value: "ma", text: "Moving average" }),
+      h("option", { value: "volume", text: "Volume only" })
     );
-    kind.value = wasTrailing ? "trailing" : "static";
-    const level = numberInput(a.kind === "static" ? a.level : null, { placeholder: a.kind === "volume" ? "none" : "" });
+    kind.value = a.kind === "trailing" || a.kind === "volume" ? a.kind : "static";
+    const level = numberInput(a.kind === "static" ? a.level : null);
     const direction = directionSelect(a.direction ?? "up");
     const trailDirection = h(
       "select",
@@ -1303,23 +1316,23 @@
       if (read.error) return { error: read.error };
       const volume = read.volume;
 
-      if (kind.value === "static") {
-        const raw = level.value.trim();
-        const lvl = raw === "" ? null : positive(raw);
-        if (raw !== "" && lvl === null) return { error: "Enter a level above 0, or leave it empty for a volume-only alert." };
-        if (wasTrailing && lvl === null) return { error: "Enter the level to watch instead of the trail." };
-        if (lvl === null && volume === null) return { error: "Set a level, a volume condition, or both." };
-        const was = a.kind === "static" ? a.level : null;
-        if (lvl === null && was !== null) {
+      if (kind.value === "volume") {
+        if (volume === null) return { error: "Set a volume condition: it is all a volume-only alert watches." };
+        if (a.kind !== "volume") {
           params.clearLevel = true;
-          changes.push(`drop level ${was}`);
-        } else if (lvl !== null && lvl !== was) {
+          changes.push(wasTrailing ? "trailing → volume only" : `drop level ${a.level}, volume only`);
+        }
+      } else if (kind.value === "static") {
+        const lvl = positive(level.value);
+        if (lvl === null) return { error: wasTrailing ? "Enter the level to watch instead of the trail." : "Enter a level above 0." };
+        const was = a.kind === "static" ? a.level : null;
+        if (lvl !== was) {
           params.level = lvl;
           changes.push(wasTrailing ? `trailing → level ${lvl}` : was === null ? `add level ${lvl}` : `level ${was} → ${lvl}`);
         }
         // An alert gaining a level states its direction outright: it has none
         // yet, so "unchanged" would mean the worker's default.
-        if (lvl !== null && (a.kind !== "static" || direction.value !== a.direction)) {
+        if (a.kind !== "static" || direction.value !== a.direction) {
           params.direction = direction.value;
           changes.push(a.kind !== "static" ? DIRECTION_LABEL[direction.value].toLowerCase() : `${DIRECTION_LABEL[a.direction].toLowerCase()} → ${DIRECTION_LABEL[direction.value].toLowerCase()}`);
         }
