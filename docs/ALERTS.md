@@ -178,6 +178,7 @@ node dist/cli.js alert edit MELI 1960        # shorthand for --level 1960
 node dist/cli.js alert edit <id> --direction either --volume-ratio 2
 node dist/cli.js alert edit <id> --clear-volume
 node dist/cli.js alert edit <id> --trail-percent 5 --direction up   # make it trailing
+node dist/cli.js alert edit <id> --ma sma200@1D --direction up       # make it a moving-average cross
 node dist/cli.js alert remove <id>
 ```
 
@@ -194,7 +195,13 @@ high). It converts kinds in place, carrying any volume condition along:
 - a new `--direction` on a trailing alert flips it (low to high, or back) and
   restarts it from the live price.
 
-Changing to or from a moving average is not an edit: remove it and add a new one.
+- `--ma` with `--direction up|down` (a cross) or `--touch [margin]` and/or
+  `--from` (a touch) makes a static, trailing or volume alert a moving average.
+  It needs no quote, and drops any volume condition, since a moving average has
+  none; giving a level, trail or volume in the same edit is refused.
+
+Changing a moving average back into anything else is not an edit: remove it and
+add a new one.
 
 **Every edit closes that alert's open revisit entries**, wherever it is made,
 marking them `applied` and recording the level move.

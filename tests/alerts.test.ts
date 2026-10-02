@@ -1042,6 +1042,60 @@ describe("editAlert", () => {
     });
   });
 
+  it("turns a static alert into a moving-average cross, keeping id and history, without a quote", async () => {
+    saveAlerts(path, [makeStatic({ level: 100, triggerCount: 2, volumeCondition: { ratio: 2, mode: "today" } })]);
+    const result = await editAlert(path, "s1", { ma: { maType: "sma", period: 200, timeframe: "1D" }, direction: "up" }, offline);
+    expect(result.rejectedReason).toBeNull();
+    const [stored] = loadAlerts(path) as MaAlert[];
+    expect(stored).toMatchObject({
+      id: "s1",
+      kind: "ma",
+      maType: "sma",
+      period: 200,
+      timeframe: "1D",
+      trigger: "cross",
+      from: "below",
+      triggerCount: 2,
+      lastSide: null,
+      lastEvaluatedAt: null,
+    });
+    for (const gone of ["level", "side", "direction", "lastKnownSide", "volumeCondition"]) expect(stored).not.toHaveProperty(gone);
+    expect(result.before?.kind).toBe("static");
+  });
+
+  it("turns trailing and volume alerts into moving-average touches", async () => {
+    saveAlerts(path, [makeVolume()]);
+    const id = loadAlerts(path)[0].id;
+    const touched = await editAlert(path, id, { ma: { maType: "ema", period: 20, timeframe: "15m" }, marginPct: 0.5, from: "above" }, offline);
+    expect(touched.rejectedReason).toBeNull();
+    expect(loadAlerts(path)[0]).toMatchObject({ kind: "ma", trigger: "touch", marginPct: 0.5, from: "above" });
+    expect(loadAlerts(path)[0]).not.toHaveProperty("volume");
+
+    const trail = await addAlert(path, { kind: "trailing", symbol: "TEST", direction: "up", trailType: "percent", trailValue: 3 }, fakeMarket({ prices: { TEST: 100 } }));
+    const fromTrail = await editAlert(path, trail.added!.id, { ma: { maType: "sma", period: 50, timeframe: "1D" }, marginPct: 0.25 }, offline);
+    expect(fromTrail.edited).toMatchObject({ kind: "ma", trigger: "touch", from: "either" });
+    expect(fromTrail.edited).not.toHaveProperty("extremePrice");
+  });
+
+  it.each([
+    ["no direction for a cross", { direction: undefined }, /watches up or down/],
+    ["either for a cross", { direction: "either" as const }, /watches up or down/],
+    ["a direction on a touch", { direction: "up" as const, marginPct: 0.25 }, /touch alert has no direction/],
+    ["a level as well", { direction: "up" as const, level: 50 }, /not both/],
+    ["a volume condition as well", { direction: "up" as const, volume: { ratio: 2, mode: "today" as const } }, /not both/],
+  ])("won't make a moving average with %s", async (_name, extra, reason) => {
+    saveAlerts(path, [makeStatic()]);
+    const before = loadAlerts(path);
+    const result = await editAlert(path, "s1", { ma: { maType: "sma", period: 50, timeframe: "1D" }, ...extra }, offline);
+    expect(result.rejectedReason).toMatch(reason);
+    expect(loadAlerts(path)).toEqual(before);
+  });
+
+  it("still rejects touch fields on a static alert that isn't becoming a moving average", async () => {
+    saveAlerts(path, [makeStatic()]);
+    expect((await editAlert(path, "s1", { from: "above" }, offline)).rejectedReason).toMatch(/static alert has no approach side/);
+  });
+
   it("keeps cross and touch settings apart on moving averages", async () => {
     const touch = await addMa("touch");
     expect((await editAlert(path, touch, { direction: "up" }, offline)).rejectedReason).toMatch(/touch alert has no direction/);

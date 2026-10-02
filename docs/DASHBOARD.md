@@ -184,11 +184,20 @@ direction, a touch watches which side price came from. A moving average's edit f
 is prefilled from the published alert, so opening it to read the spec and saving is
 "Nothing changed." rather than a silent rewrite.
 
-An alert's panel has the same *Kind* choice for anything but a moving average:
-switching a price or volume alert to *Trailing from a high/low* makes it trailing
-from the live price when the edit lands, and switching a trailing alert to *Price
-level* asks for the level. A trailing alert's direction and distance are prefilled,
-and changing its direction restarts it from the live price.
+An alert's panel, and the Alert band of an expanded holding, have the same *Kind*
+choice for anything but a moving average: switching a price or volume alert to
+*Trailing from a high/low* makes it trailing from the live price when the edit lands,
+switching a trailing alert to *Price level* asks for the level, and switching any of
+them to *Moving average* sends the whole spec (the add form's defaults, SMA 200 on
+daily bars crossing up, until changed). That last one drops a volume condition, and
+the form says so before you queue it. A trailing alert's direction and distance are
+prefilled, and changing its direction restarts it from the live price. A
+moving-average cross's direction can be flipped from its panel too.
+
+The edit form reads as "Watch … / and volume …", and beside *Queue edit* it says
+what the edit would send ("level 55 → 61", "becomes SMA 50 on daily bars, fires
+crossing down"), using the same change list that names the pending row, so the
+preview can't describe a different edit from the one queued.
 
 What stays CLI-only is the batch and file work: `alert seed`, `holdings import`,
 `alert migrate-directions`, and `profile fetch`. Those are one-time, read files that

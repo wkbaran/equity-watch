@@ -20,7 +20,7 @@ import {
 } from "./models.js";
 import type { MaSpec, MaTimeframe, MaType } from "../indicators/movingAverage.js";
 import type { Session } from "../marketHours.js";
-import { checkMaAlerts, type DailyHistoryResolver } from "./maEngine.js";
+import { checkMaAlerts, DEFAULT_TOUCH_MARGIN_PCT, type DailyHistoryResolver } from "./maEngine.js";
 import {
   MINUTE_MS,
   barsMayExist,
@@ -669,7 +669,11 @@ export interface AlertEdit {
   trail?: { type: "percent" | "amount"; value: number };
   /** A replacement volume condition, or null to remove it. Not on moving averages. */
   volume?: VolumeCondition | null;
-  /** Moving average only. Restarts its evaluation, as if newly added. */
+  /**
+   * Moving average: restarts its evaluation, as if newly added. On a static,
+   * trailing or volume alert it makes it a moving-average alert: a cross with
+   * `direction` up or down, or a touch with `marginPct` and/or `from`.
+   */
   ma?: MaSpec;
   /** Moving-average touch only. */
   marginPct?: number;
@@ -729,7 +733,15 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
   if (fields.length === 0) {
     return reject("Nothing to change.");
   }
-  const unsupported = fields.filter((k) => !EDITABLE_KINDS[k].kinds.includes(alert.kind));
+  // Becoming a moving average is its own check: every field that describes the
+  // old kind is meaningless alongside it, and the MA fields are what it needs.
+  const becomesMa = alert.kind !== "ma" && edit.ma !== undefined;
+  if (becomesMa) {
+    if (edit.level !== undefined || edit.trail !== undefined || edit.volume !== undefined) {
+      return reject("Give a moving average or a level, trail or volume condition, not both. A moving average has no volume condition.");
+    }
+  }
+  const unsupported = becomesMa ? [] : fields.filter((k) => !EDITABLE_KINDS[k].kinds.includes(alert.kind));
   if (unsupported.length > 0) {
     return reject(
       `A ${alert.kind} alert has no ${unsupported.map((k) => EDITABLE_KINDS[k].label).join(" or ")} to edit. ` +
@@ -764,6 +776,57 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
     replaced = rival;
     return null;
   };
+
+  if (becomesMa && edit.ma !== undefined) {
+    // Becomes a moving-average alert. Its state starts empty and seeds on the
+    // next check, exactly as a new one's does, and it sits outside the
+    // one-alert-per-symbol+side rule, so no quote is needed. Any volume
+    // condition goes: a moving average has none.
+    const isTouch = edit.marginPct !== undefined || edit.from !== undefined;
+    let from: MaApproach;
+    if (isTouch) {
+      if (edit.direction !== undefined) {
+        return reject("A touch alert has no direction. Set the side it approaches from instead.");
+      }
+      from = edit.from ?? "either";
+    } else {
+      if (edit.direction !== "up" && edit.direction !== "down") {
+        return reject("A moving-average cross watches up or down. Give the direction, or a touch margin for a touch.");
+      }
+      from = edit.direction === "up" ? "below" : "above";
+    }
+    // Only what every kind shares carries over: identity, watch start, history.
+    const ma: MaAlert = {
+      id: alert.id,
+      symbol: alert.symbol,
+      status: alert.status,
+      createdAt: alert.createdAt,
+      livePriceAtCreation: alert.livePriceAtCreation,
+      watchingSince: alert.watchingSince,
+      watchingSinceApprox: alert.watchingSinceApprox,
+      priceAtWatchStart: alert.priceAtWatchStart,
+      triggerCount: alert.triggerCount,
+      lastTriggeredAt: alert.lastTriggeredAt,
+      lastTriggerPrice: alert.lastTriggerPrice,
+      triggerSnapshot: alert.triggerSnapshot,
+      kind: "ma",
+      ...edit.ma,
+      trigger: isTouch ? "touch" : "cross",
+      from,
+      marginPct: edit.marginPct ?? DEFAULT_TOUCH_MARGIN_PCT,
+      lastSide: null,
+      inBand: false,
+      lastLevel: null,
+      lastEvaluatedAt: null,
+      lastFiredBucket: null,
+      lastEvent: null,
+      lastApproachedFrom: null,
+      mutedUntil: null,
+    };
+    alerts[alerts.indexOf(alert)] = ma;
+    saveAlerts(path, alerts);
+    return { before, edited: ma, replaced: null, rejectedReason: null };
+  }
 
   if ((alert.kind === "static" || alert.kind === "volume") && edit.trail !== undefined) {
     // Becomes a trailing alert, starting from the live price like a new one.

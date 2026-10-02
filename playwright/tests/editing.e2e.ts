@@ -532,6 +532,55 @@ test.describe("trailing and moving-average alerts from the page", () => {
     expect(op.params).toMatchObject({ touch: MOVING_AVERAGE.marginPct, from: "below" });
   });
 
+  test("a price alert's panel can make it a moving-average cross, stating the whole spec", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${STATIC.id}`);
+    const form = page.locator("#drawer-body form");
+    await expect(form.getByLabel("Average")).toBeHidden();
+    await expect(form.locator(".edit-preview")).toHaveText("No changes yet");
+    await form.getByLabel("Kind").selectOption("ma");
+    await expect(form.getByLabel("Level")).toBeHidden();
+    await expect(form.getByLabel("Volume", { exact: true })).toBeHidden();
+    await expect(form.getByLabel("Approached")).toBeHidden();
+    await form.getByLabel("Period").fill("50");
+    await form.getByLabel("Direction").selectOption("down");
+    await expect(form.locator(".edit-preview")).toHaveText("becomes SMA 50 on daily bars, fires crossing down");
+    await form.locator("button[type=submit]").click();
+
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.edit", target: { alertId: STATIC.id }, params: { ma: "sma50@1D", direction: "down" } });
+    expect(Object.keys(op.params).sort()).toEqual(["direction", "ma"]);
+  });
+
+  test("making a moving-average touch sends the band and side, and says the volume condition goes", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${STATIC_WITH_VOLUME.id}`);
+    const form = page.locator("#drawer-body form");
+    const drops = form.locator(".clause-note");
+    await expect(drops).toBeHidden();
+    await form.getByLabel("Kind").selectOption("ma");
+    await expect(drops).toBeVisible();
+    await expect(drops).toContainText("drops ≥ 1.5x normal today");
+    await form.getByLabel("Fires when price").selectOption("touch");
+    await expect(form.getByLabel("Direction")).toBeHidden();
+    await form.getByLabel("Approached").selectOption("above");
+    await form.locator("button[type=submit]").click();
+
+    const [op] = await queuedOps(page);
+    expect(op.params).toEqual({ ma: "sma200@1D", touch: 0.25, from: "above" });
+  });
+
+  test("a moving-average cross's direction can be flipped on its own", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${MOVING_AVERAGE.id}`);
+    const form = page.locator("#drawer-body form");
+    await expect(form.getByLabel("Direction")).toHaveValue("up");
+    await form.getByLabel("Direction").selectOption("down");
+    await form.locator("button[type=submit]").click();
+    const [op] = await queuedOps(page);
+    expect(op.params).toEqual({ direction: "down" });
+  });
+
   test("a moving average has no volume controls, because it can't carry one", async ({ page }) => {
     await storeToken(page);
     await page.goto(`/#/alert/${MOVING_AVERAGE.id}`);

@@ -273,6 +273,18 @@ test.describe("the alert on a position", () => {
     expect(op).toMatchObject({ type: "alert.edit", target: { alertId: "st000001" }, params: { level: 61 } });
   });
 
+  test("can turn the position's alert into a moving average from its band", async ({ page }) => {
+    await storeToken(page);
+    await openHoldings(page);
+    await expand(page, "AA");
+    const form = detail(page).locator(".alert-col form");
+    await form.getByLabel("Kind").selectOption("ma");
+    await form.getByLabel("Bars").selectOption("1W");
+    await form.locator("button[type=submit]").click();
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.edit", target: { alertId: "st000001" }, params: { ma: "sma200@1W", direction: "up" } });
+  });
+
   // One shared form slot would let each rendered row steal the element out of
   // the last, wiping what was typed into it.
   test("keeps a form per expanded position rather than one shared between them", async ({ page }) => {

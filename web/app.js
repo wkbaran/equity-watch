@@ -1084,6 +1084,13 @@
   }
 
   const MA_FROM_LABEL = { above: "From above", below: "From below", either: "Either side" };
+  // A cross's `from` is the side it crosses from, so "below" is a cross up.
+  const MA_CROSS_DIRECTION = { below: "up", above: "down", either: "either" };
+  // What a price, trailing or volume alert becomes when the Edit form's Kind
+  // is switched to a moving average: the add form's defaults.
+  const NEW_MA = { maType: "sma", period: 200, timeframe: "1D", trigger: "cross", from: "below", marginPct: 0.25 };
+  const maSpecText = (maType, period, timeframe) =>
+    `${maType.toUpperCase()} ${period} on ${MA_TIMEFRAMES.find(([v]) => v === timeframe)[1].toLowerCase()} bars`;
 
   /**
    * The Edit form's moving-average controls, prefilled from `AlertRow.ma` and
@@ -1094,23 +1101,42 @@
    * left alone. The alternative — reusing the add controls and always sending
    * the whole spec — would rewrite `marginPct` and `from` on any edit that
    * only meant to change the period.
+   *
+   * With `ma` null the alert is not a moving average yet and the Kind select
+   * is turning it into one. Then everything is sent, like an add: the worker
+   * (editAlert) needs the spec, and a cross's direction or a touch's band.
    */
   function buildMaFields(ma) {
+    const converting = ma === null;
+    const was = ma ?? NEW_MA;
     const maType = h("select", {}, h("option", { value: "sma", text: "SMA" }), h("option", { value: "ema", text: "EMA" }));
-    maType.value = ma.maType;
-    const period = numberInput(ma.period);
+    maType.value = was.maType;
+    const period = numberInput(was.period, { placeholder: "200" });
     const timeframe = h("select", {}, ...MA_TIMEFRAMES.map(([value, text]) => h("option", { value, text })));
-    timeframe.value = ma.timeframe;
+    timeframe.value = was.timeframe;
     const trigger = h("select", {}, h("option", { value: "cross", text: "Crosses it" }), h("option", { value: "touch", text: "Touches it" }));
-    trigger.value = ma.trigger;
+    trigger.value = was.trigger;
+    // A cross from "either" fires both ways. The worker takes only up or down
+    // for a cross, so Either is offered only to keep an existing one as it is.
+    const wasCrossDir = was.trigger === "cross" ? MA_CROSS_DIRECTION[was.from] : "up";
+    const direction = h(
+      "select",
+      {},
+      h("option", { value: "up", text: "Crosses up" }),
+      h("option", { value: "down", text: "Crosses down" }),
+      wasCrossDir === "either" ? h("option", { value: "either", text: "Either way" }) : null
+    );
+    direction.value = wasCrossDir;
     const from = h("select", {}, ...["above", "below", "either"].map((v) => h("option", { value: v, text: MA_FROM_LABEL[v] })));
-    from.value = ma.from;
-    const margin = numberInput(ma.marginPct, { placeholder: "0.25" });
+    from.value = was.trigger === "touch" ? was.from : "either";
+    const margin = numberInput(was.marginPct, { placeholder: "0.25" });
 
+    const directionField = field("Direction", direction);
     const fromField = field("Approached", from);
     const marginField = field("Touch band %", margin);
     const sync = () => {
       const isTouch = trigger.value === "touch";
+      directionField.hidden = isTouch;
       fromField.hidden = !isTouch;
       marginField.hidden = !isTouch;
     };
@@ -1122,19 +1148,26 @@
       const changes = [];
       const p = positive(period.value);
       if (p === null || !Number.isInteger(p)) return { error: "Enter a whole period above 0, e.g. 200." };
-
       const spec = `${maType.value}${p}@${timeframe.value}`;
-      const was = `${ma.maType}${ma.period}@${ma.timeframe}`;
-      if (spec !== was) {
+      const isTouch = trigger.value === "touch";
+      const m = isTouch ? positive(margin.value) : null;
+      if (isTouch && m === null) return { error: "Enter a touch band above 0, e.g. 0.25." };
+
+      if (converting) {
         params.ma = spec;
-        changes.push(`${was} → ${spec}`);
+        if (isTouch) Object.assign(params, { touch: m, from: from.value });
+        else params.direction = direction.value;
+        const how = isTouch ? `fires on a touch within ${m}% ${MA_FROM_LABEL[from.value].toLowerCase()}` : `fires crossing ${direction.value}`;
+        return { params, changes: [`becomes ${maSpecText(maType.value, p, timeframe.value)}, ${how}`] };
       }
 
-      const isTouch = trigger.value === "touch";
+      const wasSpec = `${ma.maType}${ma.period}@${ma.timeframe}`;
+      if (spec !== wasSpec) {
+        params.ma = spec;
+        changes.push(`${wasSpec} → ${spec}`);
+      }
       const wasTouch = ma.trigger === "touch";
       if (isTouch) {
-        const m = positive(margin.value);
-        if (m === null) return { error: "Enter a touch band above 0, e.g. 0.25." };
         // `touch` carries the margin, so it is sent whenever either moved or
         // the alert is becoming a touch.
         if (!wasTouch || m !== ma.marginPct) {
@@ -1149,13 +1182,17 @@
         // Going the other way has no flag: `--direction` on an MA means a
         // cross, so stating one is what turns a touch back into a cross.
         return { error: "Changing a touch back to a cross isn't supported from the page yet. Use alert edit in the CLI." };
+      } else if (direction.value !== wasCrossDir) {
+        params.direction = direction.value;
+        changes.push(`cross ${wasCrossDir === "either" ? "either way" : wasCrossDir} → ${direction.value}`);
       }
       return { params, changes };
     };
 
     return {
-      fields: [field("Average", maType), field("Period", period), field("Bars", timeframe), field("Fires when price", trigger), fromField, marginField],
+      fields: [field("Average", maType), field("Period", period), field("Bars", timeframe), field("Fires when price", trigger), directionField, fromField, marginField],
       collect,
+      sync,
     };
   }
 
@@ -1177,6 +1214,15 @@
    * price or volume alert to trailing (from the live price, when the edit
    * lands) and a trailing alert back to a level. Its trail is prefilled from
    * AlertRow.trail, so saving it untouched is "Nothing changed."
+   *
+   * And a price, trailing or volume alert can become a moving average, which
+   * drops its volume condition (a moving average has none). The way back
+   * isn't offered: the worker has no conversion out of a moving average.
+   *
+   * The form reads as a sentence, "Watch <what> and volume <condition>", with
+   * a line beside the button saying what Queue edit would send. That line is
+   * collect()'s own change list, so it can't describe a different edit from
+   * the one that is queued.
    */
   function buildEditForm(a, revisitId = null) {
     const error = h("span", { class: "form-error" });
@@ -1191,7 +1237,8 @@
       "select",
       {},
       h("option", { value: "static", text: "Price level" }),
-      h("option", { value: "trailing", text: "Trailing from a high/low" })
+      h("option", { value: "trailing", text: "Trailing from a high/low" }),
+      h("option", { value: "ma", text: "Moving average" })
     );
     kind.value = wasTrailing ? "trailing" : "static";
     const level = numberInput(a.kind === "static" ? a.level : null, { placeholder: a.kind === "volume" ? "none" : "" });
@@ -1208,25 +1255,39 @@
     const trailValue = numberInput(trail?.value ?? null, { placeholder: wasTrailing && trail === null ? "unchanged" : "3" });
 
     // Prefilled from AlertRow.ma, so opening the form to read it and saving is
-    // "Nothing changed." rather than a silent rewrite of the spec.
-    const maFields = a.kind === "ma" ? buildMaFields(a.ma) : null;
+    // "Nothing changed." rather than a silent rewrite of the spec. On any other
+    // kind these are the controls the Kind select switches to.
+    const isMa = a.kind === "ma";
+    const maFields = buildMaFields(isMa ? a.ma : null);
     const priceFields = [field("Level", level), field("Fires on", direction)];
     const trailFields = [field("Watch for", trailDirection), field("Trail by", trailType), field("Distance", trailValue)];
-    if (a.kind === "ma") fields.push(...maFields.fields);
+
+    // A moving average has no volume condition, and never has had one.
+    const old = a.volume ?? null;
+    const volumeFields = isMa ? null : buildVolumeFields(old);
+    const clause = (label, ...children) => h("div", { class: "clause" }, h("span", { class: "clause-label", text: label }), h("div", { class: "clause-fields" }, ...children));
+    const volumeClause = isMa ? null : clause("and volume", ...volumeFields.fields);
+    const dropsVolume =
+      old === null ? null : h("p", { class: "note clause-note", text: `A moving average has no volume condition, so this drops ${volumeConditionText(old)}.` });
+
+    if (isMa) fields.push(clause("Watch", ...maFields.fields));
     else {
-      fields.push(field("Kind", kind), ...priceFields, ...trailFields);
+      fields.push(clause("Watch", field("Kind", kind), ...priceFields, ...trailFields, ...maFields.fields));
+      fields.push(volumeClause);
+      if (dropsVolume) fields.push(dropsVolume);
       const sync = () => {
         for (const f of priceFields) f.hidden = kind.value !== "static";
         for (const f of trailFields) f.hidden = kind.value !== "trailing";
+        // buildMaFields shows one of Direction or Approached/Touch band by
+        // trigger; outside the MA kind all of them go.
+        for (const f of maFields.fields) f.hidden = kind.value !== "ma";
+        if (kind.value === "ma") maFields.sync();
+        volumeClause.hidden = kind.value === "ma";
+        if (dropsVolume) dropsVolume.hidden = kind.value !== "ma";
       };
       kind.addEventListener("change", sync);
       sync();
     }
-
-    // A moving average has no volume condition, and never has had one.
-    const old = a.volume ?? null;
-    const volumeFields = a.kind === "ma" ? null : buildVolumeFields(old);
-    if (volumeFields) fields.push(...volumeFields.fields);
 
     const trailText = (type, v, dir) => `trailing ${type === "percent" ? `${v}%` : `$${v}`} off the ${dir === "up" ? "low" : "high"}`;
 
@@ -1234,7 +1295,7 @@
       const params = {};
       const changes = [];
 
-      if (maFields) {
+      if (isMa || kind.value === "ma") {
         return maFields.collect();
       }
 
@@ -1293,11 +1354,23 @@
       }
       return { params, changes };
     };
+    // What Queue edit would send, said as the form changes. Input errors wait
+    // for the click: half-typed numbers are invalid on the way to valid ones.
+    const preview = h("span", { class: "edit-preview", "aria-live": "polite" });
+    const showPreview = () => {
+      const c = collect();
+      const changed = !c.error && c.changes.length > 0;
+      preview.textContent = c.error ? "" : changed ? c.changes.join(", ") : "No changes yet";
+      preview.classList.toggle("changed", changed);
+    };
+    showPreview();
+
     return h(
       "form",
       {
-        class: "ops-form card",
-        style: "margin-top:1.25rem",
+        class: "ops-form card edit-form",
+        oninput: showPreview,
+        onchange: showPreview,
         onsubmit: async (e) => {
           e.preventDefault();
           error.textContent = "";
@@ -1323,8 +1396,7 @@
       },
       h("strong", { class: "form-title", text: revisitId === null ? "Edit" : "Edit this alert" }),
       ...fields,
-      button,
-      error,
+      h("div", { class: "form-foot" }, button, preview, error),
       h("div", {
         class: "note",
         text:

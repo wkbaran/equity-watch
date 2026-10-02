@@ -408,6 +408,48 @@
   .field input[type="number"] { width: 8rem; }
   .field input[type="text"] { width: 7rem; text-transform: uppercase; }
   .form-error { color: var(--signal); font-size: 0.82rem; align-self: center; }
+  /* One control height, so a row's labels sit on one line whatever the control. */
+  .ops-form :is(input[type="number"], input[type="text"], input[type="date"], select) { height: 2.2rem; }
+  .ops-form :is(input, select):disabled { opacity: 0.45; border-style: dashed; }
+  .field:focus-within > label { color: var(--ink); }
+
+  /*
+   * An alert's Edit form reads as a sentence: "Watch <what> / and volume
+   * <condition>", one clause per row with its words hung at the left, then a
+   * foot where the button sits beside what it would send. The button arms
+   * (fills with ink) only once there is a change, and the change line carries
+   * the site's mark: a dot on a level.
+   */
+  .ops-form.edit-form:not([hidden]) { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+  .edit-form { margin-top: 1.25rem; }
+  .edit-form > .form-title { margin-bottom: 0.2rem; }
+  .edit-form .clause:not([hidden]) { display: flex; align-items: flex-start; gap: 0.75rem; }
+  .edit-form .clause { padding: 0.7rem 0; }
+  .clause-fields { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.6rem 0.75rem; }
+  .edit-form .clause + .clause { border-top: 1px dashed var(--line); }
+  .clause-label {
+    /* Level with the first row's controls, under their labels. */
+    flex: 0 0 4.6rem; padding-top: calc(0.76rem * 1.5 + 3px); line-height: 2.2rem;
+    font-size: 0.95rem; font-weight: 400; font-stretch: 80%; color: var(--muted);
+  }
+  .edit-form .field input[type="number"] { width: 6.5rem; }
+  .edit-form .note.clause-note { margin: 0 0 0.6rem 5.35rem; }
+  .form-foot {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem;
+    margin-top: 0.3rem; padding-top: 0.85rem; border-top: 1px solid var(--line);
+  }
+  .edit-preview { flex: 1 1 14rem; font-size: 0.84rem; color: var(--muted); min-width: 0; }
+  .edit-preview.changed { color: var(--ink); }
+  .edit-preview.changed::before {
+    content: ""; display: inline-block; width: 1.1rem; height: 0.55rem; margin-right: 0.5rem; vertical-align: 0.05em;
+    background:
+      radial-gradient(circle at 70% 50%, var(--signal) 0 0.2rem, transparent 0.22rem),
+      linear-gradient(var(--signal), var(--signal)) center / 100% 1.5px no-repeat;
+  }
+  .edit-form:has(.edit-preview.changed) button[type="submit"]:not(:disabled) {
+    background: var(--ink); color: var(--ground); border-color: var(--ink); font-weight: 600;
+  }
+  .edit-form .form-foot + .note { margin-top: 0.55rem; }
   #ops-pending, #holdings-pending { margin-bottom: 1rem; }
   .pending-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0.55rem 1.25rem; font-size: 0.86rem; }
   .pending-row + .pending-row { border-top: 1px solid var(--line); }
@@ -477,6 +519,8 @@
   .alert-col .ops-form.card { background: transparent; border-radius: 0; }
   .alert-col .note { flex-basis: 100%; margin: 0; }
   .position-detail .ops-form > .note { order: 99; }
+  .alert-col > .edit-form { flex-basis: 100%; }
+  .alert-col .edit-form .clause:first-of-type { padding-top: 0; }
   .row-actions { display: inline-flex; gap: 6px; }
   .stop-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .stop-tag { display: inline-flex; align-items: center; gap: 6px; margin-left: 0; padding: 2px 8px; }
@@ -521,6 +565,9 @@
     .pal { left: 1rem; }
   }
   @media (max-width: 560px) {
+    .edit-form .clause:not([hidden]) { flex-direction: column; gap: 0.3rem; }
+    .clause-label { flex-basis: auto; padding-top: 0; line-height: 1.2; }
+    .edit-form .note.clause-note { margin-left: 0; }
     .trigger-row, .drawer .trigger-row { grid-template-columns: 1fr; gap: 2px; padding-left: 1.25rem; }
     .trigger-row .when { text-align: left; padding-right: 0; }
     .trigger-row .when::before, .trigger-row .when::after { display: none; }
