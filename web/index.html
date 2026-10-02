@@ -384,15 +384,16 @@
   dialog.modal form { display: flex; flex-direction: column; gap: 6px; }
   dialog.modal .note { margin: 0.2rem 0 0.4rem; }
   dialog.modal input[type="password"] { width: min(360px, 100%); font-family: ui-monospace, monospace; }
-  #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 25; display: flex; flex-direction: column; gap: 8px; max-width: min(420px, calc(100vw - 32px)); }
+  /* Lower left, out of the way of the drawer's forms on the right. */
+  #toasts { position: fixed; left: 16px; bottom: 16px; z-index: 25; display: flex; flex-direction: column; gap: 6px; max-width: min(360px, calc(100vw - 32px)); }
   .toast {
-    display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 0.7rem 0.95rem;
+    display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 0.5rem 0.75rem; font-size: 0.85rem; line-height: 1.35;
     background: var(--raised); color: var(--ink); border-radius: var(--radius-m); box-shadow: var(--shadow);
     border-left: 3px solid var(--line-strong); animation: slide 0.2s ease-out;
   }
   .toast .t-body { cursor: pointer; }
   .toast .t-sym { font-weight: 700; }
-  .toast button { background: transparent; border: 0; padding: 0 2px; font-size: 1rem; line-height: 1; }
+  .toast button { background: transparent; border: 0; padding: 0 2px; font-size: 0.9rem; line-height: 1; }
   .toast.ok { border-left-color: var(--ink); }
   .toast.bad { border-left-color: var(--signal); }
   @keyframes slide { from { transform: translateY(8px); opacity: 0; } }
