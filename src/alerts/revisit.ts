@@ -31,6 +31,12 @@ export interface RevisitVolume {
   /** "today", or a trailing window such as "30m". */
   window: string;
   basis: "threshold" | "ratio";
+  /**
+   * Set when the window reached back past the price event and was cut off
+   * there, so only volume traded after it was counted. Absent when the whole
+   * window came after it (and on entries from before the rule existed).
+   */
+  since?: string;
 }
 
 export interface RevisitMa {
@@ -131,6 +137,13 @@ export interface RevisitEntry {
    * `entryDirection` (src/alerts/reversion.ts) derives it for old entries.
    */
   direction?: CrossDirection;
+  /**
+   * When and where the price condition was met, if that was at an earlier
+   * check than the one where volume qualified and the alert fired. Then
+   * `triggeredAt`/`triggerPrice` are the moment volume arrived, and this is
+   * the crossing. Absent when both landed in the same check.
+   */
+  priceMet?: { at: string; price: number };
   /**
    * Every later crossing of the same alert's level inside the reversion
    * window, oldest first. Folded onto the fire they follow instead of
@@ -338,7 +351,7 @@ export function newRevisitEntry(
   triggerPrice: number,
   at: string,
   session: Session | null = null,
-  details: { volume?: RevisitVolume; direction?: CrossDirection } = {}
+  details: { volume?: RevisitVolume; direction?: CrossDirection; priceMet?: { at: string; price: number } } = {}
 ): RevisitEntry {
   const direction = details.direction ?? fireDirection(alert);
   return {
@@ -350,6 +363,7 @@ export function newRevisitEntry(
     triggerPrice,
     condition: describeAlertCondition(alert),
     ...(details.volume ? { volume: details.volume } : {}),
+    ...(details.priceMet ? { priceMet: details.priceMet } : {}),
     ...(direction !== undefined ? { direction } : {}),
     levelAtTrigger:
       alert.kind === "static"

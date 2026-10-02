@@ -87,6 +87,14 @@ describe("triggerHeadline", () => {
     expect(triggerHeadline(e, NONE)).toBe("TGT crossed above 110 and closed above it on volume, now 4.0% above it");
   });
 
+  it("says when the volume followed the cross, since the fire is dated by the volume", () => {
+    // Crossed Thursday; the volume came Monday, two trading days later.
+    const e = entry({ triggeredAt: "2026-09-14T15:00:00.000Z", priceMet: { at: "2026-09-10T15:00:00.000Z", price: 111 } });
+    expect(triggerHeadline(e, NONE)).toBe("TGT crossed above 110, with volume following 2 days later");
+    const sameDay = entry({ triggeredAt: "2026-09-10T18:00:00.000Z", priceMet: { at: "2026-09-10T15:00:00.000Z", price: 111 } });
+    expect(triggerHeadline(sameDay, NONE)).toBe("TGT crossed above 110, with volume following later that day");
+  });
+
   it("drops the volume claim from a confirmed hold when volume wasn't the story", () => {
     const e = withSignals({}, { verdict: "CONFIRMED_BREAKOUT", daysOpen: 0, heldPosition: false, volumeRatio: 1.1 });
     expect(triggerHeadline(e, NONE)).toBe("TGT crossed above 110 and closed above it on volume");

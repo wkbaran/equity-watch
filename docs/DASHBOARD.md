@@ -177,8 +177,11 @@ uncovered position. Each change is queued and applied by the next scheduled
 [ARCHITECTURE.md](ARCHITECTURE.md#queueing-a-change-lambda--sqs--ops-pull).
 
 The **New alert** form takes a kind: a price level, a trailing distance from a
-high/low, a moving average, or *Volume only*, with a volume condition optionally
-AND-ed onto any of the first three and required for the last. It shows only the fields that kind needs, and for a moving average only
+high/low, a moving average, or *Volume only*, with a volume condition optional on
+the first three (counted from the price event; not on a moving-average touch) and
+required for the last. An alert waiting on volume is tagged *waiting on volume*
+on its row, in its panel and in a holding's Alert band
+([ALERTS.md](ALERTS.md#price-first-then-volume)). It shows only the fields that kind needs, and for a moving average only
 the one of *Direction* / *Approached* that the trigger uses — a cross watches a
 direction, a touch watches which side price came from. A moving average's edit form
 is prefilled from the published alert, so opening it to read the spec and saving is

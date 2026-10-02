@@ -15,6 +15,7 @@ import {
   type AlertSide,
   type MaAlert,
   type MaApproach,
+  type PricePrimed,
   type VolumeCondition,
 } from "../alerts/models.js";
 import type { Quote } from "../providers/schwab.js";
@@ -73,6 +74,15 @@ export interface AlertRow {
    * every other kind. Not volatile: the extreme it follows is `movingLevel`.
    */
   trail: { type: "percent" | "amount"; value: number; direction: "up" | "down" } | null;
+  /**
+   * The price condition was met here and the alert is waiting on volume
+   * traded since (PricePrimed). Null when it isn't waiting.
+   *
+   * Not volatile, though a crossing sets it: it changes on a crossing or a
+   * reversion, both events, never on a quiet tick, and the page should
+   * publish when an alert starts or stops waiting.
+   */
+  primed: PricePrimed | null;
   triggerCount: number;
   lastTriggeredAt: string | null;
   lastTriggerPrice: number | null;
@@ -118,13 +128,14 @@ export function buildAlertRows(
         movingLevel,
         side: a.kind === "static" || a.kind === "trailing" ? a.side : null,
         direction: a.kind === "static" ? a.direction : null,
-        hasVolumeCondition: a.kind === "volume" || ((a.kind === "static" || a.kind === "trailing") && a.volumeCondition !== undefined),
-        volume: a.kind === "volume" ? a.volume : a.kind === "static" || a.kind === "trailing" ? (a.volumeCondition ?? null) : null,
+        hasVolumeCondition: a.kind === "volume" || a.volumeCondition !== undefined,
+        volume: a.kind === "volume" ? a.volume : (a.volumeCondition ?? null),
         ma:
           a.kind === "ma"
             ? { maType: a.maType, period: a.period, timeframe: a.timeframe, trigger: a.trigger, from: a.from, marginPct: a.marginPct }
             : null,
         trail: a.kind === "trailing" ? { type: a.trailType, value: a.trailValue, direction: a.side === "below" ? "up" : "down" } : null,
+        primed: a.kind === "volume" ? null : (a.primed ?? null),
         triggerCount: a.triggerCount,
         lastTriggeredAt: a.lastTriggeredAt,
         lastTriggerPrice: a.lastTriggerPrice,

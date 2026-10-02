@@ -559,7 +559,8 @@ test.describe("trailing and moving-average alerts from the page", () => {
     await expect(form.locator(".edit-preview")).toHaveText("No changes yet");
     await form.getByLabel("Kind").selectOption("ma");
     await expect(form.getByLabel("Level")).toBeHidden();
-    await expect(form.getByLabel("Volume", { exact: true })).toBeHidden();
+    // A cross can carry volume, counted from the cross.
+    await expect(form.getByLabel("Volume", { exact: true })).toBeVisible();
     await expect(form.getByLabel("Approached")).toBeHidden();
     await form.getByLabel("Period").fill("50");
     await form.getByLabel("Direction").selectOption("down");
@@ -578,15 +579,61 @@ test.describe("trailing and moving-average alerts from the page", () => {
     const drops = form.locator(".clause-note");
     await expect(drops).toBeHidden();
     await form.getByLabel("Kind").selectOption("ma");
-    await expect(drops).toBeVisible();
-    await expect(drops).toContainText("drops ≥ 1.5x normal today");
+    // A cross keeps it, so nothing is dropped yet.
+    await expect(drops).toBeHidden();
+    await expect(form.getByLabel("Volume", { exact: true })).toBeVisible();
     await form.getByLabel("Fires when price").selectOption("touch");
+    await expect(drops).toBeVisible();
+    await expect(drops).toContainText("touch can't have a volume condition, so this drops ≥ 1.5x normal today");
+    await expect(form.getByLabel("Volume", { exact: true })).toBeHidden();
     await expect(form.getByLabel("Direction")).toBeHidden();
     await form.getByLabel("Approached").selectOption("above");
     await form.locator("button[type=submit]").click();
 
     const [op] = await queuedOps(page);
     expect(op.params).toEqual({ ma: "sma200@1D", touch: 0.25, from: "above" });
+  });
+
+  test("making a moving-average cross keeps the volume condition, and can change it in the same edit", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${STATIC_WITH_VOLUME.id}`);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Kind").selectOption("ma");
+    await form.locator("button[type=submit]").click();
+    const [kept] = await queuedOps(page);
+    // Unchanged volume isn't sent: the worker carries the alert's own across.
+    expect(kept.params).toEqual({ ma: "sma200@1D", direction: "up" });
+
+    await page.request.get("/__reset");
+    await page.reload();
+    const again = page.locator("#drawer-body form");
+    await again.getByLabel("Kind").selectOption("ma");
+    await again.getByLabel("Volume at least").fill("2");
+    await again.locator("button[type=submit]").click();
+    const [changed] = await queuedOps(page);
+    expect(changed.params).toEqual({ ma: "sma200@1D", direction: "up", volumeRatio: 2 });
+  });
+
+  test("a moving-average cross's volume condition can be added from its panel", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${MOVING_AVERAGE.id}`);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Volume", { exact: true }).selectOption("shares");
+    await form.getByLabel("Volume at least").fill("3M");
+    await expect(form.locator(".edit-preview")).toHaveText("volume ≥ 3M shares today");
+    await form.locator("button[type=submit]").click();
+    const [op] = await queuedOps(page);
+    expect(op.params).toEqual({ volumeAtLeast: 3_000_000 });
+  });
+
+  test("an alert waiting on volume says so, on its row and in its panel", async ({ page }) => {
+    await page.goto("/#/alerts");
+    const row = page.locator("#alerts-table tbody tr", { hasText: "MSFT" });
+    await expect(row.locator(".tag.waiting")).toHaveText("waiting on volume");
+    await page.goto(`/#/alert/${STATIC_WITH_VOLUME.id}`);
+    await expect(page.locator("#drawer-body")).toContainText("Waiting on volume");
+    await expect(page.locator("#drawer-body")).toContainText("Crossed above 400.00 at 401.20");
+    await expect(page.locator("#drawer-body")).toContainText("Only volume traded since counts.");
   });
 
   test("a moving-average cross's direction can be flipped on its own", async ({ page }) => {
@@ -600,10 +647,12 @@ test.describe("trailing and moving-average alerts from the page", () => {
     expect(op.params).toEqual({ direction: "down" });
   });
 
-  test("a moving average has no volume controls, because it can't carry one", async ({ page }) => {
+  test("a moving-average touch has no volume controls, because it can't carry one yet", async ({ page }) => {
     await storeToken(page);
     await page.goto(`/#/alert/${MOVING_AVERAGE.id}`);
-    await expect(page.locator("#drawer-body form").getByLabel("Volume", { exact: true })).toHaveCount(0);
+    const form = page.locator("#drawer-body form");
+    await form.getByLabel("Fires when price").selectOption("touch");
+    await expect(form.getByLabel("Volume", { exact: true })).toBeHidden();
   });
 });
 

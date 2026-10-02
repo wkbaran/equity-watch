@@ -12,6 +12,7 @@ import type { AddAlertInput, AlertEdit } from "../alerts/engine.js";
 import { DEFAULT_TOUCH_MARGIN_PCT } from "../alerts/maEngine.js";
 import {
   DEFAULT_ALERT_DIRECTION,
+  TOUCH_VOLUME,
   type AlertDirection,
   type MaApproach,
   type VolumeCondition,
@@ -240,13 +241,19 @@ function addInput(raw: RawAddFields): AddAlertInput {
 }
 
 function maInput(symbol: string, raw: RawAddFields): AddAlertInput {
-  const conflicting = [raw.level, raw.trailPercent, raw.trailAmount, raw.volumeAtLeast, raw.volumeRatio, raw.volumePeriod];
+  const conflicting = [raw.level, raw.trailPercent, raw.trailAmount];
   if (conflicting.some((v) => v !== undefined)) {
-    fail("--ma can't be combined with --level, --trail-*, or --volume-* (no volume condition on moving averages yet).");
+    fail("--ma can't be combined with --level or --trail-*.");
   }
   const spec = maSpec(raw.ma!);
 
   const isTouch = raw.touch !== undefined && raw.touch !== false;
+  // A cross is primed by the cross and waits for volume while price stays
+  // past the average. A touch has no far side to wait on, so no volume yet.
+  const volume = volumeCondition(raw);
+  if (isTouch && volume !== undefined) {
+    fail(TOUCH_VOLUME);
+  }
   const marginPct = isTouch && raw.touch !== true ? touchMargin(raw.touch as Scalar) : DEFAULT_TOUCH_MARGIN_PCT;
 
   let from: MaApproach = "either";
@@ -268,7 +275,7 @@ function maInput(symbol: string, raw: RawAddFields): AddAlertInput {
     }
     from = raw.from;
   }
-  return { kind: "ma", symbol, ...spec, trigger: isTouch ? "touch" : "cross", from, marginPct };
+  return { kind: "ma", symbol, ...spec, trigger: isTouch ? "touch" : "cross", from, marginPct, ...(volume ? { volume } : {}) };
 }
 
 /** An empty edit is valid here; `editAlert` rejects it as "Nothing to change." */

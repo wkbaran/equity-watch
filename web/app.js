@@ -779,10 +779,14 @@
     const volumeFields = buildVolumeFields(null);
     const error = h("span", { class: "form-error" });
     const button = h("button", { type: "submit", text: "Add alert" });
+    const syncVolume = () => {
+      for (const f of volumeFields.fields) f.hidden = kindFields.isTouch();
+    };
     addFormEl = h(
       "form",
       {
         class: "ops-form card",
+        onchange: syncVolume,
         onsubmit: async (e) => {
           e.preventDefault();
           error.textContent = "";
@@ -790,7 +794,7 @@
           if (!sym) return (error.textContent = "Enter a symbol.");
           const kindRead = kindFields.read();
           if (kindRead.error) return (error.textContent = kindRead.error);
-          const read = volumeFields.read();
+          const read = kindFields.isTouch() ? { volume: null } : volumeFields.read();
           if (read.error) return (error.textContent = read.error);
           const volume = read.volume;
           if (kindRead.volumeOnly && volume === null) return (error.textContent = "Set a volume condition: it is all a volume-only alert watches.");
@@ -805,6 +809,7 @@
             symbol.value = "";
             kindFields.reset();
             volumeFields.reset();
+            syncVolume();
           }
         },
       },
@@ -1087,7 +1092,13 @@
       trailValue.value = "";
     };
 
-    return { fields: [field("Kind", kind), ...Object.values(groups).flat()], read, reset };
+    return {
+      fields: [field("Kind", kind), ...Object.values(groups).flat()],
+      read,
+      reset,
+      // A touch can't carry a volume condition (TOUCH_VOLUME in the worker).
+      isTouch: () => kind.value === "ma" && maTrigger.value === "touch",
+    };
   }
 
   const MA_FROM_LABEL = { above: "From above", below: "From below", either: "Either side" };
@@ -1200,6 +1211,8 @@
       fields: [field("Average", maType), field("Period", period), field("Bars", timeframe), field("Fires when price", trigger), directionField, fromField, marginField],
       collect,
       sync,
+      trigger,
+      isTouch: () => trigger.value === "touch",
     };
   }
 
@@ -1222,9 +1235,10 @@
    * lands) and a trailing alert back to a level. Its trail is prefilled from
    * AlertRow.trail, so saving it untouched is "Nothing changed."
    *
-   * And a price, trailing or volume alert can become a moving average, which
-   * drops its volume condition (a moving average has none). The way back
-   * isn't offered: the worker has no conversion out of a moving average.
+   * And a price, trailing or volume alert can become a moving average. A
+   * cross keeps its volume condition; a touch can't have one, so it is
+   * dropped. The way back isn't offered: the worker has no conversion out of
+   * a moving average.
    *
    * *Volume only* is a Kind too (2026-10-02). Before, a volume-only alert was
    * made by leaving Level empty, which nothing on the form said, and a
@@ -1275,32 +1289,35 @@
     const priceFields = [field("Level", level), field("Fires on", direction)];
     const trailFields = [field("Watch for", trailDirection), field("Trail by", trailType), field("Distance", trailValue)];
 
-    // A moving average has no volume condition, and never has had one.
+    // A moving-average cross carries volume like any price alert: counted from
+    // the cross. A touch can't yet (TOUCH_VOLUME in the worker), so the volume
+    // row goes while one is chosen, and switching an alert to one says what it drops.
     const old = a.volume ?? null;
-    const volumeFields = isMa ? null : buildVolumeFields(old);
+    const volumeFields = buildVolumeFields(old);
     const clause = (label, ...children) => h("div", { class: "clause" }, h("span", { class: "clause-label", text: label }), h("div", { class: "clause-fields" }, ...children));
-    const volumeClause = isMa ? null : clause("and volume", ...volumeFields.fields);
+    const volumeClause = clause("and volume", ...volumeFields.fields);
     const dropsVolume =
-      old === null ? null : h("p", { class: "note clause-note", text: `A moving average has no volume condition, so this drops ${volumeConditionText(old)}.` });
+      old === null ? null : h("p", { class: "note clause-note", text: `A moving-average touch can't have a volume condition, so this drops ${volumeConditionText(old)}.` });
+    const maChosen = () => isMa || kind.value === "ma";
+    const touchChosen = () => maChosen() && maFields.isTouch();
 
-    if (isMa) fields.push(clause("Watch", ...maFields.fields));
-    else {
-      fields.push(clause("Watch", field("Kind", kind), ...priceFields, ...trailFields, ...maFields.fields));
-      fields.push(volumeClause);
-      if (dropsVolume) fields.push(dropsVolume);
-      const sync = () => {
+    fields.push(clause("Watch", ...(isMa ? [] : [field("Kind", kind), ...priceFields, ...trailFields]), ...maFields.fields), volumeClause);
+    if (dropsVolume) fields.push(dropsVolume);
+    const sync = () => {
+      if (!isMa) {
         for (const f of priceFields) f.hidden = kind.value !== "static";
         for (const f of trailFields) f.hidden = kind.value !== "trailing";
         // buildMaFields shows one of Direction or Approached/Touch band by
         // trigger; outside the MA kind all of them go.
         for (const f of maFields.fields) f.hidden = kind.value !== "ma";
         if (kind.value === "ma") maFields.sync();
-        volumeClause.hidden = kind.value === "ma";
-        if (dropsVolume) dropsVolume.hidden = kind.value !== "ma";
-      };
-      kind.addEventListener("change", sync);
-      sync();
-    }
+      }
+      volumeClause.hidden = touchChosen();
+      if (dropsVolume) dropsVolume.hidden = !touchChosen();
+    };
+    kind.addEventListener("change", sync);
+    maFields.trigger.addEventListener("change", sync);
+    sync();
 
     const trailText = (type, v, dir) => `trailing ${type === "percent" ? `${v}%` : `$${v}`} off the ${dir === "up" ? "low" : "high"}`;
 
@@ -1308,15 +1325,19 @@
       const params = {};
       const changes = [];
 
-      if (isMa || kind.value === "ma") {
-        return maFields.collect();
-      }
-
-      const read = volumeFields.read();
+      const touch = touchChosen();
+      const read = touch ? { volume: null } : volumeFields.read();
       if (read.error) return { error: read.error };
       const volume = read.volume;
 
-      if (kind.value === "volume") {
+      if (maChosen()) {
+        const m = maFields.collect();
+        if (m.error) return m;
+        Object.assign(params, m.params);
+        changes.push(...m.changes);
+        // The worker drops it on a touch; a cross keeps it unless changed below.
+        if (touch && !isMa && old !== null) changes.push(`drop volume ${volumeConditionText(old)}`);
+      } else if (kind.value === "volume") {
         if (volume === null) return { error: "Set a volume condition: it is all a volume-only alert watches." };
         if (a.kind !== "volume") {
           params.clearLevel = true;
@@ -1358,7 +1379,9 @@
         }
       }
 
-      if (volume === null && old !== null) {
+      if (touch) {
+        // Nothing to send: a touch has no volume condition to change.
+      } else if (volume === null && old !== null) {
         params.clearVolume = true;
         changes.push(`drop volume ${volumeConditionText(old)}`);
       } else if (volume !== null && !sameVolume(volume, old)) {
@@ -1934,7 +1957,10 @@
     const alerts = alertsForSymbol(symbol);
     const body =
       alerts.length > 0
-        ? alerts.flatMap((a) => editSection(a, null, `holdings:${a.id}`) ?? [])
+        ? alerts.flatMap((a) => [
+            a.primed ? h("p", { class: "note waiting-note" }, waitingTag(a), ` ${primedText(a)}`) : null,
+            ...(editSection(a, null, `holdings:${a.id}`) ?? []),
+          ].filter(Boolean))
         : [
             h("p", { class: "note", text: alertsDoc === null ? "Loading the alert book…" : "No live alert on this symbol." }),
             coverButton(symbol),
@@ -1956,7 +1982,7 @@
       stops,
       uncoveredSymbols()?.has(symbol) ?? null,
       coverPending(symbol),
-      alerts.map((a) => [a.id, a.condition]),
+      alerts.map((a) => [a.id, a.condition, a.primed?.at ?? null]),
       alerts.flatMap((a) => pendingFor(a.id).map((p) => p.id)),
     ]);
     const cached = detailCache.get(symbol);
@@ -2949,7 +2975,7 @@
           },
         },
         h("td", {}, symbolLink(a.symbol, a.chartUrl)),
-        h("td", { class: "cond" }, a.condition, pendingTag(a.id)),
+        h("td", { class: "cond" }, a.condition, waitingTag(a), pendingTag(a.id)),
         h("td", { class: "dir", text: a.direction ? DIRECTION_LABEL[a.direction] ?? a.direction : "–" }),
         h("td", {}, money(a.level ?? a.movingLevel), a.level === null && a.movingLevel !== null ? h("span", { class: "tag", text: "moving" }) : null),
         h("td", { text: money(a.price) }),
@@ -3088,7 +3114,30 @@
     ];
   }
 
+  /**
+   * An alert whose price condition was met while its volume wasn't: the
+   * worker's PricePrimed, published as AlertRow.primed. Only volume traded
+   * after it counts, so the sentence says when that was.
+   */
+  function primedText(a) {
+    const p = a.primed;
+    const what =
+      a.kind === "static" && a.level !== null
+        ? `Crossed ${SIDE_OF[p.direction]} ${money(a.level)}`
+        : a.kind === "ma"
+          ? `Crossed ${SIDE_OF[p.direction]} the average`
+          : "Reached its trail";
+    return `${what} at ${money(p.price)}, ${when(p.at)}. Only volume traded since counts.`;
+  }
+  const waitingTag = (a) => (a.primed ? h("span", { class: "tag waiting", title: primedText(a), text: "waiting on volume" }) : null);
+
   function volumeText(v) {
+    // A window cut at the price event (RevisitVolume.since) says so: the
+    // morning before a 2pm crossing was deliberately not counted.
+    if (v.since) {
+      const multiple = v.required > 0 ? ` (${(v.observed / v.required).toFixed(2)}x)` : "";
+      return `${sharesText(v.observed)} since the price condition was met, against ${sharesText(v.required)} required${multiple}`;
+    }
     const window = v.window === "today" ? "today" : `in the last ${v.window}`;
     const multiple = v.required > 0 ? ` (${(v.observed / v.required).toFixed(2)}x)` : "";
     return `${sharesText(v.observed)} ${window}, against ${sharesText(v.required)} required${multiple}`;
@@ -3127,6 +3176,10 @@
     }
     if (t.direction) {
       rows.push(kv("Direction", `Crossed ${SIDE_OF[t.direction]} ${t.ma ? "the average" : "the level"}`));
+    }
+    // The fire is dated by the volume; this is when price got there.
+    if (t.priceMet) {
+      rows.push(kv("Price condition met", `${full(t.priceMet.at)} at ${money(t.priceMet.price)}`, h("div", { class: "note", text: `Volume qualified ${full(t.triggeredAt)}.` })));
     }
 
     // Later crossings of the same level, folded onto this fire by the engine.
@@ -3274,6 +3327,7 @@
     if (a.price !== null) {
       rows.push(kv("Price", money(a.price), a.vsLevelPct !== null ? muted(` (${pct(a.vsLevelPct)} vs ${a.kind === "ma" ? "average" : "level"})`) : ""));
     }
+    if (a.primed) rows.push(kv("Waiting on volume", primedText(a)));
     rows.push(
       kv(
         "Triggers",

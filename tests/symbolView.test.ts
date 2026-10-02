@@ -68,7 +68,7 @@ describe("renderSymbolAlerts", () => {
     ];
     const out = renderSymbolAlerts("TSLA", alerts, [], NOW);
     expect(out).toMatch(/^TSLA: 2 live alerts\n/);
-    expect(out).toContain("s1  static   price crosses above 250 AND volume >= 1.5x normal today");
+    expect(out).toContain("s1  static   price crosses above 250, then volume >= 1.5x normal today");
     expect(out).toMatch(/fired 3 times, last 2026-09-12 \d\d:31 at 251\.2/);
     expect(out).toContain("t1  trailing trailing 3% off the high (started near 245) (trigger 242.5 at last check)");
     expect(out).toContain("never fired");

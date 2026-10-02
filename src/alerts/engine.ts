@@ -10,6 +10,7 @@ import {
   type CrossDirection,
   type MaAlert,
   type MaApproach,
+  TOUCH_VOLUME,
   type MaTrigger,
   type PriceAlert,
   type StaticAlert,
@@ -44,8 +45,8 @@ import {
   watchesDirection,
   withinReversionWindow,
 } from "./reversion.js";
-import { requiredVolume } from "./volumeBaseline.js";
-import { schwabIntradayPeriod } from "../indicators/movingAverage.js";
+import { INTRADAY_BASELINE_SESSIONS, intradayBaseline, requiredVolume } from "./volumeBaseline.js";
+import { MAX_INTRADAY_HISTORY_DAYS, schwabIntradayPeriod } from "../indicators/movingAverage.js";
 import { nextMarketMidnight } from "../timezone.js";
 import { tradingViewUrl } from "../tradingview.js";
 import { findAlert, loadAlerts, saveAlerts } from "./store.js";
@@ -202,6 +203,80 @@ async function volumeSatisfied(
 }
 
 /**
+ * A volume condition counted only from `since`, the moment the alert's price
+ * condition was met (PricePrimed). Volume before the price event never counts
+ * - the user's rule (2026-10-02), so "price, then volume" means one thing
+ * however the two happen to fall.
+ *
+ * When the condition's whole window lies after `since` this is exactly
+ * `volumeSatisfied`. Otherwise the window is cut at `since`:
+ *
+ *   - observed is the regular-session minute bars that start after `since`
+ *     (the crossing's own bar is the price event, not volume after it). Past
+ *     the ten days of minute history Schwab keeps, whole trading days after
+ *     the crossing's day are counted from daily bars instead, so the
+ *     crossing day's earlier volume still can't leak in.
+ *   - a share count is required as written.
+ *   - a ratio is compared with normal volume for the same stretch: matched by
+ *     time of day within one session (as sub-day windows already are, since
+ *     volume is U-shaped), and in proportion to the window's length across
+ *     sessions. One hour after a 3pm cross is never held to a full day's
+ *     normal, which it could almost never reach.
+ */
+async function volumeSinceSatisfied(
+  condition: VolumeCondition,
+  symbol: string,
+  since: Date,
+  todaySoFar: number,
+  market: MarketData,
+  resolveBaseline: BaselineResolver,
+  now: Date
+): Promise<VolumeCheck> {
+  const windowCovered =
+    condition.mode === "today" ? marketDate(since) !== marketDate(now) : since.getTime() <= now.getTime() - periodMs(condition);
+  if (windowCovered) {
+    return volumeSatisfied(condition, symbol, todaySoFar, market, resolveBaseline);
+  }
+
+  const spanMs = Math.max(0, now.getTime() - since.getTime());
+  const spanDays = spanMs / PERIOD_UNIT_MS.d;
+  let observed: number;
+  if (spanDays < MAX_INTRADAY_HISTORY_DAYS - 1) {
+    const bars = await market.getIntradayBars(symbol, schwabIntradayPeriod(Math.max(2, Math.ceil(spanDays) + 1)));
+    observed = bars.filter((b) => b.date.getTime() > since.getTime() && b.date.getTime() <= now.getTime()).reduce((sum, b) => sum + b.volume, 0);
+  } else {
+    const crossDay = marketDate(since);
+    const bars = await market.getDailyBars(symbol, since, now);
+    observed = bars.filter((b) => marketDate(b.date) > crossDay).reduce((sum, b) => sum + b.volume, 0);
+  }
+
+  let baseline: number | null = null;
+  if (condition.threshold === undefined) {
+    if (marketDate(since) === marketDate(now)) {
+      baseline = intradayBaseline(await market.getIntradayBars(symbol, INTRADAY_BASELINE_SESSIONS), spanMs, now);
+    } else {
+      // Only a multi-day window gets here ("today" is cut only on the crossing's own day).
+      const full = await resolveBaseline(symbol, condition);
+      baseline = full === null ? null : (full * spanMs) / periodMs(condition);
+    }
+  }
+  const required = requiredVolume(condition, baseline);
+  if (required === null) {
+    return { satisfied: false, observation: null };
+  }
+  return {
+    satisfied: observed >= required,
+    observation: {
+      observed,
+      required: Math.round(required),
+      window: condition.mode === "today" ? "today" : `${condition.periodValue}${condition.periodUnit}`,
+      basis: condition.threshold === undefined ? "ratio" : "threshold",
+      since: since.toISOString(),
+    },
+  };
+}
+
+/**
  * How long to suppress re-firing after a volume condition is satisfied.
  * A volume threshold, once crossed, stays crossed - without this the alert
  * would fire on every poll for the rest of the window. Price crossings need
@@ -302,19 +377,20 @@ export async function checkAlerts(
       continue;
     }
     const condition = alert.kind === "volume" ? alert.volume : alert.volumeCondition;
-    // Volume is judged as of now even for a crossing found in an earlier bar:
-    // the quote's volume is the only figure there is. Asked once per alert.
-    let volumeCheck: VolumeCheck | null | undefined;
-    const volumeNow = async () =>
-      (volumeCheck ??= condition ? await volumeSatisfied(condition, alert.symbol, quote.totalVolume, bars, resolveBaseline) : null);
     // The mute exists so a satisfied volume condition doesn't fire on every
     // poll. It only gates firing: a static crossing during a mute is still a
-    // real crossing, so it is still folded onto its fire or allowed to move
-    // lastKnownSide below. Skipping those would leave lastKnownSide pointing
-    // at a side price left long ago.
+    // real crossing, so it still folds onto its fire, moves lastKnownSide, and
+    // primes the alert, whose volume is judged once the mute lapses.
     const mutedAt = (at: Date) => alert.mutedUntil !== null && alert.mutedUntil > at.toISOString();
 
-    const fire = async (price: number, at: Date, session: Session | null, cross: CrossDirection | undefined, volume: VolumeCheck | null) => {
+    const fire = async (
+      price: number,
+      at: Date,
+      session: Session | null,
+      cross: CrossDirection | undefined,
+      volume: VolumeCheck | null,
+      priceMet?: { at: string; price: number }
+    ) => {
       const atIso = at.toISOString();
       // Snapshot and queue the revisit entry from the pre-re-arm state, so both
       // record what the alert looked like when it fired rather than what it
@@ -324,6 +400,7 @@ export async function checkAlerts(
         newRevisitEntry(snapshot, price, atIso, session, {
           volume: volume?.observation ?? undefined,
           direction: cross,
+          priceMet,
         })
       );
       alert.triggerSnapshot = snapshot;
@@ -341,7 +418,7 @@ export async function checkAlerts(
 
     if (alert.kind === "volume") {
       if (mutedAt(nowDate)) continue;
-      const volume = await volumeNow();
+      const volume = condition ? await volumeSatisfied(condition, alert.symbol, quote.totalVolume, bars, resolveBaseline) : null;
       if (volume !== null && !volume.satisfied) continue;
       await fire(quote.lastPrice, nowDate, session, undefined, volume);
       continue;
@@ -353,12 +430,38 @@ export async function checkAlerts(
     // session this check runs in.
     const sessionOf = (p: PricePoint): Session | null => (p.fromBar ? "regular" : session);
 
+    // Price first, then volume. A met price condition primes the alert, and
+    // its volume is judged once per check, counting only what traded after it
+    // (volumeSinceSatisfied). Primed at this check, it fires as of the price
+    // event, as it always has. Primed at an earlier one, it fires as of now,
+    // when the volume arrived, and the entry keeps the price event as priceMet.
+    const primedBefore = alert.primed ?? null;
+    let primedSession: Session | null = session;
+    const confirmVolume = async (): Promise<boolean> => {
+      const primed = alert.primed;
+      if (!condition || !primed || mutedAt(nowDate)) return false;
+      const volume = await volumeSinceSatisfied(condition, alert.symbol, new Date(primed.at), quote.totalVolume, bars, resolveBaseline, nowDate);
+      if (!volume.satisfied) return false;
+      alert.primed = null;
+      if (primedBefore?.at === primed.at) {
+        await fire(quote.lastPrice, nowDate, session, primed.direction, volume, { at: primed.at, price: primed.price });
+      } else {
+        await fire(primed.price, new Date(primed.at), primedSession, primed.direction, volume);
+      }
+      return true;
+    };
+
     if (alert.kind === "static") {
       for (const p of points) {
         const to = crossingOf(alert.lastKnownSide, alert.level, p);
         if (to === null) continue;
         const price = p.price;
         const cross: CrossDirection = to === "above" ? "up" : "down";
+        // Back across the level it was primed on: the price condition no
+        // longer holds, so the wait ends without a trace.
+        if (alert.primed && alert.primed.direction !== cross) {
+          alert.primed = null;
+        }
 
         // Inside a fire's window, every crossing (either direction, muted or
         // not) belongs to that fire. It never fires on its own and never waits
@@ -382,17 +485,22 @@ export async function checkAlerts(
           alert.lastKnownSide = to;
           continue;
         }
-        // Muted, or the price crossed but volume hasn't caught up: leave
-        // lastKnownSide stale, so this stays pending until volume qualifies
-        // (or the mute lapses) with price still across, or price reverts and
-        // the stale side quietly matches again.
+        if (condition) {
+          // Primed: the crossing is recorded on the alert, so lastKnownSide
+          // moves on and a crossing back is seen as one.
+          alert.lastKnownSide = to;
+          alert.primed = { at: p.at.toISOString(), price, direction: cross };
+          primedSession = sessionOf(p);
+          continue;
+        }
+        // Muted: leave lastKnownSide stale, so the crossing stays pending
+        // until the mute lapses with price still across.
         if (mutedAt(p.at)) continue;
-        const volume = await volumeNow();
-        if (volume !== null && !volume.satisfied) continue;
-        await fire(price, p.at, sessionOf(p), cross, volume);
+        await fire(price, p.at, sessionOf(p), cross, null);
         // The alert does not disarm: it goes quiet until price genuinely re-crosses.
         alert.lastKnownSide = to;
       }
+      await confirmVolume();
       continue;
     }
 
@@ -405,17 +513,29 @@ export async function checkAlerts(
       const step = trailStep(alert, alert.extremePrice, p);
       let extreme = step.extreme;
       if (step.fire) {
-        const volume = await volumeNow();
-        if (volume === null || volume.satisfied) {
-          await fire(p.price, p.at, sessionOf(p), alert.side === "below" ? "up" : "down", volume);
+        const direction: CrossDirection = alert.side === "below" ? "up" : "down";
+        if (!condition) {
+          await fire(p.price, p.at, sessionOf(p), direction, null);
           // The alert does not disarm: it starts trailing afresh from here.
           extreme = p.price;
+        } else if (!alert.primed) {
+          alert.primed = { at: p.at.toISOString(), price: p.price, direction };
+          primedSession = sessionOf(p);
         }
+      } else if (alert.primed) {
+        // Out of the trail's reach again, or a new extreme: the move it was
+        // primed on is over.
+        alert.primed = null;
       }
       if (extreme !== alert.extremePrice) {
         alert.extremePrice = extreme;
         alert.extremeAt = p.at.toISOString();
       }
+    }
+    if (await confirmVolume()) {
+      // Starts trailing afresh from where price is now.
+      alert.extremePrice = quote.lastPrice;
+      alert.extremeAt = nowDate.toISOString();
     }
   }
 
@@ -424,26 +544,57 @@ export async function checkAlerts(
     const ma = await checkMaAlerts(maAlerts, quotes, bars, resolveDailyHistory, nowDate);
     warnings.push(...ma.warnings);
     for (const { alert, evaluation } of ma.results) {
-      if (evaluation.event === null) {
+      const quote = quotes.get(alert.symbol);
+      // Crosses only: a touch has no far side for price to stay on while it
+      // waits, so validation refuses volume on one (src/ops/validate.ts).
+      const condition = alert.trigger === "cross" ? alert.volumeCondition : undefined;
+      const fireMa = async (price: number, at: string, level: number | null, volume: VolumeCheck | null, priceMet?: { at: string; price: number }) => {
+        const keptLevel = alert.lastLevel;
+        alert.lastLevel = level;
+        const snapshot = { ...alert, triggerSnapshot: null } as Alert;
+        alert.lastLevel = keptLevel;
+        revisits.push(newRevisitEntry(snapshot, price, at, session, { volume: volume?.observation ?? undefined, priceMet }));
+        alert.triggerSnapshot = snapshot;
+        alert.triggerCount += 1;
+        alert.lastTriggeredAt = at;
+        alert.lastTriggerPrice = price;
+        triggered.push(alert);
+        for (const notifier of notifiers) {
+          await notifier.notify({ alert, currentPrice: price, chartUrl: tradingViewUrl(alert.symbol, options.exchanges?.get(alert.symbol) ?? null) });
+        }
+      };
+
+      const primedBefore = alert.primed ?? null;
+      let primedLevel: number | null = null;
+      if (evaluation.event !== null) {
+        // Recorded at the point it happened, which may be minutes before this check.
+        alert.lastEvent = evaluation.event;
+        alert.lastApproachedFrom = evaluation.approachedFrom;
+        alert.lastLevel = evaluation.level;
+        if (!condition) {
+          await fireMa(evaluation.price!, evaluation.at!.toISOString(), evaluation.level, null);
+          continue;
+        }
+        // Price first, then volume, as for static alerts: the cross primes it.
+        alert.primed = { at: evaluation.at!.toISOString(), price: evaluation.price!, direction: evaluation.event === "cross_up" ? "up" : "down" };
+        primedLevel = evaluation.level;
+      }
+
+      const primed = alert.primed;
+      if (!condition || !primed || quote === undefined) continue;
+      // Back on the other side of the average - by price moving, or by the
+      // average catching up with it - ends the wait.
+      if (alert.lastSide !== null && alert.lastSide !== (primed.direction === "up" ? "above" : "below")) {
+        alert.primed = null;
         continue;
       }
-      // Recorded at the point it happened, which may be minutes before this check.
-      const at = evaluation.at!.toISOString();
-      const price = evaluation.price!;
-      alert.lastEvent = evaluation.event;
-      alert.lastApproachedFrom = evaluation.approachedFrom;
-      alert.lastLevel = evaluation.level;
-
-      const snapshot = { ...alert, triggerSnapshot: null } as Alert;
-      revisits.push(newRevisitEntry(snapshot, price, at, session));
-      alert.triggerSnapshot = snapshot;
-      alert.triggerCount += 1;
-      alert.lastTriggeredAt = at;
-      alert.lastTriggerPrice = price;
-
-      triggered.push(alert);
-      for (const notifier of notifiers) {
-        await notifier.notify({ alert, currentPrice: price, chartUrl: tradingViewUrl(alert.symbol, options.exchanges?.get(alert.symbol) ?? null) });
+      const volume = await volumeSinceSatisfied(condition, alert.symbol, new Date(primed.at), quote.totalVolume, bars, resolveBaseline, nowDate);
+      if (!volume.satisfied) continue;
+      alert.primed = null;
+      if (primedBefore?.at === primed.at) {
+        await fireMa(quote.lastPrice, nowDate.toISOString(), alert.lastLevel, volume, { at: primed.at, price: primed.price });
+      } else {
+        await fireMa(primed.price, primed.at, primedLevel, volume);
       }
     }
   }
@@ -488,6 +639,8 @@ export type AddAlertInput =
       trigger: MaTrigger;
       from: MaApproach;
       marginPct: number;
+      /** Crosses only. */
+      volume?: VolumeCondition;
       watching?: WatchOrigin;
     };
 
@@ -573,6 +726,7 @@ export async function addAlert(
       lastFiredBucket: null,
       lastEvent: null,
       lastApproachedFrom: null,
+      ...(input.volume ? { volumeCondition: input.volume } : {}),
     };
     const alerts = loadAlerts(path);
     alerts.push(candidate);
@@ -667,7 +821,7 @@ export interface AlertEdit {
    * trailing alert makes it static again.
    */
   trail?: { type: "percent" | "amount"; value: number };
-  /** A replacement volume condition, or null to remove it. Not on moving averages. */
+  /** A replacement volume condition, or null to remove it. Not on moving-average touches. */
   volume?: VolumeCondition | null;
   /**
    * Moving average: restarts its evaluation, as if newly added. On a static,
@@ -694,7 +848,7 @@ const EDITABLE_KINDS: Record<keyof AlertEdit, { label: string; kinds: Alert["kin
   level: { label: "level", kinds: ["static", "volume", "trailing"] },
   direction: { label: "direction", kinds: ["static", "ma", "volume", "trailing"] },
   trail: { label: "trail", kinds: ["trailing", "static", "volume"] },
-  volume: { label: "volume condition", kinds: ["static", "trailing", "volume"] },
+  volume: { label: "volume condition", kinds: ["static", "trailing", "volume", "ma"] },
   ma: { label: "moving average", kinds: ["ma"] },
   marginPct: { label: "touch margin", kinds: ["ma"] },
   from: { label: "approach side", kinds: ["ma"] },
@@ -737,8 +891,8 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
   // old kind is meaningless alongside it, and the MA fields are what it needs.
   const becomesMa = alert.kind !== "ma" && edit.ma !== undefined;
   if (becomesMa) {
-    if (edit.level !== undefined || edit.trail !== undefined || edit.volume !== undefined) {
-      return reject("Give a moving average or a level, trail or volume condition, not both. A moving average has no volume condition.");
+    if (edit.level !== undefined || edit.trail !== undefined) {
+      return reject("Give a moving average or a level or trail, not both.");
     }
   }
   const unsupported = becomesMa ? [] : fields.filter((k) => !EDITABLE_KINDS[k].kinds.includes(alert.kind));
@@ -780,9 +934,15 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
   if (becomesMa && edit.ma !== undefined) {
     // Becomes a moving-average alert. Its state starts empty and seeds on the
     // next check, exactly as a new one's does, and it sits outside the
-    // one-alert-per-symbol+side rule, so no quote is needed. Any volume
-    // condition goes: a moving average has none.
+    // one-alert-per-symbol+side rule, so no quote is needed. A cross keeps the
+    // volume condition (this edit's, else the alert's own); a touch can't
+    // carry one, so it is dropped, and refused if this edit gives one.
     const isTouch = edit.marginPct !== undefined || edit.from !== undefined;
+    if (isTouch && edit.volume) {
+      return reject(TOUCH_VOLUME);
+    }
+    const ownVolume = alert.kind === "volume" ? alert.volume : alert.volumeCondition;
+    const volumeCondition = isTouch ? undefined : edit.volume !== undefined ? (edit.volume ?? undefined) : ownVolume;
     let from: MaApproach;
     if (isTouch) {
       if (edit.direction !== undefined) {
@@ -822,6 +982,7 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
       lastEvent: null,
       lastApproachedFrom: null,
       mutedUntil: null,
+      ...(volumeCondition ? { volumeCondition } : {}),
     };
     alerts[alerts.indexOf(alert)] = ma;
     saveAlerts(path, alerts);
@@ -939,6 +1100,9 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
 
   if (alert.kind === "ma") {
     const trigger = alert.trigger;
+    if (trigger === "touch" && edit.volume) {
+      return reject(TOUCH_VOLUME);
+    }
     if (edit.direction !== undefined) {
       if (trigger === "touch") {
         return reject("A touch alert has no direction. Set the side it approaches from instead.");
@@ -976,7 +1140,7 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
         return reject("A volume alert can't lose its volume condition. Remove the alert instead.");
       }
       alert.volume = edit.volume;
-    } else if (alert.kind === "static" || alert.kind === "trailing") {
+    } else {
       if (edit.volume === null) {
         delete alert.volumeCondition;
         // Only a volume condition ever sets a mute.
@@ -1034,6 +1198,14 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
       const refused = displaceRival(alert, live, `level ${edit.level}`);
       if (refused !== null) return reject(refused);
     }
+  }
+
+  // A waiting price event survives only a change to the volume it waits on.
+  // Anything else re-seeds the price side (a moved level, a new trail or
+  // average) or leaves nothing to wait for (no volume condition left).
+  const keepsPrime = fields.every((k) => k === "volume") && edit.volume !== null;
+  if (!keepsPrime && "primed" in alert) {
+    delete alert.primed;
   }
 
   saveAlerts(path, alerts);

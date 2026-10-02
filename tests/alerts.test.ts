@@ -43,6 +43,11 @@ function bar(minutesAgo: number, volume: number): PriceBar {
   };
 }
 
+/** A one-minute bar at an exact instant, for tests that pin the clock. */
+function minuteBar(iso: string, close: number, volume: number): PriceBar {
+  return { date: new Date(iso), open: close, high: close, low: close, close, volume };
+}
+
 function makeStatic(overrides: Partial<StaticAlert> = {}): StaticAlert {
   return {
     id: "s1",
@@ -264,10 +269,10 @@ describe("checkAlerts", () => {
       const store: RevisitEntry[] = [];
       return {
         store,
-        async check(price: number, nowIso: string, volume = 0) {
+        async check(price: number, nowIso: string, volume = 0, intradayBars: PriceBar[] = []) {
           const result = await checkAlerts(
             [alert],
-            fakeMarket({ prices: { TEST: price }, volumes: { TEST: volume } }),
+            fakeMarket({ prices: { TEST: price }, volumes: { TEST: volume }, intradayBars: { TEST: intradayBars } }),
             [],
             "regular",
             undefined,
@@ -363,11 +368,13 @@ describe("checkAlerts", () => {
     });
 
     it("records follow-ups without waiting on volume, and still gates the next real fire on it", async () => {
+      // Crossed the day before; all of Friday's volume came after it.
       const alert = makeStatic({
         direction: "up",
         level: 100,
-        lastKnownSide: "below",
+        lastKnownSide: "above",
         volumeCondition: { threshold: 1_000_000, mode: "today" },
+        primed: { at: "2026-09-10T15:00:00.000Z", price: 101, direction: "up" },
       });
       const p = poller(alert);
       expect((await p.check(101, FRI, 2_000_000)).triggered).toHaveLength(1);
@@ -378,14 +385,31 @@ describe("checkAlerts", () => {
       expect((await p.check(101, "2026-09-11T16:00:00.000Z", 0)).followUps).toHaveLength(1);
       expect(alert.lastKnownSide).toBe("above");
 
-      // Outside the window (and the mute), a watched crossing waits on volume as before.
+      // Outside the window (and the mute), a watched crossing primes the alert
+      // and waits on volume traded after it.
       await p.check(99, "2026-09-16T14:00:00.000Z", 0);
       const pending = await p.check(101, "2026-09-16T15:00:00.000Z", 200_000);
       expect(pending.triggered).toHaveLength(0);
-      expect(alert.lastKnownSide).toBe("below"); // left stale: the crossing is pending
-      const confirmed = await p.check(101.5, "2026-09-16T16:00:00.000Z", 1_500_000);
+      expect(alert.primed).toEqual({ at: "2026-09-16T15:00:00.000Z", price: 101, direction: "up" });
+      expect(alert.lastKnownSide).toBe("above");
+
+      // Today's 1.5M includes the morning, before the crossing. Only the 400K since counts.
+      const after = [minuteBar("2026-09-16T15:30:00.000Z", 101.5, 400_000)];
+      expect((await p.check(101.5, "2026-09-16T16:00:00.000Z", 1_500_000, after)).triggered).toHaveLength(0);
+
+      after.push(minuteBar("2026-09-16T16:30:00.000Z", 101.5, 700_000));
+      const confirmed = await p.check(101.5, "2026-09-16T17:00:00.000Z", 2_500_000, after);
       expect(confirmed.triggered).toHaveLength(1);
       expect(p.store).toHaveLength(2);
+      // Fired when the volume arrived; the crossing is kept beside it.
+      expect(p.store[1]).toMatchObject({
+        triggeredAt: "2026-09-16T17:00:00.000Z",
+        triggerPrice: 101.5,
+        direction: "up",
+        priceMet: { at: "2026-09-16T15:00:00.000Z", price: 101 },
+        volume: { observed: 1_100_000, required: 1_000_000, since: "2026-09-16T15:00:00.000Z" },
+      });
+      expect(alert.primed).toBeNull();
     });
 
     it("lets a mute stop a fire but not a counter-crossing from moving lastKnownSide", async () => {
@@ -497,54 +521,83 @@ describe("checkAlerts", () => {
     });
   });
 
-  describe("AND-combined price + volume alerts", () => {
-    it("does not trigger a static alert on crossing alone if volume hasn't caught up", async () => {
-      const alert = makeStatic({
-        level: 100,
-        lastKnownSide: "above",
-        volumeCondition: { threshold: 1_000_000, mode: "today" },
-      });
-      const { triggered } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 95 }, volumes: { TEST: 200_000 } }), []);
+  describe("price, then volume", () => {
+    // 11:00 Eastern on Wednesday 2026-09-16, then later that day, then Thursday.
+    const CROSS = "2026-09-16T15:00:00.000Z";
+    const LATER = "2026-09-16T16:00:00.000Z";
+    const NEXT_DAY = "2026-09-17T15:00:00.000Z";
+    const checkAt = (alert: Alert, nowIso: string, price: number, volume: number, intradayBars: PriceBar[] = [], baseline: number | null = null) =>
+      checkAlerts(
+        [alert],
+        fakeMarket({ prices: { TEST: price }, volumes: { TEST: volume }, intradayBars: { TEST: intradayBars } }),
+        [],
+        "regular",
+        undefined,
+        async () => baseline,
+        undefined,
+        { now: new Date(nowIso) }
+      );
+    const withVolume = (overrides: Partial<StaticAlert> = {}) =>
+      makeStatic({ level: 100, direction: "down", lastKnownSide: "above", volumeCondition: { threshold: 1_000_000, mode: "today" }, ...overrides });
+
+    it("primes on the crossing and ignores volume traded before it", async () => {
+      const alert = withVolume();
+      // Five million today, all of it before the crossing this check found.
+      const { triggered } = await checkAt(alert, CROSS, 95, 5_000_000);
       expect(triggered).toHaveLength(0);
-      expect(alert.status).toBe("live");
-      // lastKnownSide must stay stale (not "below") so the crossing stays pending.
-      expect(alert.lastKnownSide).toBe("above");
+      expect(alert.primed).toEqual({ at: CROSS, price: 95, direction: "down" });
+      expect(alert.lastKnownSide).toBe("below");
     });
 
-    it("triggers a static+volume alert once volume catches up while price is still crossed", async () => {
-      const alert = makeStatic({
-        level: 100,
-        lastKnownSide: "above",
-        volumeCondition: { threshold: 1_000_000, mode: "today" },
-      });
-      await checkAlerts([alert], fakeMarket({ prices: { TEST: 95 }, volumes: { TEST: 200_000 } }), []);
-      expect(alert.status).toBe("live");
-
-      const { triggered } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 94 }, volumes: { TEST: 1_500_000 } }), []);
+    it("fires once volume after the crossing qualifies, while price is still across", async () => {
+      const alert = withVolume();
+      await checkAt(alert, CROSS, 95, 200_000);
+      const { triggered, revisits } = await checkAt(alert, LATER, 94, 1_500_000, [minuteBar("2026-09-16T15:30:00.000Z", 94, 1_200_000)]);
       expect(triggered).toHaveLength(1);
-      expect(alert.status).toBe("live");
+      expect(revisits[0]).toMatchObject({ triggeredAt: LATER, triggerPrice: 94, priceMet: { at: CROSS, price: 95 } });
+      expect(alert.primed).toBeNull();
     });
 
-    it("cancels a pending static crossing if price reverts before volume catches up", async () => {
-      const alert = makeStatic({
-        level: 100,
-        lastKnownSide: "above",
-        volumeCondition: { threshold: 1_000_000, mode: "today" },
-      });
-      await checkAlerts([alert], fakeMarket({ prices: { TEST: 95 }, volumes: { TEST: 200_000 } }), []);
-      expect(alert.status).toBe("live");
+    it("fires as of the crossing when the volume came in the same check", async () => {
+      const alert = withVolume({ lastEvaluatedAt: "2026-09-16T14:50:00.000Z" });
+      const bars = [minuteBar("2026-09-16T14:55:00.000Z", 95, 10_000), minuteBar("2026-09-16T14:57:00.000Z", 95, 1_100_000)];
+      const { revisits } = await checkAt(alert, CROSS, 95, 3_000_000, bars);
+      expect(revisits).toHaveLength(1);
+      expect(revisits[0].triggeredAt).toBe("2026-09-16T14:55:00.000Z");
+      expect(revisits[0]).not.toHaveProperty("priceMet");
+    });
 
-      // Price reverts back above the level before volume ever qualified.
-      const { triggered } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 105 }, volumes: { TEST: 300_000 } }), []);
+    it("counts a whole later day, since all of it came after the crossing", async () => {
+      const alert = withVolume();
+      await checkAt(alert, CROSS, 95, 200_000);
+      const { triggered, revisits } = await checkAt(alert, NEXT_DAY, 96, 1_200_000);
+      expect(triggered).toHaveLength(1);
+      expect(revisits[0].volume).not.toHaveProperty("since");
+    });
+
+    it("forgets the crossing if price reverts before volume catches up", async () => {
+      const alert = withVolume();
+      await checkAt(alert, CROSS, 95, 200_000);
+      const { triggered } = await checkAt(alert, LATER, 105, 300_000);
       expect(triggered).toHaveLength(0);
-      expect(alert.status).toBe("live");
-
-      // Now it needs a fresh crossing again even with ample volume.
-      const { triggered: t2 } = await checkAlerts([alert], fakeMarket({ prices: { TEST: 106 }, volumes: { TEST: 5_000_000 } }), []);
-      expect(t2).toHaveLength(0);
+      expect(alert.primed).toBeNull();
+      // Ample volume without a fresh crossing is nothing.
+      expect((await checkAt(alert, NEXT_DAY, 106, 5_000_000)).triggered).toHaveLength(0);
     });
 
-    it("gates a trailing alert's trigger on the AND'd volume condition", async () => {
+    it("holds a ratio after the crossing to normal volume for the same stretch of the day", async () => {
+      const alert = withVolume({ volumeCondition: { ratio: 2, mode: "today" } });
+      await checkAt(alert, CROSS, 95, 0);
+      // 11:00-12:00 Eastern normally trades 100K; a full day's normal would be far more.
+      const history = ["2026-09-11", "2026-09-14", "2026-09-15"].map((d) => minuteBar(`${d}T15:30:00.000Z`, 120, 100_000));
+      const short = await checkAt(alert, LATER, 94, 0, [...history, minuteBar("2026-09-16T15:30:00.000Z", 94, 150_000)], 5_000_000);
+      expect(short.triggered).toHaveLength(0);
+      const enough = await checkAt(alert, LATER, 94, 0, [...history, minuteBar("2026-09-16T15:30:00.000Z", 94, 250_000)], 5_000_000);
+      expect(enough.triggered).toHaveLength(1);
+      expect(enough.revisits[0].volume).toMatchObject({ observed: 250_000, required: 200_000, basis: "ratio" });
+    });
+
+    it("primes a trailing alert, and drops it when price falls back out of reach", async () => {
       const alert = makeTrailing({
         side: "below",
         extremePrice: 97,
@@ -552,20 +605,17 @@ describe("checkAlerts", () => {
         trailValue: 3,
         volumeCondition: { threshold: 1_000_000, mode: "today" },
       });
-      const { triggered: t1 } = await checkAlerts(
-        [alert],
-        fakeMarket({ prices: { TEST: 100 }, volumes: { TEST: 100_000 } }), // price condition met, volume not
-        []
-      );
-      expect(t1).toHaveLength(0);
-      expect(alert.status).toBe("live");
+      expect((await checkAt(alert, CROSS, 100, 3_000_000)).triggered).toHaveLength(0);
+      expect(alert.primed).toMatchObject({ at: CROSS, price: 100, direction: "up" });
 
-      const { triggered: t2 } = await checkAlerts(
-        [alert],
-        fakeMarket({ prices: { TEST: 100 }, volumes: { TEST: 2_000_000 } }),
-        []
-      );
-      expect(t2).toHaveLength(1);
+      const { triggered } = await checkAt(alert, LATER, 100.5, 3_500_000, [minuteBar("2026-09-16T15:30:00.000Z", 100.5, 1_000_000)]);
+      expect(triggered).toHaveLength(1);
+      expect(alert.extremePrice).toBe(100.5); // trails afresh from where price is
+
+      const again = makeTrailing({ side: "below", extremePrice: 97, trailType: "percent", trailValue: 3, volumeCondition: { threshold: 1_000_000, mode: "today" } });
+      await checkAt(again, CROSS, 100, 0);
+      await checkAt(again, LATER, 98, 0, [minuteBar("2026-09-16T15:30:00.000Z", 98, 5_000_000)]);
+      expect(again.primed).toBeNull();
     });
   });
 });
@@ -1081,8 +1131,27 @@ describe("editAlert", () => {
       lastSide: null,
       lastEvaluatedAt: null,
     });
-    for (const gone of ["level", "side", "direction", "lastKnownSide", "volumeCondition"]) expect(stored).not.toHaveProperty(gone);
+    for (const gone of ["level", "side", "direction", "lastKnownSide"]) expect(stored).not.toHaveProperty(gone);
+    // A cross keeps the volume condition: it waits for volume after the cross.
+    expect(stored.volumeCondition).toEqual({ ratio: 2, mode: "today" });
     expect(result.before?.kind).toBe("static");
+  });
+
+  it("gives a moving-average cross a volume condition, but refuses one on a touch", async () => {
+    const cross = await addMa("cross");
+    expect((await editAlert(path, cross, { volume: { threshold: 2_000_000, mode: "today" } }, offline)).rejectedReason).toBeNull();
+    expect(loadAlerts(path).find((a) => a.id === cross)).toMatchObject({ volumeCondition: { threshold: 2_000_000, mode: "today" } });
+    const touch = await addMa("touch");
+    expect((await editAlert(path, touch, { volume: { threshold: 2_000_000, mode: "today" } }, offline)).rejectedReason).toMatch(/touch can't have a volume condition/);
+  });
+
+  it("keeps a waiting crossing through a volume change, and drops it on any other edit", async () => {
+    const primed = { at: "2026-09-16T15:00:00.000Z", price: 101, direction: "up" as const };
+    saveAlerts(path, [makeStatic({ level: 100, volumeCondition: { ratio: 2, mode: "today" }, primed })]);
+    await editAlert(path, "s1", { volume: { ratio: 3, mode: "today" } }, offline);
+    expect((loadAlerts(path)[0] as StaticAlert).primed).toEqual(primed);
+    await editAlert(path, "s1", { direction: "either" }, offline);
+    expect(loadAlerts(path)[0]).not.toHaveProperty("primed");
   });
 
   it("turns trailing and volume alerts into moving-average touches", async () => {
@@ -1104,7 +1173,7 @@ describe("editAlert", () => {
     ["either for a cross", { direction: "either" as const }, /watches up or down/],
     ["a direction on a touch", { direction: "up" as const, marginPct: 0.25 }, /touch alert has no direction/],
     ["a level as well", { direction: "up" as const, level: 50 }, /not both/],
-    ["a volume condition as well", { direction: "up" as const, volume: { ratio: 2, mode: "today" as const } }, /not both/],
+    ["a volume condition on a touch", { marginPct: 0.25, volume: { ratio: 2, mode: "today" as const } }, /touch can't have a volume condition/],
   ])("won't make a moving average with %s", async (_name, extra, reason) => {
     saveAlerts(path, [makeStatic()]);
     const before = loadAlerts(path);

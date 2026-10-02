@@ -50,6 +50,8 @@ export const STATIC_WITH_VOLUME: StaticAlert = {
   level: 400,
   lastKnownSide: "above",
   volumeCondition: { ratio: 1.5, mode: "today" },
+  // Crossed, and waiting on volume traded since.
+  primed: { at: "2026-10-01T18:05:00.000Z", price: 401.2, direction: "up" },
 };
 
 export const TRAILING: TrailingAlert = {

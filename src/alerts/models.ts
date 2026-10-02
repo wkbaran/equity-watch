@@ -38,6 +38,19 @@ export interface VolumeCondition {
 }
 
 /**
+ * A price condition met while its volume condition wasn't yet: the alert waits
+ * here, and only volume traded after `at` counts towards the condition. Price
+ * reverting (back across a level or an average, or out of a trail's reach)
+ * clears it without a trace. The user's rule, 2026-10-02: price first, then
+ * volume - volume that came before the price event never counts.
+ */
+export interface PricePrimed {
+  at: string;
+  price: number;
+  direction: CrossDirection;
+}
+
+/**
  * Alerts do not disarm. A trigger is an event, not an end state - the alert
  * stays live and can fire again on a genuine re-cross, and every trigger
  * appends a entry to the revisit queue (src/alerts/revisit.ts) instead.
@@ -99,8 +112,10 @@ export interface StaticAlert extends BaseAlert {
   direction: AlertDirection;
   level: number;
   lastKnownSide: AlertSide;
-  /** Optional AND condition: both the price crossing and this must hold. */
+  /** Optional AND condition: the price crossing, then this, counted from the crossing. */
   volumeCondition?: VolumeCondition;
+  /** Crossed, waiting on volume. Only ever set with a volume condition. */
+  primed?: PricePrimed | null;
   /** See TrailingAlert.lastEvaluatedAt. */
   lastEvaluatedAt?: string;
 }
@@ -113,8 +128,10 @@ export interface TrailingAlert extends BaseAlert {
   trailValue: number;
   extremePrice: number;
   extremeAt: string;
-  /** Optional AND condition: both the trailing bounce and this must hold. */
+  /** Optional AND condition: the trailing move, then this, counted from the move. */
   volumeCondition?: VolumeCondition;
+  /** Trail reached, waiting on volume. Only ever set with a volume condition. */
+  primed?: PricePrimed | null;
   /**
    * Every price before this instant has been judged (src/alerts/pricePath.ts).
    * The next check replays the minute bars from here. Absent on alerts from
@@ -136,6 +153,13 @@ export interface VolumeAlert extends BaseAlert {
 }
 
 export type MaTrigger = "cross" | "touch";
+
+/**
+ * Refused wherever a touch would gain a volume condition (validation and
+ * editAlert), in the same words. A cross waits for volume while price stays
+ * past the average; a touch has no far side to wait on (2026-10-02).
+ */
+export const TOUCH_VOLUME = "A moving-average touch can't have a volume condition yet; a cross can.";
 /** Which side price must be coming from for the alert to fire. */
 export type MaApproach = AlertSide | "either";
 export type MaEvent = "cross_up" | "cross_down" | "touch";
@@ -173,6 +197,10 @@ export interface MaAlert extends BaseAlert {
   lastFiredBucket: string | null;
   lastEvent: MaEvent | null;
   lastApproachedFrom: AlertSide | null;
+  /** Optional AND condition on a cross, counted from the cross. Touches can't carry one (yet). */
+  volumeCondition?: VolumeCondition;
+  /** Crossed, waiting on volume. Only ever set with a volume condition. */
+  primed?: PricePrimed | null;
 }
 
 export type Alert = StaticAlert | TrailingAlert | VolumeAlert | MaAlert;

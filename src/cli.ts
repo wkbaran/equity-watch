@@ -577,7 +577,7 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
     return;
   }
   const trigger = effectiveTrigger(a);
-  const andVolume = a.volumeCondition ? ` AND ${describeVolumeCondition(a.volumeCondition)}` : "";
+  const andVolume = a.volumeCondition ? `, then ${describeVolumeCondition(a.volumeCondition)}` : "";
   const direction = a.kind === "static" ? `, fires on ${a.direction === "either" ? "either crossing" : `${a.direction} crosses`}` : "";
   if (result.replaced) {
     console.log(
@@ -770,7 +770,7 @@ async function cmdAlertSeed(opts: AlertSeedOpts): Promise<void> {
           : suggestion.suggestedLevel !== null
             ? `${baseLevel} → ${level}  (${suggestion.basis})`
             : `${level}  (unchanged — ${suggestion.basis})`;
-      const vol = candidate.volume ? ` AND ${describeVolumeCondition(candidate.volume)}` : "";
+      const vol = candidate.volume ? `, then ${describeVolumeCondition(candidate.volume)}` : "";
       console.log(`  ${candidate.symbol.padEnd(6)} ${seedDirection(candidate.side).padEnd(6)} ${note}${vol}`);
       created++;
       continue;
@@ -838,7 +838,7 @@ function cmdAlertList(opts: AlertListOpts): void {
     }
     const anchor = a.kind === "static" ? a.level : a.near;
     const trail = a.kind === "trailing" ? `${a.trailValue}${a.trailType === "percent" ? "%" : "$"}` : "-";
-    const andVolume = a.volumeCondition ? ` AND ${describeVolumeCondition(a.volumeCondition)}` : "";
+    const andVolume = a.volumeCondition ? `, then ${describeVolumeCondition(a.volumeCondition)}` : "";
     const direction = a.kind === "static" ? ` direction=${a.direction}` : "";
     console.log(
       `${a.id}  ${a.kind.padEnd(8)} ${a.symbol.padEnd(6)} ${a.side.padEnd(5)} ` +

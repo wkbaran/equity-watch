@@ -131,6 +131,19 @@ function reversalClause(entry: RevisitEntry, dir: CrossDirection | null): string
   return `then ${wentBack} ${dayPhrase(reversalDays)}${cameBack === null ? "" : ` and ${cameBack}`}`;
 }
 
+/**
+ * When the volume came after the price event (RevisitEntry.priceMet), say so:
+ * the fire is dated by the volume, and without this the line would read as
+ * though price crossed that day.
+ */
+function volumeFollowedClause(entry: RevisitEntry): string | null {
+  if (entry.priceMet === undefined) {
+    return null;
+  }
+  const days = tradingDaysAfter(new Date(entry.priceMet.at), new Date(entry.triggeredAt));
+  return `with volume following ${days === 0 ? "later that day" : dayPhrase(days)}`;
+}
+
 /** One line describing a single trigger. */
 export function triggerHeadline(entry: RevisitEntry, ctx: NarrativeContext): string {
   const held = ctx.heldSymbols.has(entry.symbol.toUpperCase());
@@ -155,7 +168,8 @@ export function triggerHeadline(entry: RevisitEntry, ctx: NarrativeContext): str
         : entry.ma.event === "cross_up"
           ? `crossed above its ${label}`
           : `crossed below its ${label}`;
-    return `${subject} ${phrase}${sessionSuffix === null ? "" : `, ${sessionSuffix}`}`;
+    const followed = volumeFollowedClause(entry);
+    return [`${subject} ${phrase}`, sessionSuffix, followed].filter((x) => x !== null).join(", ");
   }
 
   const dir = entryDirection(entry);
@@ -165,6 +179,10 @@ export function triggerHeadline(entry: RevisitEntry, ctx: NarrativeContext): str
   // a reversal that may have happened on another day.
   if (sessionSuffix !== null) {
     parts.push(sessionSuffix);
+  }
+  const followed = volumeFollowedClause(entry);
+  if (followed !== null) {
+    parts.push(followed);
   }
   if (reversal !== null) {
     parts.push(reversal);

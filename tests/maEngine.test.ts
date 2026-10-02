@@ -191,6 +191,45 @@ describe("checkAlerts with moving-average alerts", () => {
     expect(alert).toMatchObject({ triggerCount: 1, lastSide: "below", lastEvent: "cross_up" });
   });
 
+  it("with a volume condition, a cross primes it and volume after the cross fires it", async () => {
+    const dailies = [2, 3, 4, 5, 6].map((d) => barAt(d * 86_400_000, 100));
+    const crossAt = Date.now() - 3 * 60_000;
+    const minutes = [barAt(4 * 60_000, 99), { ...barAt(3 * 60_000, 101), volume: 9_000_000 }];
+    const alert = makeMa({
+      period: 3,
+      lastEvaluatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+      volumeCondition: { threshold: 1_000_000, mode: "today" },
+    });
+    const quiet: MarketData = { ...market(101, minutes, dailies), getQuotes: async (symbols) => new Map(symbols.map((s) => [s, { lastPrice: 101, totalVolume: 9_000_000 }])) };
+
+    // The crossing bar's own 9M is the price event, not volume after it.
+    const first = await checkAlerts([alert], quiet, []);
+    expect(first.triggered).toHaveLength(0);
+    expect(alert.primed).toMatchObject({ at: new Date(crossAt).toISOString(), price: 101, direction: "up" });
+
+    const later = [...minutes, { ...barAt(60_000, 101.5), volume: 1_200_000 }];
+    const second = await checkAlerts([alert], market(101.5, later, dailies), []);
+    expect(second.triggered).toHaveLength(1);
+    expect(second.revisits[0]).toMatchObject({ kind: "ma", direction: "up", priceMet: { price: 101 }, condition: "cross 3-day SMA, then volume >= 1M shares today" });
+    expect(alert.primed).toBeNull();
+  });
+
+  it("forgets a primed cross once price is back on the other side of the average", async () => {
+    const dailies = [2, 3, 4, 5, 6].map((d) => barAt(d * 86_400_000, 100));
+    const alert = makeMa({
+      period: 3,
+      // Up crosses only, so the move back down is a reversion, not a new cross.
+      from: "below",
+      lastSide: "above",
+      lastEvaluatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+      volumeCondition: { threshold: 1_000_000, mode: "today" },
+      primed: { at: new Date(Date.now() - 60 * 60_000).toISOString(), price: 101, direction: "up" },
+    });
+    const { triggered } = await checkAlerts([alert], market(99, [{ ...barAt(2 * 60_000, 99), volume: 5_000_000 }], dailies), []);
+    expect(triggered).toHaveLength(0);
+    expect(alert.primed).toBeNull();
+  });
+
   it("warns instead of guessing when history is too short", async () => {
     const alert = makeMa({ period: 200, lastSide: null, lastEvaluatedAt: null });
     const { triggered, warnings } = await checkAlerts([alert], market(100, [], [barAt(2 * 86_400_000, 100)]), []);

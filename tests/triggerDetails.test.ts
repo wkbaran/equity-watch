@@ -91,7 +91,7 @@ describe("describeAlertCondition", () => {
     expect(describeAlertCondition(makeStatic({ level: 110, direction: "down" }))).toBe("price crosses below 110");
     expect(describeAlertCondition(makeStatic({ level: 110, direction: "either" }))).toBe("price crosses 110");
     expect(describeAlertCondition(makeStatic({ level: 110, volumeCondition: { ratio: 1.5, mode: "period", periodValue: 30, periodUnit: "m" } }))).toBe(
-      "price crosses above 110 AND volume >= 1.5x normal in last 30m"
+      "price crosses above 110, then volume >= 1.5x normal in last 30m"
     );
     expect(describeAlertCondition(makeTrailing())).toBe("trailing 3% off the low (started near 100)");
     expect(describeAlertCondition(makeTrailing({ side: "above", trailType: "amount", trailValue: 2 }))).toBe(

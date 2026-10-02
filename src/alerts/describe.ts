@@ -1,6 +1,10 @@
 /**
- * An alert's condition in plain words: "price crosses 110 AND volume >= 1.5x
+ * An alert's condition in plain words: "price crosses 110, then volume >= 1.5x
  * normal in last 30m", "trailing 3% off the low (started near 100)".
+ *
+ * "then", not "AND" (2026-10-02): the price condition comes first and only
+ * volume traded after it counts (volumeSinceSatisfied in ./engine.ts). Entries
+ * recorded before that still say AND, which was true of them.
  *
  * Template-only, like src/narrative.ts. Recorded onto every revisit entry at
  * trigger time (`RevisitEntry.condition`), so a trigger's details say what
@@ -25,7 +29,7 @@ export function describeAlertCondition(alert: Alert): string {
     case "volume":
       return describeVolumeCondition(alert.volume);
     case "ma":
-      return describeMaAlert(alert);
+      return alert.volumeCondition ? `${describeMaAlert(alert)}, then ${describeVolumeCondition(alert.volumeCondition)}` : describeMaAlert(alert);
     case "static":
     case "trailing": {
       const price =
@@ -35,7 +39,7 @@ export function describeAlertCondition(alert: Alert): string {
             : `price crosses ${alert.direction === "down" ? "below" : "above"} ${alert.level}`
           : `trailing ${alert.trailType === "percent" ? `${alert.trailValue}%` : `$${alert.trailValue}`} ` +
             `off the ${alert.side === "below" ? "low" : "high"} (started near ${alert.near})`;
-      return alert.volumeCondition ? `${price} AND ${describeVolumeCondition(alert.volumeCondition)}` : price;
+      return alert.volumeCondition ? `${price}, then ${describeVolumeCondition(alert.volumeCondition)}` : price;
     }
   }
 }

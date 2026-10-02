@@ -198,6 +198,45 @@ Re-fire suppression differs per kind and is *not* uniform: static alerts use
 use `mutedUntil` because a crossed volume threshold stays crossed and would
 otherwise fire on every poll.
 
+## Price first, then volume: `primed` is the state, and it must never count earlier volume
+
+Since 2026-10-02 (the user's rule; docs/ALERTS.md "Price first, then volume") an
+alert with a price and a volume condition needs them in that order. Things that
+look simplifiable and aren't:
+
+- **`primed` replaced the stale-`lastKnownSide` trick.** A static alert used to
+  leave `lastKnownSide` behind on a crossing that lacked volume, so the next check
+  re-saw the "crossing". Now the crossing moves the side and sets
+  `primed: {at, price, direction}`, and a crossing back clears it. Alerts left
+  stale-pending by the old code re-detect the crossing on their first check and
+  prime from then, so no migration was needed.
+- **Volume is measured from `primed.at`, never over the plain window.**
+  `volumeSinceSatisfied` cuts any window that reaches back past the crossing and
+  only falls through to `volumeSatisfied` when the whole window is after it. The
+  quote's `totalVolume` includes the morning, so it can never stand in for "since
+  the crossing" on the crossing's own day. The crossing's own minute bar is
+  excluded: it is the price event, not volume after it.
+- **A cut ratio window is compared with the same stretch of normal**, not the full
+  window's baseline (time of day within a session, proportional across sessions).
+  One hour against a full day's normal could almost never pass.
+- **Volume is judged once per check, after the whole path.** Static and trailing
+  alerts with a volume condition fire at most once a check; without one they
+  still fire inline per crossing, unchanged.
+- **The fire is dated by whichever check confirmed it.** Primed and confirmed in
+  one check: dated at the crossing, as before. Primed earlier: dated now, at the
+  quote, with `RevisitEntry.priceMet` holding the crossing. `triggerHeadline`
+  says "with volume following ..." from that, and the drawer shows both.
+- **Only a volume change keeps a prime through an edit** (`keepsPrime` in
+  `editAlert`). A moved level, a new trail or average, or dropping the volume
+  condition re-seeds or leaves nothing to wait for.
+- **`AlertRow.primed` is deliberately not in `VOLATILE_KEYS`.** It changes on a
+  crossing or a reversion, both events, and an alert starting to wait is news.
+- **Moving-average touches refuse a volume condition** (`TOUCH_VOLUME`, one string
+  for validation and `editAlert`). A touch has no far side to wait on. The user
+  expects to revisit this.
+- **Conditions say ", then volume >= ...", not " AND "**, which rejected every edit
+  queued before that deploy once (the `expect.condition` guard), as expected.
+
 ## A trailing alert's `near` is stored, but nothing accepts it any more
 
 `--near` was removed from every add path on 2026-10-01 (CLI, page, ops, agent
@@ -596,14 +635,16 @@ Things that look simplifiable and aren't:
   by id only (never `findAlert`), so a stale panel can't delete what an alert
   has since become. Its pending tag reads "remove pending".
 - **The edit form is price + volume for static and volume alerts alike**
-  (2026-09-18). An empty level means volume-only. `editAlert` converts in place,
+  (2026-09-18). Volume-only is its own *Kind* (2026-10-02; an empty level used to
+  mean it, silently, and is an error now). `editAlert` converts in place,
   keeping id and history: a level on a volume alert makes it static with the
   volume as its AND condition; `level: null` (`clearLevel`, `--clear-level`)
   makes a static alert with volume a volume alert. The volume alert's panel
   therefore sends `direction` with any new level, since it has none to keep.
   `AlertRow.volume` carries the condition so the form can prefill it; the
-  condition text can't be parsed back. Moving averages have no volume
-  condition and still aren't editable from the page.
+  condition text can't be parsed back. Moving averages are editable from the
+  page, and anything but a moving average can be turned into one (one way only:
+  `editAlert` has no conversion out of a moving average).
   Since 2026-10-02 trailing joins in: a *Kind* select switches a static or
   volume alert to trailing (`trail` + required `direction`, starting from the
   live price) and a trailing alert back to static (`level`). A trailing alert

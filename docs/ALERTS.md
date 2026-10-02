@@ -40,12 +40,14 @@ both easy to get wrong). Alerts created with it keep the starting price they wer
 given.
 
 **Volume** — fire when volume reaches a threshold, as either an absolute share
-count or a multiple of typical volume. Standalone, or AND-ed onto a static or
-trailing alert so both conditions must hold:
+count or a multiple of typical volume. Standalone, or added to a static or
+trailing alert or a moving-average cross, where it counts only volume traded
+after the price condition is met (see "Price first, then volume" below):
 
 ```bash
 node dist/cli.js alert add --symbol AAPL --volume-at-least 2.5M           # standalone
-node dist/cli.js alert add --symbol AAPL --level 150 --volume-ratio 1.5   # AND'd
+node dist/cli.js alert add --symbol AAPL --level 150 --volume-ratio 1.5   # price, then volume
+node dist/cli.js alert add --symbol AAPL --ma sma200@1D --direction up --volume-at-least 3M
 node dist/cli.js alert add --symbol AAPL --volume-ratio 1.5 --volume-period 30m
 ```
 
@@ -159,10 +161,43 @@ Above and below coexist independently, so you can watch both sides of a symbol a
 once. Standalone volume alerts sit outside this rule entirely — there is no natural
 "side" to dedup on — and just coexist freely.
 
-For a static alert combined with a volume condition, a price crossing that happens
-before volume catches up isn't lost: it stays "pending" (re-checked every poll)
-until either volume qualifies or price fully reverts to where it started, whichever
-comes first.
+### Price first, then volume
+
+An alert with both a price condition and a volume condition (a static level, a
+trailing alert, or a moving-average cross) needs them **in that order**: the price
+condition is met first, and only volume traded **after** it counts. Volume that
+came before the crossing never does, so a 2pm crossing on a day that traded heavily
+in the morning doesn't fire on the morning's volume. (Since 2026-10-02. Before
+that, both only had to hold at the same check, in either order.) For volume first
+and price second, use a volume-only alert and add a price alert once it fires.
+
+- **The crossing primes the alert.** It waits, with no time limit, for as long as
+  the price condition still holds, and fires at the first check where volume
+  since the crossing qualifies. The page tags it *waiting on volume* and says when
+  and where price got there.
+- **Price reverting ends the wait** without a trace: back across the level, out of
+  the trail's reach (or a new extreme), or back on the other side of the average,
+  which can happen by the average catching up as well as by price moving. A later
+  crossing primes it afresh.
+- **How the window is cut.** A window that reaches back past the crossing counts
+  only from the crossing: on the crossing's own day, *today* means since the
+  crossing; on later days it is the whole day. A rolling window (*last hour*,
+  *last 5 days*) is cut at the crossing until it has moved past it. Volume after
+  the crossing is read from regular-session minute bars, so it excludes extended
+  hours.
+- **What a cut window is compared with.** A share count is required as written.
+  A ratio is compared with normal volume for the same stretch: matched by time of
+  day within a session (one hour after a 3pm crossing against a normal 3-4pm), and
+  in proportion to the window's length across sessions.
+- **The trigger records both moments.** If volume qualified at a later check, the
+  trigger is dated when the volume arrived and keeps the crossing as *Price
+  condition met*; the story says "with volume following 2 days later".
+- **Moving-average touches can't have a volume condition yet.** A touch has no
+  far side for price to stay on while it waits.
+
+Conditions read "price crosses above 55, then volume >= 2M shares today" rather
+than "AND". Entries recorded before the change still say AND, which was true of
+them.
 
 When an alert fires, its `triggerSnapshot` captures every attribute (level, trail
 settings, `extremePrice`, and so on) exactly as they were at that moment,
@@ -198,8 +233,9 @@ high). It converts kinds in place, carrying any volume condition along:
 
 - `--ma` with `--direction up|down` (a cross) or `--touch [margin]` and/or
   `--from` (a touch) makes a static, trailing or volume alert a moving average.
-  It needs no quote, and drops any volume condition, since a moving average has
-  none; giving a level, trail or volume in the same edit is refused.
+  It needs no quote. A cross keeps the volume condition (or takes one given in the
+  same edit); a touch drops it, and refuses one given. A level or trail in the
+  same edit is refused.
 
 Changing a moving average back into anything else is not an edit: remove it and
 add a new one.

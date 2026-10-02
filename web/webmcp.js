@@ -389,7 +389,7 @@
     trailAmount: { type: "number", description: "Trailing alert: trail distance in dollars." },
     ma: {
       type: "string",
-      description: "Moving average, as <sma|ema><period>@<1D|1W|15m|5m|2m|1m>, e.g. sma200@1D. Can't be combined with a level or volume.",
+      description: "Moving average, as <sma|ema><period>@<1D|1W|15m|5m|2m|1m>, e.g. sma200@1D. Can't be combined with a level. A cross can carry a volume condition, counted from the cross; a touch can't.",
     },
     touch: {
       type: ["number", "boolean"],
@@ -607,7 +607,7 @@
       group: "write",
       ops: ["alert.add"],
       description:
-        "Queue a new alert. Give exactly one shape: a `level` (with optional `direction`); one of trailPercent/trailAmount with a `direction` (trailing, starting from the live price); `ma` (moving average); or only a volume condition. A level can also carry a volume condition. Replaces any live alert already on the same side of the price for that symbol. The person is asked to approve; the change applies at the next scheduled check.",
+        "Queue a new alert. Give exactly one shape: a `level` (with optional `direction`); one of trailPercent/trailAmount with a `direction` (trailing, starting from the live price); `ma` (moving average); or only a volume condition. A level, a trail or a moving-average cross can also carry a volume condition, which counts only volume traded after the price condition is met. Replaces any live alert already on the same side of the price for that symbol. The person is asked to approve; the change applies at the next scheduled check.",
       // The worker's add path takes a touch's approach as above|below only; an edit also takes either.
       inputSchema: object({ symbol: symbolProp, ...pick(ADD_KEYS), from: { ...ALERT_FIELDS.from, enum: ["above", "below"] } }, ["symbol"]),
       run(api, args, signal) {

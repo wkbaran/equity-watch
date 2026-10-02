@@ -290,8 +290,8 @@ node dist/cli.js alert add --symbol AAPL --level 150 --direction down    # or: e
 # Trailing: fires on a rise of N% or $N off the low since it was set (or a fall off the high)
 node dist/cli.js alert add --symbol AAPL --trail-percent 3 --direction up
 
-# Volume: an absolute share count (2.5M) or a multiple of typical volume; standalone
-# or AND-ed onto a static/trailing alert
+# Volume: an absolute share count (2.5M) or a multiple of typical volume; standalone,
+# or after a static/trailing alert's or moving-average cross's price condition
 node dist/cli.js alert add --symbol AAPL --volume-at-least 2.5M
 node dist/cli.js alert add --symbol AAPL --level 150 --volume-ratio 1.5
 

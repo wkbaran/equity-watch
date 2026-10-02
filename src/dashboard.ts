@@ -72,6 +72,11 @@ export interface CrossingDetails {
   /** Later crossings of the same level inside the reversion window, oldest first. */
   followUps: RevisitFollowUp[];
   reversal: ReversalSummary | null;
+  /**
+   * When the price condition was met, if volume only qualified at a later
+   * check; `triggeredAt` is then when the volume arrived. Null otherwise.
+   */
+  priceMet: { at: string; price: number } | null;
 }
 
 export interface RevisitRow extends CrossingDetails {
@@ -339,6 +344,7 @@ export function crossingDetails(e: RevisitEntry): CrossingDetails {
   const reversal = reversalOf(e);
   return {
     direction: entryDirection(e),
+    priceMet: e.priceMet ?? null,
     followUps: e.followUps ?? [],
     reversal:
       reversal === null
