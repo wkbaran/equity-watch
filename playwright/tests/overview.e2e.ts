@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { OPS_TOKEN, STATIC } from "../fixtures.js";
+import { OPS_TOKEN, STATIC, STATIC_WITH_VOLUME } from "../fixtures.js";
 
 // The `held` tag and the two drawer additions it belongs with: the tag is a
 // link into Holdings, the drawer grows a Position row and a Story, and the
@@ -106,6 +106,40 @@ test("clicking the held tag opens Holdings in its own tab rather than the trigge
   const focused = holdingsTab.locator("#holdings tr.focused");
   await expect(focused).toHaveCount(1);
   await expect(focused).toContainText("AA");
+});
+
+test("an alert's Add lot opens Holdings in the held tag's tab with the symbol filled in", async ({ page }) => {
+  await storeToken(page);
+  // MSFT is not held: Add lot is for starting a position as much as adding to one.
+  await page.goto(`/#/alert/${STATIC_WITH_VOLUME.id}`);
+  const button = page.locator("#drawer-body").getByRole("button", { name: "Add lot" });
+  await expect(button).toBeVisible();
+
+  const [holdingsTab] = await Promise.all([page.waitForEvent("popup"), button.click()]);
+  await holdingsTab.waitForLoadState();
+  expect(holdingsTab.url()).toMatch(/#\/holdings\/MSFT\/add-lot$/);
+  const form = holdingsTab.locator("#lot-add");
+  await expect(form.getByLabel("Symbol")).toHaveValue("MSFT");
+  await expect(form.getByLabel("Shares", { exact: true })).toBeFocused();
+  await expect(holdingsTab.locator("#holdings-status")).not.toContainText("isn't a position here");
+  // The overview tab stays where it was.
+  expect(page.url()).toMatch(new RegExp(`#/alert/${STATIC_WITH_VOLUME.id}$`));
+});
+
+test("#/holdings/<symbol>/add-lot fills the form once the vault opens, not just when it is already open", async ({ page }) => {
+  await storeToken(page);
+  // Loaded cold, the route lands before the vault decrypts. AA's lots are in
+  // two accounts, so the account is left to the user.
+  await page.goto("/#/holdings/AA/add-lot");
+  const form = page.locator("#lot-add");
+  await expect(form.getByLabel("Symbol")).toHaveValue("AA");
+  await expect(form.getByLabel("Account")).toHaveValue("");
+});
+
+test("a locked page offers no Add lot", async ({ page }) => {
+  await page.goto(`/#/alert/${STATIC.id}`);
+  await expect(page.locator("#drawer-body .drawer-title")).toBeVisible();
+  await expect(page.locator("#drawer-body").getByRole("button", { name: "Add lot" })).toHaveCount(0);
 });
 
 test("#/holdings/<symbol> highlights that one position, and says so when there is none", async ({ page }) => {

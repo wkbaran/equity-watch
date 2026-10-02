@@ -68,6 +68,11 @@ symbol. It runs the same selection rule, so it refuses a symbol that has since
 gained a live alert (naming what it has) and one on the ignore list. Useful when you
 don't want to wait for the next scheduled pass, or right after removing an alert.
 
+Going the other way, an alert's details panel has **Add lot** (unlocked page only). It
+opens Holdings in the same reused tab the `held` tag uses, at
+`#/holdings/<symbol>/add-lot`, with the Add a lot form's symbol filled in, and its
+account too when every existing lot of that symbol is in one account.
+
 ## Importing from Webull
 
 `holdings import` reads Webull's holdings export, one `--csv account=path` per

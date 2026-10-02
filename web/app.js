@@ -202,6 +202,8 @@
   // or toast doesn't also open that row's details.
   const HOLDINGS_TARGET = "equity-watch-holdings";
   const holdingsHash = (symbol) => `#/holdings/${encodeURIComponent(symbol)}`;
+  // The alert drawer's Add lot: the same tab, with the Add a lot form filled in.
+  const addLotHash = (symbol) => `${holdingsHash(symbol)}/add-lot`;
   const heldTag = (t) =>
     t.heldPosition
       ? h("a", {
@@ -1422,6 +1424,7 @@
         : "";
     }
     renderLotAddForm();
+    applyLotPrefill();
     renderPending();
     if (rows === null) {
       $("holdings").replaceChildren();
@@ -1477,6 +1480,22 @@
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  /** One account across every lot of a symbol pre-fills it; a mixed position (or none) leaves it to the user. */
+  function soleAccount(symbol) {
+    const accounts = new Set((vaultData?.lots ?? []).filter((l) => l.symbol === symbol).map((l) => l.account ?? ""));
+    return accounts.size === 1 ? [...accounts][0] : "";
+  }
+
+  // Set by #/holdings/<symbol>/add-lot and applied once the form exists, which
+  // can be well after the route: the vault decrypts after the first load.
+  let lotPrefillSymbol = null;
+  function applyLotPrefill() {
+    if (lotPrefillSymbol === null || !lotAddFields) return;
+    prefillLotAdd(lotPrefillSymbol, soleAccount(lotPrefillSymbol));
+    lotPrefillSymbol = null;
+    lotAddFields.shares.focus({ preventScroll: true });
+  }
+
   function renderLotAddForm() {
     const slot = $("lot-add");
     slot.hidden = !canEditHoldings();
@@ -1495,7 +1514,7 @@
     const stopCovered = numberInput(null, { placeholder: "all" });
     const error = h("span", { class: "form-error" });
     const button = h("button", { type: "submit", text: "Add lot" });
-    lotAddFields = { symbol, account };
+    lotAddFields = { symbol, account, shares };
     lotAddFormEl = h(
       "form",
       {
@@ -1878,9 +1897,7 @@
           type: "button",
           text: "Add to position",
           onclick: () => {
-            // One account across every lot pre-fills it; a mixed position leaves it to the user.
-            const accounts = new Set(lots.map((l) => l.account ?? ""));
-            prefillLotAdd(symbol, accounts.size === 1 ? [...accounts][0] : "");
+            prefillLotAdd(symbol, soleAccount(symbol));
           },
         }),
         confirmButton(`Remove the ${symbol} position`, () =>
@@ -3195,11 +3212,22 @@
         "div",
         { class: "actions", style: "margin-top:1.25rem" },
         h("a", { href: a.chartUrl, target: CHART_TARGET, text: "Chart" }),
+        addLotLink(a.symbol),
         removeAlertButton(a)
       ),
       // A wrapper, because replaceChildren renders a null argument as the text "null".
       h("div", {}, editSection(a)),
     ];
+  }
+
+  /**
+   * Opens Holdings in its reused tab with the Add a lot form filled in for this
+   * symbol. Only where that form exists: an unlocked page with the vault open.
+   */
+  function addLotLink(symbol) {
+    if (!canEditHoldings()) return null;
+    // window.open with the held tag's target name, so every Add lot lands in that one reused tab.
+    return h("button", { type: "button", text: "Add lot", onclick: () => window.open(addLotHash(symbol), HOLDINGS_TARGET) });
   }
 
   /**
@@ -3325,9 +3353,12 @@
   const BASE_VIEWS = ["queue", "stories", "alerts", "holdings"];
 
   function parseRoute() {
-    const [view, id] = location.hash.replace(/^#\/?/, "").split("/");
+    const [view, id, action] = location.hash.replace(/^#\/?/, "").split("/");
     // #/holdings/<symbol> is the held tag's link: the same view, scrolled to
-    // and highlighting one position.
+    // and highlighting one position. #/holdings/<symbol>/add-lot is the alert
+    // drawer's Add lot: it fills the form instead, which sits at the top, so
+    // it doesn't also scroll away to the position.
+    if (view === "holdings" && id && action === "add-lot") return { base: view, focus: null, addLot: decodeURIComponent(id), drawer: null };
     if (BASE_VIEWS.includes(view)) return { base: view, focus: id ? decodeURIComponent(id) : null, drawer: null };
     if ((view === "trigger" || view === "alert") && id) return { base: null, focus: null, drawer: { type: view, id: decodeURIComponent(id) } };
     return { base: "overview", focus: null, drawer: null };
@@ -3344,6 +3375,7 @@
         focusedHolding = focus;
         scrollToFocused = focus !== null;
       }
+      if (route.addLot) lotPrefillSymbol = route.addLot;
     }
     syncStoriesAccess();
     for (const view of ["overview", ...BASE_VIEWS]) $(`view-${view}`).hidden = baseView !== view;
