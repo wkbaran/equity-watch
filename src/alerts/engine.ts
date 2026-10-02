@@ -1100,20 +1100,32 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
 
   if (alert.kind === "ma") {
     const trigger = alert.trigger;
-    if (trigger === "touch" && edit.volume) {
+    const touchFields = edit.from !== undefined || edit.marginPct !== undefined;
+    // Switching trigger is stated the way an add states it: a direction makes a
+    // touch a cross, and a touch margin or approach side makes a cross a touch.
+    const becomes = trigger === "touch" && edit.direction !== undefined ? "cross" : trigger === "cross" && touchFields ? "touch" : trigger;
+    if (becomes === "cross" && touchFields) {
+      return reject("Give a direction (a cross) or a touch margin and approach side (a touch), not both.");
+    }
+    if (becomes === "touch" && edit.direction !== undefined) {
+      return reject("Give a direction (a cross) or a touch margin and approach side (a touch), not both.");
+    }
+    if (becomes === "touch" && edit.volume) {
       return reject(TOUCH_VOLUME);
     }
     if (edit.direction !== undefined) {
-      if (trigger === "touch") {
-        return reject("A touch alert has no direction. Set the side it approaches from instead.");
-      }
       if (edit.direction === "either") {
         return reject("A moving-average cross watches up or down, not either.");
       }
       alert.from = edit.direction === "up" ? "below" : "above";
     }
-    if (trigger === "cross" && (edit.from !== undefined || edit.marginPct !== undefined)) {
-      return reject("A cross alert has no touch margin or approach side. Set its direction instead.");
+    if (becomes === "touch" && trigger === "cross") {
+      // A cross's `from` is its direction; a touch's is the side it is
+      // approached from, which "either" until this edit says otherwise.
+      alert.from = "either";
+      // A touch can't wait on volume, so a cross's volume condition goes with it.
+      delete alert.volumeCondition;
+      alert.mutedUntil = null;
     }
     if (edit.from !== undefined) {
       alert.from = edit.from;
@@ -1125,7 +1137,11 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
       alert.maType = edit.ma.maType;
       alert.period = edit.ma.period;
       alert.timeframe = edit.ma.timeframe;
-      // A different average: its old side and band say nothing about this one.
+    }
+    if (edit.ma !== undefined || becomes !== trigger) {
+      alert.trigger = becomes;
+      // A different average, or a different question about it: the old side
+      // and band say nothing, so it seeds afresh on the next check.
       alert.lastSide = null;
       alert.inBand = false;
       alert.lastLevel = null;

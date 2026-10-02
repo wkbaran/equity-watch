@@ -1187,13 +1187,42 @@ describe("editAlert", () => {
     expect((await editAlert(path, "s1", { from: "above" }, offline)).rejectedReason).toMatch(/static alert has no approach side/);
   });
 
-  it("keeps cross and touch settings apart on moving averages", async () => {
-    const touch = await addMa("touch");
-    expect((await editAlert(path, touch, { direction: "up" }, offline)).rejectedReason).toMatch(/touch alert has no direction/);
-    expect((await editAlert(path, touch, { marginPct: 0.5, from: "above" }, offline)).rejectedReason).toBeNull();
-
+  it("switches a moving-average cross to a touch, dropping its volume and restarting it", async () => {
     const cross = await addMa("cross");
-    expect((await editAlert(path, cross, { from: "above" }, offline)).rejectedReason).toMatch(/cross alert has no touch margin/);
-    expect((await editAlert(path, cross, { direction: "either" }, offline)).rejectedReason).toMatch(/not either/);
+    await editAlert(path, cross, { volume: { threshold: 2_000_000, mode: "today" } }, offline);
+    const alerts = loadAlerts(path) as MaAlert[];
+    Object.assign(alerts[0], { lastSide: "above", lastEvaluatedAt: "2026-09-14T15:00:00.000Z", lastFiredBucket: "2026-09-12" });
+    saveAlerts(path, alerts);
+
+    const result = await editAlert(path, cross, { marginPct: 0.5, from: "above" }, offline);
+    expect(result.rejectedReason).toBeNull();
+    const [stored] = loadAlerts(path) as MaAlert[];
+    expect(stored).toMatchObject({ trigger: "touch", from: "above", marginPct: 0.5, lastSide: null, lastEvaluatedAt: null, lastFiredBucket: null });
+    expect(stored).not.toHaveProperty("volumeCondition");
+  });
+
+  it("switches a moving-average touch to a cross with a direction", async () => {
+    const touch = await addMa("touch");
+    const result = await editAlert(path, touch, { direction: "down" }, offline);
+    expect(result.rejectedReason).toBeNull();
+    expect(loadAlerts(path)[0]).toMatchObject({ trigger: "cross", from: "above", lastSide: null });
+  });
+
+  it("keeps a moving average's own trigger when an edit only tunes it", async () => {
+    const touch = await addMa("touch");
+    expect((await editAlert(path, touch, { marginPct: 0.5, from: "above" }, offline)).rejectedReason).toBeNull();
+    expect(loadAlerts(path)[0]).toMatchObject({ trigger: "touch", lastSide: null });
+  });
+
+  it.each([
+    ["a direction and a touch margin", "touch" as const, { direction: "up" as const, marginPct: 0.5 }, /not both/],
+    ["a direction and an approach side on a cross", "cross" as const, { direction: "up" as const, from: "above" as const }, /not both/],
+    ["either as a cross's direction", "cross" as const, { direction: "either" as const }, /not either/],
+    ["a touch with a volume condition", "cross" as const, { marginPct: 0.5, volume: { ratio: 2, mode: "today" as const } }, /touch can't have a volume condition/],
+  ])("refuses %s", async (_name, trigger, edit, reason) => {
+    const id = await addMa(trigger);
+    const before = loadAlerts(path);
+    expect((await editAlert(path, id, edit, offline)).rejectedReason).toMatch(reason);
+    expect(loadAlerts(path)).toEqual(before);
   });
 });

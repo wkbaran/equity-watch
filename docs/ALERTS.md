@@ -237,6 +237,11 @@ high). It converts kinds in place, carrying any volume condition along:
   same edit); a touch drops it, and refuses one given. A level or trail in the
   same edit is refused.
 
+A moving average can switch between a cross and a touch: `--direction up|down`
+makes a touch a cross, and `--touch <margin>` and/or `--from` make a cross a touch,
+dropping any volume condition (a touch can't have one yet). Either way it restarts
+its evaluation, as a new alert would.
+
 Changing a moving average back into anything else is not an edit: remove it and
 add a new one.
 

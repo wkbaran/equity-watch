@@ -1197,9 +1197,11 @@
           changes.push(`approached ${MA_FROM_LABEL[from.value].toLowerCase()}`);
         }
       } else if (wasTouch) {
-        // Going the other way has no flag: `--direction` on an MA means a
-        // cross, so stating one is what turns a touch back into a cross.
-        return { error: "Changing a touch back to a cross isn't supported from the page yet. Use alert edit in the CLI." };
+        // Going the other way has no flag: a direction on a moving average
+        // means a cross, so stating one is what turns a touch into a cross.
+        if (direction.value === "either") return { error: "Choose up or down for the cross." };
+        params.direction = direction.value;
+        changes.push(`touch → cross ${direction.value}`);
       } else if (direction.value !== wasCrossDir) {
         params.direction = direction.value;
         changes.push(`cross ${wasCrossDir === "either" ? "either way" : wasCrossDir} → ${direction.value}`);
@@ -1336,7 +1338,7 @@
         Object.assign(params, m.params);
         changes.push(...m.changes);
         // The worker drops it on a touch; a cross keeps it unless changed below.
-        if (touch && !isMa && old !== null) changes.push(`drop volume ${volumeConditionText(old)}`);
+        if (touch && old !== null) changes.push(`drop volume ${volumeConditionText(old)}`);
       } else if (kind.value === "volume") {
         if (volume === null) return { error: "Set a volume condition: it is all a volume-only alert watches." };
         if (a.kind !== "volume") {
