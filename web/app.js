@@ -901,7 +901,7 @@
     // near that: getDailyBars asks for a date range, not a period count,
     // which is why 10 days is offered as "10d" and not as "240h".
     const WINDOW_OPTIONS = [
-      ["", "Today"],
+      ["", "Day"],
       ["15m", "Last 15 minutes"],
       ["30m", "Last 30 minutes"],
       ["1h", "Last hour"],
@@ -915,7 +915,7 @@
     const current = existing?.mode === "period" ? `${existing.periodValue}${existing.periodUnit}` : "";
     const windowSelect = h("select", { class: "volume-window" }, ...WINDOW_OPTIONS.map(([value, text]) => h("option", { value, text })));
     // An alert set from the CLI can hold a window this list doesn't offer
-    // ("45s"). Keep it rather than snapping it to Today, which would be an
+    // ("45s"). Keep it rather than snapping it to Day, which would be an
     // edit nobody asked for on a form opened only to read.
     if (current !== "" && !WINDOW_OPTIONS.some(([value]) => value === current)) {
       windowSelect.append(h("option", { value: current, text: `Last ${current}` }));

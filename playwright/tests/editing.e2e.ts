@@ -206,7 +206,7 @@ test.describe("add", () => {
     const over = page.locator("#alert-add form").getByLabel("Over");
     await expect(over).toHaveValue("");
     expect(await over.locator("option").allInnerTexts()).toEqual([
-      "Today",
+      "Day",
       "Last 15 minutes",
       "Last 30 minutes",
       "Last hour",
@@ -1008,7 +1008,7 @@ test.describe("price and volume in one edit form", () => {
   });
 
   // A window set from the CLI need not be one the list offers. Opening the
-  // form must not quietly re-level it to Today.
+  // form must not quietly re-level it to Day.
   test("keeps a window the list doesn't offer, rather than snapping it", async ({ page }) => {
     await storeToken(page);
     await page.route("**/alerts.json", async (route) => {
