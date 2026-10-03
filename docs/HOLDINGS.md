@@ -137,7 +137,9 @@ Each row also shows two volatility figures and flags its stop:
   only. The first `dashboard` run of each trading day fetches one daily-bar
   request per held symbol; later runs that day read `.cache/bars/`.
 - **`no stop`**: the position has none. Not shown for an ignored (cash-parking)
-  position.
+  position. Its title suggests one by the same trail as below (2 ATR under the high
+  close since purchase, or under today's price when that is higher), or says the
+  trail would already have exited when that stop would sit at or above the market.
 - **`stop tight`** / **`stop loose`**: the nearest stop is off the **2 ATR** target
   (`STOP_ATR_MULTIPLE`) by more than **0.1 ATR** (`STOP_ATR_BAND`). Under 1.9 ATR it
   sits inside the stock's ordinary noise; over 2.1 ATR a reversal gives back more

@@ -137,6 +137,11 @@ test("each row shows its beta and ATR, and flags a stop that is missing or off t
   await expect(tight).toHaveAttribute("title", "Stop 38.00 is 1.8 ATR under the high close of 47.00 since purchase (ATR 5.00 a day); 2 ATR would put it near 37.00.");
   await expect(positionRow(page, "AA").locator(".tag.no-stop")).toHaveCount(0);
   await expect(positionRow(page, "TSLA").locator(".tag.no-stop")).toHaveText("no stop");
+  // TSLA's 255 high close less two ATRs of 9.68.
+  await expect(positionRow(page, "TSLA").locator(".tag.no-stop")).toHaveAttribute(
+    "title",
+    "No stop set. 2 ATR under the high close of 255.00 since purchase (ATR 9.68 a day) would put one near 235.64."
+  );
 
   // Sorted by percent, not dollars: TSLA's ATR is bigger in dollars but smaller relative to its price.
   await page.locator("#holdings-head th", { hasText: "ATR" }).click();

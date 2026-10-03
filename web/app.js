@@ -2633,20 +2633,17 @@
    */
   function stopFlags(row) {
     if (row.ignored) return [];
-    if (row.stops.length === 0) return [{ kind: "no-stop", label: "no stop", title: "No stop set on this position." }];
-    if (row.atr == null || !(row.atr > 0) || row.price === null) return [];
+    const trail = trailFor(row);
+    if (row.stops.length === 0) return [{ kind: "no-stop", label: "no stop", title: noStopTitle(trail) }];
+    if (trail === null) return [];
+    const { fromHigh, reference, suggested, drop } = trail;
     const stop = Math.max(...row.stops);
     if (stop >= row.price) return [{ kind: "stop-tight", label: "stop tight", title: `Price is at or under the stop at ${stop.toFixed(2)}.` }];
-    // `> price`, not `>=`: at a tie, "under the price" is the plainer sentence.
-    const fromHigh = row.highClose != null && row.highClose > row.price;
-    const reference = fromHigh ? row.highClose : row.price;
-    const suggested = reference - STOP_ATR_MULTIPLE * row.atr;
     // The price has fallen further from its high than the trail allows, so the
     // stop it suggests sits at or above the market, where no sell stop can go.
     // That is a decision about staying in, not a stop to move, so it is its
     // own pill rather than "stop loose" pointing at a price nobody can set.
     if (suggested >= row.price) {
-      const drop = Math.floor(((reference - row.price) / row.atr) * 10) / 10;
       return [
         {
           kind: "past-trail",
@@ -2673,6 +2670,41 @@
           `${STOP_ATR_MULTIPLE} ATR would put it near ${suggested.toFixed(2)}.`,
       },
     ];
+  }
+
+  /**
+   * Where a STOP_ATR_MULTIPLE trailing stop sits for a row: under its high close
+   * since purchase, or today's price when that is higher. Null with no ATR or
+   * no quote. `drop` is how far the price is under that reference, in ATRs,
+   * rounded down, for the past-trail sentences.
+   */
+  function trailFor(row) {
+    if (row.atr == null || !(row.atr > 0) || row.price === null) return null;
+    // `> price`, not `>=`: at a tie, "under the price" is the plainer sentence.
+    const fromHigh = row.highClose != null && row.highClose > row.price;
+    const reference = fromHigh ? row.highClose : row.price;
+    return {
+      fromHigh,
+      reference,
+      suggested: reference - STOP_ATR_MULTIPLE * row.atr,
+      drop: Math.floor(((reference - row.price) / row.atr) * 10) / 10,
+      atr: row.atr,
+      price: row.price,
+    };
+  }
+
+  /** The "no stop" title, with a suggestion when there is anything to base one on. */
+  function noStopTitle(trail) {
+    if (trail === null) return "No stop set on this position.";
+    const { fromHigh, reference, suggested, drop, atr, price } = trail;
+    if (suggested >= price) {
+      return (
+        `No stop set, and the price is already ${drop.toFixed(1)} ATR under its high close of ${reference.toFixed(2)} since purchase: ` +
+        `a ${STOP_ATR_MULTIPLE} ATR trailing stop would have exited near ${suggested.toFixed(2)}.`
+      );
+    }
+    const under = fromHigh ? `the high close of ${reference.toFixed(2)} since purchase` : "the price";
+    return `No stop set. ${STOP_ATR_MULTIPLE} ATR under ${under} (ATR ${atr.toFixed(2)} a day) would put one near ${suggested.toFixed(2)}.`;
   }
   // ---- end of the src/holdings/engine.ts mirror -----------------------------
 

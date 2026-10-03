@@ -214,6 +214,18 @@ describe("web/app.js mirrors the holdings thresholds", () => {
       expect(stopKinds({ ignored: true })).toEqual([]);
     });
 
+    it("suggests a stop on a position that has none, by the same trail", () => {
+      const title = (row: Partial<FlagRow>) =>
+        copy.holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3, stops: [], ignored: false, ...row }, NOW)[0].title;
+      expect(title({})).toBe("No stop set. 2 ATR under the price (ATR 3.00 a day) would put one near 94.00.");
+      expect(title({ highClose: 103 })).toBe("No stop set. 2 ATR under the high close of 103.00 since purchase (ATR 3.00 a day) would put one near 97.00.");
+      expect(title({ highClose: 107 })).toBe(
+        "No stop set, and the price is already 2.3 ATR under its high close of 107.00 since purchase: a 2 ATR trailing stop would have exited near 101.00."
+      );
+      expect(title({ atr: null })).toBe("No stop set on this position.");
+      expect(title({ price: null, pctFromBasis: null })).toBe("No stop set on this position.");
+    });
+
     it("flags a stop outside 1.9-2.1 ATRs, measured from the nearest stop", () => {
       // ATR 3: the band is 5.7 to 6.3 under 100.
       expect(stopKinds({ stops: [94.5] })).toEqual(["stop-tight"]); // 1.83
