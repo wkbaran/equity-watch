@@ -217,6 +217,18 @@ export interface HoldingRow {
   accounts: string[];
   /** Held but excluded from alerting — cash parking, not a conviction position. */
   ignored: boolean;
+  /**
+   * Schwab's 5-year beta, from the beta cache. Null when Schwab has none or it
+   * hasn't been fetched. Not price-derived: it is cached once per symbol, so it
+   * stays out of VOLATILE_KEYS and a quote-less build carries the same value.
+   */
+  beta: number | null;
+  /**
+   * ATR(14) in dollars, over completed daily bars: the stock's typical daily
+   * swing, which the page sets a stop's distance against. Changes once a
+   * trading day, so it is not in VOLATILE_KEYS either.
+   */
+  atr: number | null;
 }
 
 export interface Dashboard {
@@ -296,6 +308,10 @@ export interface DashboardInputs {
   exchanges?: Map<string, string>;
   /** Symbol to company name and sector, from the same profile cache. */
   profiles?: Map<string, CompanyInfo>;
+  /** Symbol to cached beta, for the holdings rows. A missing symbol reads as null. */
+  betas?: Map<string, number | null>;
+  /** Symbol to ATR(14), for the holdings rows. A missing symbol reads as null. */
+  atrs?: Map<string, number | null>;
 }
 
 const RECENT_TRIGGER_CAP = 100;
@@ -504,6 +520,8 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       accounts: [...new Set(holdings.lots.filter((l) => l.symbol === symbol && l.account).map((l) => l.account as string))].sort(),
       ignored: isIgnored(symbol),
       stops: holdings.stops.filter((s) => s.symbol === symbol).map((s) => s.stopPrice),
+      beta: inputs.betas?.get(symbol) ?? null,
+      atr: inputs.atrs?.get(symbol) ?? null,
     });
   }
 
@@ -726,7 +744,8 @@ export function renderDashboard(d: Dashboard): string {
     for (const h of d.holdings) {
       const pct = h.pctFromBasis === null ? "    -" : `${h.pctFromBasis >= 0 ? "+" : ""}${h.pctFromBasis.toFixed(1)}%`;
       const tag = h.ignored ? "  (not alerted)" : "";
-      lines.push(`${pct.padStart(8)}  ${h.symbol.padEnd(6)} ${h.shares} @ ${h.basis} → ${h.price ?? "-"}${tag}`);
+      const beta = (h.beta === null ? "" : `  β ${h.beta.toFixed(2)}`) + (h.atr === null ? "" : `  ATR ${h.atr.toFixed(2)}`);
+      lines.push(`${pct.padStart(8)}  ${h.symbol.padEnd(6)} ${h.shares} @ ${h.basis} → ${h.price ?? "-"}${beta}${tag}`);
     }
   }
 

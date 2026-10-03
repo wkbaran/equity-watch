@@ -19,6 +19,13 @@ import { localDateString } from "../timezone.js";
 export const ABOVE_BASIS_THRESHOLD_PCT = 10;
 export const STAGNANT_MIN_DAYS = 30;
 export const STAGNANT_MAX_PROFIT_PCT = 2;
+/**
+ * How many ATRs under the price a stop should sit to clear the stock's
+ * ordinary daily swing. A stop nearer than this is likely to be hit by noise
+ * rather than by a real break. Mirrored in web/app.js, which flags a tighter
+ * stop on the holdings row.
+ */
+export const STOP_ATR_MULTIPLE = 2;
 const APPRECIATION_BAND_PCT = 3;
 
 export interface HoldingsTriggerEvent {

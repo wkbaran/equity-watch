@@ -57,7 +57,9 @@ import {
 import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
 import { buildDashboard, renderDashboard } from "./dashboard.js";
 import { errorText } from "./errorText.js";
-import { localDateString, pad2 } from "./timezone.js";
+import { localDateString, MARKET_TIME_ZONE, pad2, zonedTimeToUtc } from "./timezone.js";
+import { averageTrueRange } from "./indicators/atr.js";
+import { round } from "./round.js";
 import { isEntryPoint } from "./entrypoint.js";
 import { publishSite } from "./web/publish.js";
 import { buildAlertRows } from "./web/alertsPage.js";
@@ -229,6 +231,73 @@ function buildBetaFetcher(opts: CommonOpts & { noCache?: boolean }): (symbol: st
     writeFileSync(file, JSON.stringify({ beta }));
     return beta;
   };
+}
+
+/**
+ * Betas for the held symbols, for the holdings rows. Read before either build
+ * so the quote-less fingerprint build and the real one carry the same values.
+ * A symbol not yet cached is fetched once (the cache never expires); with no
+ * Schwab configured, or the login expired, it is left out and reads as
+ * unknown rather than failing the publish.
+ */
+async function heldBetas(opts: CommonOpts, symbols: string[]): Promise<Map<string, number | null>> {
+  const betas = new Map<string, number | null>();
+  let fetcher: ((symbol: string) => Promise<number | null>) | null = null;
+  for (const symbol of symbols) {
+    const file = join(BETA_CACHE_DIR, `${symbol.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
+    if (existsSync(file)) {
+      betas.set(symbol, (JSON.parse(readFileSync(file, "utf-8")) as { beta: number | null }).beta);
+      continue;
+    }
+    if (schwabCredentials(opts) === null) {
+      continue;
+    }
+    try {
+      betas.set(symbol, await (fetcher ??= buildBetaFetcher(opts))(symbol));
+    } catch (err) {
+      console.error(`  ! beta fetch failed (${errorText(err)}); holdings betas are incomplete this run.`);
+      break;
+    }
+  }
+  return betas;
+}
+
+/**
+ * ATR(14) for the held symbols, so the holdings page can say when a stop sits
+ * inside a stock's ordinary daily swing. Read before either build, like the
+ * betas, so the fingerprint build and the real one agree.
+ *
+ * The request ends at Eastern midnight today, which keys the bar cache by
+ * trading date: the first run of a day fetches one request per held symbol,
+ * every later run that day reads the cache. Today's forming bar is dropped even
+ * if the response carries one, so the value is fixed for the day and moves the
+ * fingerprint once, not every run.
+ */
+async function heldAtrs(opts: CommonOpts, symbols: string[], now: Date): Promise<Map<string, number | null>> {
+  const atrs = new Map<string, number | null>();
+  if (symbols.length === 0 || schwabCredentials(opts) === null) {
+    return atrs;
+  }
+  const today = marketDate(now);
+  const [y, m, d] = today.split("-").map(Number);
+  const end = zonedTimeToUtc(y, m, d, 0, 0, 0, MARKET_TIME_ZONE);
+  // ~40 trading days: room for Wilder's smoothing to settle past its seed.
+  const start = new Date(end.getTime() - 60 * 86_400_000);
+  const provider = new CachingProvider(schwabProvider(opts), join(".cache", "bars"));
+  for (const symbol of symbols) {
+    try {
+      const bars = (await provider.getDailyBars(symbol, start, end)).filter((b) => marketDate(b.date) < today);
+      const atr = averageTrueRange(bars);
+      atrs.set(symbol, atr === null ? null : round(atr, 4));
+    } catch (err) {
+      console.error(`  ! ${symbol}: daily bars failed (${errorText(err)}); no ATR for it this run.`);
+      // An expired login fails every symbol the same way.
+      if (err instanceof SchwabAuthError) {
+        break;
+      }
+    }
+  }
+  return atrs;
 }
 
 const VOLUME_BASELINE_CACHE_DIR = join(".cache", "volume-baseline");
@@ -1720,6 +1789,9 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   }
 
   const heldSymbols = heldSymbolsOf(holdings);
+  const heldList = [...new Set(holdings.lots.map((l) => l.symbol))];
+  const betas = await heldBetas(opts, heldList);
+  const atrs = await heldAtrs(opts, heldList, new Date());
 
   const build = (quotes: Map<string, Quote>) =>
     buildDashboard({
@@ -1744,6 +1816,8 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
       includeApproaching: opts.approaching || siteDir !== undefined,
       exchanges,
       profiles: companyInfoFromProfiles(cachedProfiles),
+      betas,
+      atrs,
     });
 
   // The fingerprint ignores price-derived fields, so it can be taken from a

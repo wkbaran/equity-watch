@@ -124,6 +124,25 @@ third is an event — it depends on which bands have already been reported, whic
 recorded in `holdings.json` and never leaves the machine — so only this command can
 tell you about it.
 
+Each row also shows two volatility figures and flags its stop:
+
+- **Beta** is Schwab's 5-year figure, from the same `.cache/beta/` the analysis uses
+  (`dashboard` fetches it once for a newly held symbol). It is information only. Beta
+  measures how much of a stock's movement tracks the market, not how much it moves,
+  so it says little about where a stop belongs. A negative beta moves against the
+  market; it doesn't move less.
+- **ATR** is the 14-day average true range: the stock's typical daily swing,
+  including overnight gaps, shown as a percent of the price (hover for dollars).
+  It uses Wilder's smoothing, like charting tools do, over completed daily bars
+  only. The first `dashboard` run of each trading day fetches one daily-bar
+  request per held symbol; later runs that day read `.cache/bars/`.
+- **`no stop`**: the position has none. Not shown for an ignored (cash-parking)
+  position.
+- **`stop tight`**: the nearest stop is less than **2 ATR** under the price
+  (`STOP_ATR_MULTIPLE`), i.e. inside the stock's ordinary noise. Its title says
+  how many ATRs of room the stop has and where 2 ATR would put it. With no ATR
+  or no quote, tightness isn't judged.
+
 ## In the browser
 
 With editing unlocked, `#/holdings` shows the same positions, lots and stops, and

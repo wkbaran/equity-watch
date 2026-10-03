@@ -122,6 +122,27 @@ test("sorting by account puts the unlabeled position last either way", async ({ 
   await expect(symbols).toHaveText(["AA", "TSLA"]);
 });
 
+test("each row shows its beta and ATR, and flags a stop that is missing or inside two ATRs", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  // Signed: a negative beta moves against the market, it doesn't move less.
+  await expect(positionRow(page, "AA").locator("td").nth(5)).toHaveText("-0.40");
+  await expect(positionRow(page, "TSLA").locator("td").nth(5)).toHaveText("2.10");
+  // As a percent of the price: 5 / 46.34 and 9.68 / 242.
+  await expect(positionRow(page, "AA").locator("td").nth(6)).toHaveText("10.8%");
+  await expect(positionRow(page, "TSLA").locator("td").nth(6)).toHaveText("4.0%");
+
+  const tight = positionRow(page, "AA").locator(".tag.stop-tight");
+  await expect(tight).toHaveText("stop tight");
+  await expect(tight).toHaveAttribute("title", "Stop 38.00 is 1.7 ATR under the price (ATR 5.00 a day); 2 ATR would put it near 36.34.");
+  await expect(positionRow(page, "AA").locator(".tag.no-stop")).toHaveCount(0);
+  await expect(positionRow(page, "TSLA").locator(".tag.no-stop")).toHaveText("no stop");
+
+  // Sorted by percent, not dollars: TSLA's ATR is bigger in dollars but smaller relative to its price.
+  await page.locator("#holdings-head th", { hasText: "ATR" }).click();
+  await expect(page.locator("#holdings > tbody > tr a.sym")).toHaveText(["AA", "TSLA"]);
+});
+
 test("adds a lot", async ({ page }) => {
   await storeToken(page);
   await openHoldings(page);

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ABOVE_BASIS_THRESHOLD_PCT, checkHoldings, STAGNANT_MAX_PROFIT_PCT, STAGNANT_MIN_DAYS } from "../src/holdings/engine.js";
+import { ABOVE_BASIS_THRESHOLD_PCT, checkHoldings, STAGNANT_MAX_PROFIT_PCT, STAGNANT_MIN_DAYS, STOP_ATR_MULTIPLE } from "../src/holdings/engine.js";
 import { computeBasis, emptyHoldingsStore, type HoldingsStore, type Lot } from "../src/holdings/models.js";
 import type { Quote } from "../src/providers/schwab.js";
 
@@ -137,6 +137,15 @@ describe("checkHoldings", () => {
  * That means a second copy of the thresholds, so diff them. Same trick as the
  * volume mirror and the vault key prefix.
  */
+interface FlagRow {
+  pctFromBasis: number | null;
+  lastPurchaseDate: string;
+  price: number | null;
+  atr?: number | null;
+  stops: number[];
+  ignored: boolean;
+}
+
 describe("web/app.js mirrors the holdings thresholds", () => {
   const appJs = readFileSync(new URL("../web/app.js", import.meta.url), "utf-8");
   const start = appJs.indexOf("  const ABOVE_BASIS_THRESHOLD_PCT =");
@@ -149,23 +158,26 @@ describe("web/app.js mirrors the holdings thresholds", () => {
   });
 
   const copy = new Function(
-    `${appJs.slice(start, end)}\nreturn { holdingFlags, ABOVE_BASIS_THRESHOLD_PCT, STAGNANT_MIN_DAYS, STAGNANT_MAX_PROFIT_PCT };`
+    `${appJs.slice(start, end)}\nreturn { holdingFlags, ABOVE_BASIS_THRESHOLD_PCT, STAGNANT_MIN_DAYS, STAGNANT_MAX_PROFIT_PCT, STOP_ATR_MULTIPLE };`
   )() as {
-    holdingFlags: (row: { pctFromBasis: number | null; lastPurchaseDate: string }, now?: number) => { kind: string }[];
+    holdingFlags: (row: FlagRow, now?: number) => { kind: string; title: string }[];
     ABOVE_BASIS_THRESHOLD_PCT: number;
     STAGNANT_MIN_DAYS: number;
     STAGNANT_MAX_PROFIT_PCT: number;
+    STOP_ATR_MULTIPLE: number;
   };
 
   it("uses the engine's numbers, not its own", () => {
     expect(copy.ABOVE_BASIS_THRESHOLD_PCT).toBe(ABOVE_BASIS_THRESHOLD_PCT);
     expect(copy.STAGNANT_MIN_DAYS).toBe(STAGNANT_MIN_DAYS);
     expect(copy.STAGNANT_MAX_PROFIT_PCT).toBe(STAGNANT_MAX_PROFIT_PCT);
+    expect(copy.STOP_ATR_MULTIPLE).toBe(STOP_ATR_MULTIPLE);
   });
 
   const NOW = new Date("2026-09-21T12:00:00.000Z").getTime();
+  // A stop far enough away that it never adds a flag of its own.
   const kinds = (pctFromBasis: number | null, lastPurchaseDate: string) =>
-    copy.holdingFlags({ pctFromBasis, lastPurchaseDate }, NOW).map((f) => f.kind);
+    copy.holdingFlags({ pctFromBasis, lastPurchaseDate, price: 100, atr: 1, stops: [50], ignored: false }, NOW).map((f) => f.kind);
 
   it("flags a position at or past the threshold, and not one just under it", () => {
     expect(kinds(10, "2026-09-20")).toEqual(["above-basis"]);
@@ -186,5 +198,38 @@ describe("web/app.js mirrors the holdings thresholds", () => {
   // sitting in a loser for two months is exactly what it is meant to surface.
   it("counts a long-held loss as stagnant", () => {
     expect(kinds(-12, "2026-06-01")).toEqual(["stagnant"]);
+  });
+
+  describe("stop flags", () => {
+    const stopKinds = (row: Partial<FlagRow>) =>
+      copy
+        .holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3, stops: [], ignored: false, ...row }, NOW)
+        .map((f) => f.kind);
+
+    it("flags a position with no stop, unless it is ignored", () => {
+      expect(stopKinds({})).toEqual(["no-stop"]);
+      expect(stopKinds({ ignored: true })).toEqual([]);
+    });
+
+    it("flags a stop inside two ATRs, measured from the nearest stop", () => {
+      // ATR 3: two ATRs is 6 under 100.
+      expect(stopKinds({ stops: [95] })).toEqual(["stop-tight"]);
+      expect(stopKinds({ stops: [94] })).toEqual([]);
+      expect(stopKinds({ stops: [80, 95] })).toEqual(["stop-tight"]);
+    });
+
+    it("says the price is under a stop above it", () => {
+      const [flag] = copy.holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3, stops: [105], ignored: false }, NOW);
+      expect(flag.kind).toBe("stop-tight");
+      expect(flag.title).toMatch(/under the stop/);
+    });
+
+    it("can't judge tightness without an ATR or a quote", () => {
+      expect(stopKinds({ atr: null, stops: [99] })).toEqual([]);
+      expect(stopKinds({ atr: undefined, stops: [99] })).toEqual([]);
+      expect(stopKinds({ atr: 0, stops: [99] })).toEqual([]);
+      expect(stopKinds({ price: null, pctFromBasis: null, stops: [99] })).toEqual([]);
+      expect(stopKinds({ price: null, pctFromBasis: null })).toEqual(["no-stop"]);
+    });
   });
 });

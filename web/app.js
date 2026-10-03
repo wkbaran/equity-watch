@@ -2406,6 +2406,8 @@
     { key: "shares", label: "Shares" },
     { key: "basis", label: "Basis" },
     { key: "price", label: "Price" },
+    { key: "beta", label: "Beta" },
+    { key: "atrPct", label: "ATR" },
     { key: "pctFromBasis", label: "vs basis" },
     { key: "bar", label: "", sortable: false },
     { key: "marketValue", label: "Value" },
@@ -2424,7 +2426,11 @@
   }
 
   /** Sorting by Account uses what the cell reads; no labels sort last, as nulls do. */
-  const holdingSortValue = (r, key) => (key === "accounts" ? accountsOf(r).join(", ") || null : r[key]);
+  /** ATR as a percent of the price, so a $5 stock and a $500 one compare. */
+  const atrPct = (r) => (r.atr == null || !r.price ? null : (r.atr / r.price) * 100);
+  // `?? null`: documents published before HoldingRow carried beta or atr have no such key.
+  const holdingSortValue = (r, key) =>
+    key === "accounts" ? accountsOf(r).join(", ") || null : key === "atrPct" ? atrPct(r) : r[key] ?? null;
 
   /**
    * The choices come from the rows themselves, so a renamed or emptied account
@@ -2527,6 +2533,11 @@
         h("td", { text: r.shares }),
         h("td", { text: money(r.basis) }),
         h("td", { text: money(r.price) }),
+        h("td", { text: r.beta == null ? "—" : r.beta.toFixed(2) }),
+        h("td", {
+          text: atrPct(r) === null ? "—" : `${atrPct(r).toFixed(1)}%`,
+          title: r.atr == null ? null : `Average true range (14 days): ${money(r.atr)} a day.`,
+        }),
         h("td", { text: pct(p) }),
         h("td", { class: "bar-cell" }, h("div", { class: "bar" }, p ? h("span", { class: p > 0 ? "up" : "down", style: `width:${width}%` }) : null)),
         h("td", { text: money(r.marketValue) })
@@ -2575,6 +2586,7 @@
   const ABOVE_BASIS_THRESHOLD_PCT = 10;
   const STAGNANT_MIN_DAYS = 30;
   const STAGNANT_MAX_PROFIT_PCT = 2;
+  const STOP_ATR_MULTIPLE = 2;
 
   /**
    * What `holdings check` would say about this position, as state rather than
@@ -2587,7 +2599,7 @@
    * has already been reported. These two are pure functions of the row.
    */
   function holdingFlags(row, now = Date.now()) {
-    const flags = [];
+    const flags = [...stopFlags(row)];
     if (row.pctFromBasis === null) return flags;
     if (row.pctFromBasis >= ABOVE_BASIS_THRESHOLD_PCT) {
       flags.push({ kind: "above-basis", label: `+${ABOVE_BASIS_THRESHOLD_PCT}% over basis`, title: `Up ${row.pctFromBasis.toFixed(1)}% on cost.` });
@@ -2601,6 +2613,34 @@
       });
     }
     return flags;
+  }
+
+  /**
+   * A position with no stop, or whose nearest stop sits inside the stock's
+   * ordinary daily swing: fewer than STOP_ATR_MULTIPLE average true ranges
+   * under the price. An ignored position is cash parking and needs no stop.
+   * With no ATR or no quote there is nothing to measure the stop against, so
+   * only "no stop" can be said.
+   */
+  function stopFlags(row) {
+    if (row.ignored) return [];
+    if (row.stops.length === 0) return [{ kind: "no-stop", label: "no stop", title: "No stop set on this position." }];
+    if (row.atr == null || !(row.atr > 0) || row.price === null) return [];
+    const stop = Math.max(...row.stops);
+    const atrs = (row.price - stop) / row.atr;
+    if (atrs >= STOP_ATR_MULTIPLE) return [];
+    const suggested = row.price - STOP_ATR_MULTIPLE * row.atr;
+    return [
+      {
+        kind: "stop-tight",
+        label: "stop tight",
+        title:
+          atrs <= 0
+            ? `Price is at or under the stop at ${stop.toFixed(2)}.`
+            : `Stop ${stop.toFixed(2)} is ${atrs.toFixed(1)} ATR under the price (ATR ${row.atr.toFixed(2)} a day); ` +
+              `${STOP_ATR_MULTIPLE} ATR would put it near ${suggested.toFixed(2)}.`,
+      },
+    ];
   }
   // ---- end of the src/holdings/engine.ts mirror -----------------------------
 
