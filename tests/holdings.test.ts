@@ -245,6 +245,20 @@ describe("web/app.js mirrors the holdings thresholds", () => {
       expect(flag.title).toBe("Stop 99.00 is 1.3 ATR under the high close of 103.00 since purchase (ATR 3.00 a day); 2 ATR would put it near 97.00.");
     });
 
+    it("says past trail, not loose, once the price is 2 ATR under its high", () => {
+      // High 107, ATR 3: the trail sits at 101, above the price of 100.
+      expect(stopKinds({ stops: [90], highClose: 107 })).toEqual(["past-trail"]);
+      // Exactly on the trail counts too: a stop there would fill at once.
+      expect(stopKinds({ stops: [90], highClose: 106 })).toEqual(["past-trail"]);
+      expect(stopKinds({ stops: [90], highClose: 105.9 })).toEqual(["stop-loose"]);
+      const [flag] = copy.holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3, highClose: 107, stops: [90], ignored: false }, NOW);
+      expect(flag.title).toBe(
+        "Price is 2.3 ATR under its high close of 107.00 since purchase; a 2 ATR trailing stop would have exited near 101.00. Your stop is at 90.00."
+      );
+      // A price under the stop itself is still "stop tight": that stop should already have filled.
+      expect(stopKinds({ stops: [100.5], highClose: 107 })).toEqual(["stop-tight"]);
+    });
+
     it("measures from today's price when it is above every close since purchase", () => {
       expect(stopKinds({ stops: [94], highClose: 98 })).toEqual([]);
       expect(stopKinds({ stops: [94], highClose: null })).toEqual([]);

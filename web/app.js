@@ -2627,7 +2627,9 @@
    * Measured from the highest close since purchase, or today's price when it
    * is higher: where a trailing stop is set from. Measuring from the price
    * alone would call a stop tight after an ordinary pullback, and suggest
-   * lowering it, which a trailing stop never does.
+   * lowering it, which a trailing stop never does. A price already more than
+   * STOP_ATR_MULTIPLE ATRs under that high is "past trail": the trail would
+   * have exited, and the stop it implies is above the market.
    */
   function stopFlags(row) {
     if (row.ignored) return [];
@@ -2638,13 +2640,29 @@
     // `> price`, not `>=`: at a tie, "under the price" is the plainer sentence.
     const fromHigh = row.highClose != null && row.highClose > row.price;
     const reference = fromHigh ? row.highClose : row.price;
+    const suggested = reference - STOP_ATR_MULTIPLE * row.atr;
+    // The price has fallen further from its high than the trail allows, so the
+    // stop it suggests sits at or above the market, where no sell stop can go.
+    // That is a decision about staying in, not a stop to move, so it is its
+    // own pill rather than "stop loose" pointing at a price nobody can set.
+    if (suggested >= row.price) {
+      const drop = Math.floor(((reference - row.price) / row.atr) * 10) / 10;
+      return [
+        {
+          kind: "past-trail",
+          label: "past trail",
+          title:
+            `Price is ${drop.toFixed(1)} ATR under its high close of ${reference.toFixed(2)} since purchase; ` +
+            `a ${STOP_ATR_MULTIPLE} ATR trailing stop would have exited near ${suggested.toFixed(2)}. Your stop is at ${stop.toFixed(2)}.`,
+        },
+      ];
+    }
     const atrs = (reference - stop) / row.atr;
     const tight = atrs < STOP_ATR_MULTIPLE - STOP_ATR_BAND;
     if (!tight && atrs <= STOP_ATR_MULTIPLE + STOP_ATR_BAND) return [];
     // Rounded away from the target, so a flagged 1.86 never reads "1.9" and a
     // flagged 2.14 never reads "2.1", the band's own edges.
     const shown = (tight ? Math.floor(atrs * 10) : Math.ceil(atrs * 10)) / 10;
-    const suggested = reference - STOP_ATR_MULTIPLE * row.atr;
     const under = fromHigh ? `the high close of ${reference.toFixed(2)} since purchase` : "the price";
     return [
       {

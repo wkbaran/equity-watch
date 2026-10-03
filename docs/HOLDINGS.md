@@ -150,6 +150,10 @@ Each row also shows two volatility figures and flags its stop:
   title says which reference it used, how many ATRs of room the stop has, and
   where 2 ATR would put it. With no ATR or no quote, neither pill is judged; a
   price at or under the stop is always `stop tight`.
+- **`past trail`**: the price is already 2 ATR or more under its high close since
+  purchase, so a 2 ATR trailing stop would have exited and the stop it implies sits
+  at or above the market, where no sell stop can go. Shown instead of `stop
+  loose`, because the question is whether to stay in, not where to move the stop.
 
 ## In the browser
 
