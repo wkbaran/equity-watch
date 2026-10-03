@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ABOVE_BASIS_THRESHOLD_PCT, checkHoldings, STAGNANT_MAX_PROFIT_PCT, STAGNANT_MIN_DAYS, STOP_ATR_MULTIPLE } from "../src/holdings/engine.js";
+import { ABOVE_BASIS_THRESHOLD_PCT, checkHoldings, STAGNANT_MAX_PROFIT_PCT, STAGNANT_MIN_DAYS, STOP_ATR_BAND, STOP_ATR_MULTIPLE } from "../src/holdings/engine.js";
 import { computeBasis, emptyHoldingsStore, type HoldingsStore, type Lot } from "../src/holdings/models.js";
 import type { Quote } from "../src/providers/schwab.js";
 
@@ -158,13 +158,14 @@ describe("web/app.js mirrors the holdings thresholds", () => {
   });
 
   const copy = new Function(
-    `${appJs.slice(start, end)}\nreturn { holdingFlags, ABOVE_BASIS_THRESHOLD_PCT, STAGNANT_MIN_DAYS, STAGNANT_MAX_PROFIT_PCT, STOP_ATR_MULTIPLE };`
+    `${appJs.slice(start, end)}\nreturn { holdingFlags, ABOVE_BASIS_THRESHOLD_PCT, STAGNANT_MIN_DAYS, STAGNANT_MAX_PROFIT_PCT, STOP_ATR_MULTIPLE, STOP_ATR_BAND };`
   )() as {
     holdingFlags: (row: FlagRow, now?: number) => { kind: string; title: string }[];
     ABOVE_BASIS_THRESHOLD_PCT: number;
     STAGNANT_MIN_DAYS: number;
     STAGNANT_MAX_PROFIT_PCT: number;
     STOP_ATR_MULTIPLE: number;
+    STOP_ATR_BAND: number;
   };
 
   it("uses the engine's numbers, not its own", () => {
@@ -172,12 +173,13 @@ describe("web/app.js mirrors the holdings thresholds", () => {
     expect(copy.STAGNANT_MIN_DAYS).toBe(STAGNANT_MIN_DAYS);
     expect(copy.STAGNANT_MAX_PROFIT_PCT).toBe(STAGNANT_MAX_PROFIT_PCT);
     expect(copy.STOP_ATR_MULTIPLE).toBe(STOP_ATR_MULTIPLE);
+    expect(copy.STOP_ATR_BAND).toBe(STOP_ATR_BAND);
   });
 
   const NOW = new Date("2026-09-21T12:00:00.000Z").getTime();
-  // A stop far enough away that it never adds a flag of its own.
+  // A stop right on the 2 ATR target, so it never adds a flag of its own.
   const kinds = (pctFromBasis: number | null, lastPurchaseDate: string) =>
-    copy.holdingFlags({ pctFromBasis, lastPurchaseDate, price: 100, atr: 1, stops: [50], ignored: false }, NOW).map((f) => f.kind);
+    copy.holdingFlags({ pctFromBasis, lastPurchaseDate, price: 100, atr: 1, stops: [98], ignored: false }, NOW).map((f) => f.kind);
 
   it("flags a position at or past the threshold, and not one just under it", () => {
     expect(kinds(10, "2026-09-20")).toEqual(["above-basis"]);
@@ -211,18 +213,24 @@ describe("web/app.js mirrors the holdings thresholds", () => {
       expect(stopKinds({ ignored: true })).toEqual([]);
     });
 
-    it("flags a stop inside two ATRs, measured from the nearest stop", () => {
-      // ATR 3: two ATRs is 6 under 100.
-      expect(stopKinds({ stops: [95] })).toEqual(["stop-tight"]);
-      expect(stopKinds({ stops: [94] })).toEqual([]);
-      expect(stopKinds({ stops: [80, 95] })).toEqual(["stop-tight"]);
+    it("flags a stop outside 1.9-2.1 ATRs, measured from the nearest stop", () => {
+      // ATR 3: the band is 5.7 to 6.3 under 100.
+      expect(stopKinds({ stops: [94.5] })).toEqual(["stop-tight"]); // 1.83
+      expect(stopKinds({ stops: [94.2] })).toEqual([]); // 1.93
+      expect(stopKinds({ stops: [94] })).toEqual([]); // 2.00
+      expect(stopKinds({ stops: [93.8] })).toEqual([]); // 2.07
+      expect(stopKinds({ stops: [93.5] })).toEqual(["stop-loose"]); // 2.17
+      expect(stopKinds({ stops: [80] })).toEqual(["stop-loose"]);
+      // The nearest stop is the one that fires first.
+      expect(stopKinds({ stops: [80, 94.5] })).toEqual(["stop-tight"]);
+      expect(stopKinds({ stops: [80, 94] })).toEqual([]);
     });
 
-    it("never rounds a stop just inside the multiple up to it", () => {
-      // 5.97 / 3 = 1.99 ATR: tight, and it must not say "2.0".
-      const [flag] = copy.holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3, stops: [94.03], ignored: false }, NOW);
-      expect(flag.kind).toBe("stop-tight");
-      expect(flag.title).toMatch(/is 1\.9 ATR under/);
+    it("never rounds a flagged stop onto the band's edge", () => {
+      const title = (stop: number) =>
+        copy.holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3, stops: [stop], ignored: false }, NOW)[0].title;
+      expect(title(94.42)).toMatch(/is 1\.8 ATR under/); // 1.86
+      expect(title(93.58)).toMatch(/is 2\.2 ATR under/); // 2.14
     });
 
     it("says the price is under a stop above it", () => {

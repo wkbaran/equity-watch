@@ -21,11 +21,14 @@ export const STAGNANT_MIN_DAYS = 30;
 export const STAGNANT_MAX_PROFIT_PCT = 2;
 /**
  * How many ATRs under the price a stop should sit to clear the stock's
- * ordinary daily swing. A stop nearer than this is likely to be hit by noise
- * rather than by a real break. Mirrored in web/app.js, which flags a tighter
- * stop on the holdings row.
+ * ordinary daily swing without giving back more than it needs to, and how
+ * far either side of that counts as on target. Under the band a stop is
+ * likely to be hit by noise ("stop tight"); over it, a reversal costs more
+ * than it has to ("stop loose"). Mirrored in web/app.js, which flags both on
+ * the holdings row.
  */
 export const STOP_ATR_MULTIPLE = 2;
+export const STOP_ATR_BAND = 0.1;
 const APPRECIATION_BAND_PCT = 3;
 
 export interface HoldingsTriggerEvent {

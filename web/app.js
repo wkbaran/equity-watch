@@ -2588,6 +2588,7 @@
   const STAGNANT_MIN_DAYS = 30;
   const STAGNANT_MAX_PROFIT_PCT = 2;
   const STOP_ATR_MULTIPLE = 2;
+  const STOP_ATR_BAND = 0.1;
 
   /**
    * What `holdings check` would say about this position, as state rather than
@@ -2617,9 +2618,9 @@
   }
 
   /**
-   * A position with no stop, or whose nearest stop sits inside the stock's
-   * ordinary daily swing: fewer than STOP_ATR_MULTIPLE average true ranges
-   * under the price. An ignored position is cash parking and needs no stop.
+   * A position with no stop, or whose nearest stop is off the STOP_ATR_MULTIPLE
+   * target by more than STOP_ATR_BAND average true ranges: tight inside it,
+   * loose beyond it. An ignored position is cash parking and needs no stop.
    * With no ATR or no quote there is nothing to measure the stop against, so
    * only "no stop" can be said.
    */
@@ -2629,18 +2630,20 @@
     if (row.atr == null || !(row.atr > 0) || row.price === null) return [];
     const stop = Math.max(...row.stops);
     const atrs = (row.price - stop) / row.atr;
-    if (atrs >= STOP_ATR_MULTIPLE) return [];
+    const tight = atrs < STOP_ATR_MULTIPLE - STOP_ATR_BAND;
+    if (!tight && atrs <= STOP_ATR_MULTIPLE + STOP_ATR_BAND) return [];
+    if (atrs <= 0) return [{ kind: "stop-tight", label: "stop tight", title: `Price is at or under the stop at ${stop.toFixed(2)}.` }];
+    // Rounded away from the target, so a flagged 1.86 never reads "1.9" and a
+    // flagged 2.14 never reads "2.1", the band's own edges.
+    const shown = (tight ? Math.floor(atrs * 10) : Math.ceil(atrs * 10)) / 10;
     const suggested = row.price - STOP_ATR_MULTIPLE * row.atr;
     return [
       {
-        kind: "stop-tight",
-        label: "stop tight",
+        kind: tight ? "stop-tight" : "stop-loose",
+        label: tight ? "stop tight" : "stop loose",
         title:
-          atrs <= 0
-            ? `Price is at or under the stop at ${stop.toFixed(2)}.`
-            : // Rounded down: 1.996 ATR is under 2, and must not read "2.0".
-              `Stop ${stop.toFixed(2)} is ${(Math.floor(atrs * 10) / 10).toFixed(1)} ATR under the price (ATR ${row.atr.toFixed(2)} a day); ` +
-              `${STOP_ATR_MULTIPLE} ATR would put it near ${suggested.toFixed(2)}.`,
+          `Stop ${stop.toFixed(2)} is ${shown.toFixed(1)} ATR under the price (ATR ${row.atr.toFixed(2)} a day); ` +
+          `${STOP_ATR_MULTIPLE} ATR would put it near ${suggested.toFixed(2)}.`,
       },
     ];
   }

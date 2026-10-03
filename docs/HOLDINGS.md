@@ -138,10 +138,12 @@ Each row also shows two volatility figures and flags its stop:
   request per held symbol; later runs that day read `.cache/bars/`.
 - **`no stop`**: the position has none. Not shown for an ignored (cash-parking)
   position.
-- **`stop tight`**: the nearest stop is less than **2 ATR** under the price
-  (`STOP_ATR_MULTIPLE`), i.e. inside the stock's ordinary noise. Its title says
-  how many ATRs of room the stop has and where 2 ATR would put it. With no ATR
-  or no quote, tightness isn't judged.
+- **`stop tight`** / **`stop loose`**: the nearest stop is off the **2 ATR** target
+  (`STOP_ATR_MULTIPLE`) by more than **0.1 ATR** (`STOP_ATR_BAND`). Under 1.9 ATR it
+  sits inside the stock's ordinary noise; over 2.1 ATR a reversal gives back more
+  than it needs to. Between the two, no pill. The title says how many ATRs of room
+  the stop has and where 2 ATR would put it. With no ATR or no quote, neither is
+  judged.
 
 ## In the browser
 
