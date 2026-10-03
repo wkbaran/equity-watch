@@ -142,6 +142,7 @@ interface FlagRow {
   lastPurchaseDate: string;
   price: number | null;
   atr?: number | null;
+  highClose?: number | null;
   stops: number[];
   ignored: boolean;
 }
@@ -231,6 +232,24 @@ describe("web/app.js mirrors the holdings thresholds", () => {
         copy.holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3, stops: [stop], ignored: false }, NOW)[0].title;
       expect(title(94.42)).toMatch(/is 1\.8 ATR under/); // 1.86
       expect(title(93.58)).toMatch(/is 2\.2 ATR under/); // 2.14
+    });
+
+    it("measures from the high close since purchase, so a pullback doesn't make a stop tight", () => {
+      // Price 100, ATR 3, stop 94: 2.0 ATR under the price. After closing at
+      // 103 it is 3.0 under the high, so loose rather than on target...
+      expect(stopKinds({ stops: [94], highClose: 103 })).toEqual(["stop-loose"]);
+      // ...and a stop set 2 ATR under that high is on target, though only
+      // 1.0 ATR under today's price.
+      expect(stopKinds({ stops: [97], highClose: 103 })).toEqual([]);
+      const [flag] = copy.holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3, highClose: 103, stops: [99], ignored: false }, NOW);
+      expect(flag.title).toBe("Stop 99.00 is 1.3 ATR under the high close of 103.00 since purchase (ATR 3.00 a day); 2 ATR would put it near 97.00.");
+    });
+
+    it("measures from today's price when it is above every close since purchase", () => {
+      expect(stopKinds({ stops: [94], highClose: 98 })).toEqual([]);
+      expect(stopKinds({ stops: [94], highClose: null })).toEqual([]);
+      const [flag] = copy.holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3, highClose: 98, stops: [99], ignored: false }, NOW);
+      expect(flag.title).toMatch(/ATR under the price \(/);
     });
 
     it("says the price is under a stop above it", () => {

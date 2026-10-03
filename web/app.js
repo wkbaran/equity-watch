@@ -2623,26 +2623,35 @@
    * loose beyond it. An ignored position is cash parking and needs no stop.
    * With no ATR or no quote there is nothing to measure the stop against, so
    * only "no stop" can be said.
+   *
+   * Measured from the highest close since purchase, or today's price when it
+   * is higher: where a trailing stop is set from. Measuring from the price
+   * alone would call a stop tight after an ordinary pullback, and suggest
+   * lowering it, which a trailing stop never does.
    */
   function stopFlags(row) {
     if (row.ignored) return [];
     if (row.stops.length === 0) return [{ kind: "no-stop", label: "no stop", title: "No stop set on this position." }];
     if (row.atr == null || !(row.atr > 0) || row.price === null) return [];
     const stop = Math.max(...row.stops);
-    const atrs = (row.price - stop) / row.atr;
+    if (stop >= row.price) return [{ kind: "stop-tight", label: "stop tight", title: `Price is at or under the stop at ${stop.toFixed(2)}.` }];
+    // `> price`, not `>=`: at a tie, "under the price" is the plainer sentence.
+    const fromHigh = row.highClose != null && row.highClose > row.price;
+    const reference = fromHigh ? row.highClose : row.price;
+    const atrs = (reference - stop) / row.atr;
     const tight = atrs < STOP_ATR_MULTIPLE - STOP_ATR_BAND;
     if (!tight && atrs <= STOP_ATR_MULTIPLE + STOP_ATR_BAND) return [];
-    if (atrs <= 0) return [{ kind: "stop-tight", label: "stop tight", title: `Price is at or under the stop at ${stop.toFixed(2)}.` }];
     // Rounded away from the target, so a flagged 1.86 never reads "1.9" and a
     // flagged 2.14 never reads "2.1", the band's own edges.
     const shown = (tight ? Math.floor(atrs * 10) : Math.ceil(atrs * 10)) / 10;
-    const suggested = row.price - STOP_ATR_MULTIPLE * row.atr;
+    const suggested = reference - STOP_ATR_MULTIPLE * row.atr;
+    const under = fromHigh ? `the high close of ${reference.toFixed(2)} since purchase` : "the price";
     return [
       {
         kind: tight ? "stop-tight" : "stop-loose",
         label: tight ? "stop tight" : "stop loose",
         title:
-          `Stop ${stop.toFixed(2)} is ${shown.toFixed(1)} ATR under the price (ATR ${row.atr.toFixed(2)} a day); ` +
+          `Stop ${stop.toFixed(2)} is ${shown.toFixed(1)} ATR under ${under} (ATR ${row.atr.toFixed(2)} a day); ` +
           `${STOP_ATR_MULTIPLE} ATR would put it near ${suggested.toFixed(2)}.`,
       },
     ];

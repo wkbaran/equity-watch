@@ -86,8 +86,11 @@ function documents() {
     // exercised with an exchange prefix as well as without.
     exchanges: new Map([["MSFT", "NASDAQ Global Select"]]),
     betas: new Map([["AA", -0.4], ["TSLA", 2.1]]),
-    // AA's stop at 38 is 8.34 under 46.34, 1.67 ATRs of 5; TSLA has no stop.
-    atrs: new Map([["AA", 5], ["TSLA", 9.68]]),
+    // AA's stop at 38 is 9 under its 47 high close, 1.8 ATRs of 5; TSLA has no stop.
+    daily: new Map([
+      ["AA", { atr: 5, highClose: 47 }],
+      ["TSLA", { atr: 9.68, highClose: 255 }],
+    ]),
   });
   const heldSymbols = new Set(HOLDINGS.lots.map((l) => l.symbol.toUpperCase()));
   return {

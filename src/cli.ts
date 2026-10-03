@@ -55,7 +55,7 @@ import {
   type HoldingsImportPlan,
 } from "./holdings/import.js";
 import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
-import { buildDashboard, renderDashboard } from "./dashboard.js";
+import { buildDashboard, renderDashboard, type HoldingDailyStats } from "./dashboard.js";
 import { errorText } from "./errorText.js";
 import { localDateString, MARKET_TIME_ZONE, pad2, zonedTimeToUtc } from "./timezone.js";
 import { averageTrueRange } from "./indicators/atr.js";
@@ -263,32 +263,44 @@ async function heldBetas(opts: CommonOpts, symbols: string[]): Promise<Map<strin
 }
 
 /**
- * ATR(14) for the held symbols, so the holdings page can say when a stop sits
- * inside a stock's ordinary daily swing. Read before either build, like the
- * betas, so the fingerprint build and the real one agree.
+ * ATR(14) and the highest close since purchase for the held symbols, so the
+ * holdings page can judge a stop the way a trailing stop is set: so many ATRs
+ * under the high it has reached, never under a pullback. Read before either
+ * build, like the betas, so the fingerprint build and the real one agree.
  *
  * The request ends at Eastern midnight today, which keys the bar cache by
  * trading date: the first run of a day fetches one request per held symbol,
  * every later run that day reads the cache. Today's forming bar is dropped even
- * if the response carries one, so the value is fixed for the day and moves the
- * fingerprint once, not every run.
+ * if the response carries one, so both values are fixed for the day and move
+ * the fingerprint once, not every run. Today's own move is the page's to add,
+ * from the live price.
+ *
+ * `firstPurchase` is each symbol's earliest lot date: the high is taken from
+ * then, and the fetch reaches back at least 60 days whatever it says, so
+ * Wilder's smoothing has room to settle on a position bought last week.
  */
-async function heldAtrs(opts: CommonOpts, symbols: string[], now: Date): Promise<Map<string, number | null>> {
-  const atrs = new Map<string, number | null>();
-  if (symbols.length === 0 || schwabCredentials(opts) === null) {
-    return atrs;
+async function heldDailyStats(opts: CommonOpts, firstPurchase: Map<string, string>, now: Date): Promise<Map<string, HoldingDailyStats>> {
+  const stats = new Map<string, HoldingDailyStats>();
+  if (firstPurchase.size === 0 || schwabCredentials(opts) === null) {
+    return stats;
   }
+  const midnight = (date: string) => {
+    const [y, m, d] = date.split("-").map(Number);
+    return zonedTimeToUtc(y, m, d, 0, 0, 0, MARKET_TIME_ZONE);
+  };
   const today = marketDate(now);
-  const [y, m, d] = today.split("-").map(Number);
-  const end = zonedTimeToUtc(y, m, d, 0, 0, 0, MARKET_TIME_ZONE);
-  // ~40 trading days: room for Wilder's smoothing to settle past its seed.
-  const start = new Date(end.getTime() - 60 * 86_400_000);
+  const end = midnight(today);
   const provider = new CachingProvider(schwabProvider(opts), join(".cache", "bars"));
-  for (const symbol of symbols) {
+  for (const [symbol, purchased] of firstPurchase) {
+    const start = new Date(Math.min(midnight(purchased).getTime(), end.getTime() - 60 * 86_400_000));
     try {
       const bars = (await provider.getDailyBars(symbol, start, end)).filter((b) => marketDate(b.date) < today);
       const atr = averageTrueRange(bars);
-      atrs.set(symbol, atr === null ? null : round(atr, 4));
+      const held = bars.filter((b) => marketDate(b.date) >= purchased);
+      stats.set(symbol, {
+        atr: atr === null ? null : round(atr, 4),
+        highClose: held.length === 0 ? null : Math.max(...held.map((b) => b.close)),
+      });
     } catch (err) {
       console.error(`  ! ${symbol}: daily bars failed (${errorText(err)}); no ATR for it this run.`);
       // An expired login fails every symbol the same way.
@@ -297,7 +309,7 @@ async function heldAtrs(opts: CommonOpts, symbols: string[], now: Date): Promise
       }
     }
   }
-  return atrs;
+  return stats;
 }
 
 const VOLUME_BASELINE_CACHE_DIR = join(".cache", "volume-baseline");
@@ -1791,7 +1803,14 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   const heldSymbols = heldSymbolsOf(holdings);
   const heldList = [...new Set(holdings.lots.map((l) => l.symbol))];
   const betas = await heldBetas(opts, heldList);
-  const atrs = await heldAtrs(opts, heldList, new Date());
+  const firstPurchase = new Map<string, string>();
+  for (const lot of holdings.lots) {
+    const seen = firstPurchase.get(lot.symbol);
+    if (seen === undefined || lot.purchaseDate < seen) {
+      firstPurchase.set(lot.symbol, lot.purchaseDate);
+    }
+  }
+  const daily = await heldDailyStats(opts, firstPurchase, new Date());
 
   const build = (quotes: Map<string, Quote>) =>
     buildDashboard({
@@ -1817,7 +1836,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
       exchanges,
       profiles: companyInfoFromProfiles(cachedProfiles),
       betas,
-      atrs,
+      daily,
     });
 
   // The fingerprint ignores price-derived fields, so it can be taken from a

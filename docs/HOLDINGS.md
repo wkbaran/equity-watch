@@ -141,9 +141,15 @@ Each row also shows two volatility figures and flags its stop:
 - **`stop tight`** / **`stop loose`**: the nearest stop is off the **2 ATR** target
   (`STOP_ATR_MULTIPLE`) by more than **0.1 ATR** (`STOP_ATR_BAND`). Under 1.9 ATR it
   sits inside the stock's ordinary noise; over 2.1 ATR a reversal gives back more
-  than it needs to. Between the two, no pill. The title says how many ATRs of room
-  the stop has and where 2 ATR would put it. With no ATR or no quote, neither is
-  judged.
+  than it needs to. Between the two, no pill. The distance is measured the way a
+  trailing (chandelier) stop is set: from the **highest close since the earliest
+  lot's purchase date**, or today's price when that is higher. Measuring from the
+  price alone would call a well-set stop tight after an ordinary pullback and
+  suggest lowering it, which a trailing stop never does. Not from basis either:
+  that is the initial stop, and on a winner it would hand back the gains. The
+  title says which reference it used, how many ATRs of room the stop has, and
+  where 2 ATR would put it. With no ATR or no quote, neither pill is judged; a
+  price at or under the stop is always `stop tight`.
 
 ## In the browser
 

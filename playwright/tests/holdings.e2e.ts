@@ -122,7 +122,7 @@ test("sorting by account puts the unlabeled position last either way", async ({ 
   await expect(symbols).toHaveText(["AA", "TSLA"]);
 });
 
-test("each row shows its beta and ATR, and flags a stop that is missing or inside two ATRs", async ({ page }) => {
+test("each row shows its beta and ATR, and flags a stop that is missing or off two ATRs under its high", async ({ page }) => {
   await storeToken(page);
   await openHoldings(page);
   // Signed: a negative beta moves against the market, it doesn't move less.
@@ -134,7 +134,7 @@ test("each row shows its beta and ATR, and flags a stop that is missing or insid
 
   const tight = positionRow(page, "AA").locator(".tag.stop-tight");
   await expect(tight).toHaveText("stop tight");
-  await expect(tight).toHaveAttribute("title", "Stop 38.00 is 1.6 ATR under the price (ATR 5.00 a day); 2 ATR would put it near 36.34.");
+  await expect(tight).toHaveAttribute("title", "Stop 38.00 is 1.8 ATR under the high close of 47.00 since purchase (ATR 5.00 a day); 2 ATR would put it near 37.00.");
   await expect(positionRow(page, "AA").locator(".tag.no-stop")).toHaveCount(0);
   await expect(positionRow(page, "TSLA").locator(".tag.no-stop")).toHaveText("no stop");
 

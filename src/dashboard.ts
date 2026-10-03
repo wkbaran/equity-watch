@@ -199,6 +199,12 @@ export interface ApproachingRow {
   chartUrl: string;
 }
 
+/** What a held symbol's daily bars say about where its stop belongs. */
+export interface HoldingDailyStats {
+  atr: number | null;
+  highClose: number | null;
+}
+
 export interface HoldingRow {
   symbol: string;
   shares: number;
@@ -229,6 +235,14 @@ export interface HoldingRow {
    * trading day, so it is not in VOLATILE_KEYS either.
    */
   atr: number | null;
+  /**
+   * The highest completed daily close since the earliest lot's purchase date:
+   * where a trailing stop is measured from, so a pullback never reads as a
+   * reason to lower one. The page takes the higher of this and the live price.
+   * Changes at most once a trading day, like `atr`. Null when nothing has
+   * closed since the purchase, or the bars couldn't be read.
+   */
+  highClose: number | null;
 }
 
 export interface Dashboard {
@@ -310,8 +324,8 @@ export interface DashboardInputs {
   profiles?: Map<string, CompanyInfo>;
   /** Symbol to cached beta, for the holdings rows. A missing symbol reads as null. */
   betas?: Map<string, number | null>;
-  /** Symbol to ATR(14), for the holdings rows. A missing symbol reads as null. */
-  atrs?: Map<string, number | null>;
+  /** Symbol to ATR(14) and the high close since purchase, for the holdings rows. */
+  daily?: Map<string, HoldingDailyStats>;
 }
 
 const RECENT_TRIGGER_CAP = 100;
@@ -521,7 +535,8 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       ignored: isIgnored(symbol),
       stops: holdings.stops.filter((s) => s.symbol === symbol).map((s) => s.stopPrice),
       beta: inputs.betas?.get(symbol) ?? null,
-      atr: inputs.atrs?.get(symbol) ?? null,
+      atr: inputs.daily?.get(symbol)?.atr ?? null,
+      highClose: inputs.daily?.get(symbol)?.highClose ?? null,
     });
   }
 
