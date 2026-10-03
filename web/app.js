@@ -2533,7 +2533,8 @@
         h("td", { text: r.shares }),
         h("td", { text: money(r.basis) }),
         h("td", { text: money(r.price) }),
-        h("td", { text: r.beta == null ? "—" : r.beta.toFixed(2) }),
+        // `+ 0` so a beta that rounds to zero from below reads 0.00, not -0.00.
+        h("td", { text: r.beta == null ? "—" : (Math.round(r.beta * 100) / 100 + 0).toFixed(2) }),
         h("td", {
           text: atrPct(r) === null ? "—" : `${atrPct(r).toFixed(1)}%`,
           title: r.atr == null ? null : `Average true range (14 days): ${money(r.atr)} a day.`,
@@ -2637,7 +2638,8 @@
         title:
           atrs <= 0
             ? `Price is at or under the stop at ${stop.toFixed(2)}.`
-            : `Stop ${stop.toFixed(2)} is ${atrs.toFixed(1)} ATR under the price (ATR ${row.atr.toFixed(2)} a day); ` +
+            : // Rounded down: 1.996 ATR is under 2, and must not read "2.0".
+              `Stop ${stop.toFixed(2)} is ${(Math.floor(atrs * 10) / 10).toFixed(1)} ATR under the price (ATR ${row.atr.toFixed(2)} a day); ` +
               `${STOP_ATR_MULTIPLE} ATR would put it near ${suggested.toFixed(2)}.`,
       },
     ];

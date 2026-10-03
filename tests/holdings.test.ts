@@ -218,6 +218,13 @@ describe("web/app.js mirrors the holdings thresholds", () => {
       expect(stopKinds({ stops: [80, 95] })).toEqual(["stop-tight"]);
     });
 
+    it("never rounds a stop just inside the multiple up to it", () => {
+      // 5.97 / 3 = 1.99 ATR: tight, and it must not say "2.0".
+      const [flag] = copy.holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3, stops: [94.03], ignored: false }, NOW);
+      expect(flag.kind).toBe("stop-tight");
+      expect(flag.title).toMatch(/is 1\.9 ATR under/);
+    });
+
     it("says the price is under a stop above it", () => {
       const [flag] = copy.holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3, stops: [105], ignored: false }, NOW);
       expect(flag.kind).toBe("stop-tight");

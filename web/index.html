@@ -325,6 +325,13 @@
   :is(#alerts-table, #alerts-head) th { cursor: default; }
   :is(#alerts-table, #alerts-head) th:is(:nth-child(2), :nth-child(3)), #alerts-table td.dir { text-align: left; }
   #alerts-table td.cond { text-align: left; white-space: normal; min-width: 14rem; color: var(--sub); }
+  /*
+   * A position's pills (alert, stop, flags) wrap under the symbol rather than
+   * widening the column: with Beta and ATR beside them, one row carrying
+   * "stop tight" and "+10% over basis" pushed Value out of the card.
+   */
+  #holdings > tbody > tr:not(.detail-row) > td:first-child { white-space: normal; min-width: 16rem; }
+  #holdings .tag { white-space: nowrap; }
   /* Distance to the level: up in signal, down in ink, split on a centre tick. */
   .bar-cell { width: 140px; }
   .bar { position: relative; height: 6px; background: var(--raised); border-radius: 3px; }
