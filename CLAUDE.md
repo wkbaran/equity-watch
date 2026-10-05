@@ -560,11 +560,20 @@ Things that look simplifiable and aren't:
   not a decision about a symbol.
   - **`applied`, never `dismissed`, and no invented move.** A dismissed entry's
     story line is "you left the level where it was", which is false after a
-    removed alert or a new lot. Only the edited alert's entries get
-    `appliedFrom`/`appliedTo` (from `levelMove`); the others close with nulls
-    and add no story line. One edit can stamp the same move on several entries.
-    `tickerStory` tells it once, and its "re-levelled N times" counts distinct
-    moves, not applied entries.
+    removed alert or a new lot. Only the moved alert's entries get
+    `appliedFrom`/`appliedTo`. "Re-levelled N times" counts distinct moves,
+    not applied entries.
+  - **`closedBy` is what the story tells** (`closingChange` in
+    `src/narrative.ts`). Every entry a change closes gets the *same* closure,
+    including `moved` when a static level moved (`editClosure`), so the line
+    doesn't depend on which entry sorts first: a sibling alert's entry carries
+    no `appliedFrom` but its closure still tells the move. Keyed by change,
+    `resolvedAt` and alert, so it is told once. Lot adds and removals tell
+    nothing here, because `holdingLines` already tells them from the lots
+    (dated at purchase), and a second line would tell the same buy twice.
+    `applyRevisitLevel` closes its own entry through `closeRevisitsForSymbol`
+    too, rather than `resolveRevisit`, so it gets the same closure and timestamp
+    as its siblings.
   - **Holdings op messages say "Its open revisits were closed." with no ids.**
     Revisit ids contain digits, and holdings results are public and must have
     none (a test asserts it).

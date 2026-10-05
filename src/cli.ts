@@ -36,6 +36,7 @@ import { explainPriority, type RevisitEntry } from "./alerts/revisit.js";
 import {
   applyRevisitLevel,
   closeRevisitsForSymbol,
+  editClosure,
   listRevisits,
   loadRevisits,
   migrateDirectionStores,
@@ -63,7 +64,7 @@ import { round } from "./round.js";
 import { isEntryPoint } from "./entrypoint.js";
 import { publishSite } from "./web/publish.js";
 import { buildAlertRows } from "./web/alertsPage.js";
-import { applyOp, DEFAULT_OP_LOG, levelMove, loadOpLog, parseOp, recentOpResults, type ApplyContext } from "./ops/apply.js";
+import { applyOp, DEFAULT_OP_LOG, loadOpLog, parseOp, recentOpResults, type ApplyContext } from "./ops/apply.js";
 import { pullOps, sqsOpsQueue } from "./ops/pull.js";
 import { drainIntervalMinutes, recordDrain, type OpsPullState } from "./ops/schedule.js";
 import { parseAddInput, parseAlertEdit } from "./ops/validate.js";
@@ -647,7 +648,7 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
   }
   const a = result.added!;
   // A new alert is a decision about the symbol, so its open fires stop asking.
-  const closed = closeRevisitsForSymbol(opts.revisitsFile, a.symbol);
+  const closed = closeRevisitsForSymbol(opts.revisitsFile, a.symbol, { change: "alert.add", alertId: a.id, condition: describeAlertCondition(a) });
   if (a.kind === "volume") {
     console.log(`Added volume alert ${a.id} (${a.symbol}, ${describeVolumeCondition(a.volume)}).`);
     printClosed(closed);
@@ -948,7 +949,7 @@ function cmdAlertRemove(id: string, opts: AlertCommonOpts): void {
   }
   const a = found.alert;
   console.log(`Removed ${a.kind} alert ${a.id} (${a.symbol}: ${describeAlertCondition(a)}).`);
-  printClosed(closeRevisitsForSymbol(opts.revisitsFile, a.symbol));
+  printClosed(closeRevisitsForSymbol(opts.revisitsFile, a.symbol, { change: "alert.remove", alertId: a.id, condition: describeAlertCondition(a) }));
 }
 
 interface AlertEditOpts extends AlertCommonOpts {
@@ -1008,7 +1009,7 @@ async function cmdAlertEdit(id: string, opts: AlertEditOpts): Promise<void> {
     console.log("The next check records where price sits against the new average; it can fire from the check after that.");
   }
   // Editing the alert is the decision the symbol's open queue entries were waiting on.
-  printClosed(closeRevisitsForSymbol(opts.revisitsFile, a.symbol, { alertId: a.id, moved: levelMove(result.before!, a) }));
+  printClosed(closeRevisitsForSymbol(opts.revisitsFile, a.symbol, editClosure(result.before!, a)));
 }
 
 /** Levenshtein distance, for suggesting a command when a "symbol" looks like a typo of one. */
@@ -1379,7 +1380,7 @@ function cmdHoldingsAddLot(opts: HoldingsAddLotOpts): void {
     purchaseDate: opts.date,
   });
   console.log(`Added lot ${lot.id}: ${lot.count} ${lot.symbol} @ ${lot.basisPerShare} on ${lot.purchaseDate}.`);
-  printClosed(closeRevisitsForSymbol(opts.revisitsFile, lot.symbol));
+  printClosed(closeRevisitsForSymbol(opts.revisitsFile, lot.symbol, { change: "lot.add" }));
 }
 
 function cmdHoldingsList(opts: HoldingsListOpts): void {
@@ -1410,7 +1411,7 @@ function cmdHoldingsStopAdd(opts: HoldingsStopAddOpts): void {
     count: opts.count !== undefined ? parseFloat(opts.count) : null,
   });
   console.log(`Added stop ${stop.id}: ${stop.symbol} @ ${stop.stopPrice} (${stop.count ?? "all"} shares).`);
-  printClosed(closeRevisitsForSymbol(opts.revisitsFile, stop.symbol));
+  printClosed(closeRevisitsForSymbol(opts.revisitsFile, stop.symbol, { change: "stop.add" }));
 }
 
 function cmdHoldingsStopList(opts: HoldingsListOpts): void {
@@ -1432,7 +1433,7 @@ function cmdHoldingsStopRemove(id: string, opts: HoldingsChangeOpts): void {
     return;
   }
   console.log(`Removed stop ${id}.`);
-  printClosed(closeRevisitsForSymbol(opts.revisitsFile, stop.symbol));
+  printClosed(closeRevisitsForSymbol(opts.revisitsFile, stop.symbol, { change: "stop.remove" }));
 }
 
 async function cmdHoldingsCheck(opts: HoldingsCommonOpts & { config: string; profileCacheDir: string }): Promise<void> {

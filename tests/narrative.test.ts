@@ -353,6 +353,42 @@ describe("tickerStory", () => {
     expect(story.lines.map((l) => l.text).filter((t) => t.includes("you "))).toEqual(["Sep 18: you raised the level 50 to 55."]);
   });
 
+  // closedBy says what change took a fire off the queue; the story tells it once
+  // however many entries it closed, and leaves buys and sells to the lots.
+  describe("closing changes", () => {
+    const at = "2026-10-05T15:00:00Z";
+    const closedBy = (by: RevisitEntry["closedBy"], id = "1", alertId = "a1") =>
+      entry({ id, alertId, symbol: "CC", triggeredAt: `2026-10-0${id}T14:00:00Z`, status: "applied", resolvedAt: at, closedBy: by });
+    const told = (...entries: RevisitEntry[]) =>
+      tickerStory("CC", entries, NONE).lines.map((l) => l.text).filter((t) => t.includes(": you "));
+
+    it.each([
+      [{ change: "alert.add", alertId: "a2", condition: "trails 5% off the high" }, 'Oct 5: you added an alert, "trails 5% off the high".'],
+      [{ change: "alert.edit", alertId: "a1", condition: "price crosses above 50, then volume >= 2.5M shares today" }, 'Oct 5: you changed an alert to "price crosses above 50, then volume >= 2.5M shares today".'],
+      [{ change: "alert.remove", alertId: "a1", condition: "sma200 (1D) is crossed" }, 'Oct 5: you removed the alert "sma200 (1D) is crossed".'],
+      [{ change: "revisit.apply", alertId: "a1", condition: "price crosses above 61", moved: { from: 50, to: 61 } }, "Oct 5: you raised the level 50 to 61."],
+      [{ change: "lot.edit" }, "Oct 5: you edited a CC lot."],
+      [{ change: "stop.add" }, "Oct 5: you set a CC stop."],
+      [{ change: "stop.edit" }, "Oct 5: you changed your CC stop."],
+      [{ change: "stop.remove" }, "Oct 5: you removed your CC stop."],
+    ] as const)("tells %o", (by, line) => {
+      expect(told(closedBy(by))).toEqual([line]);
+    });
+
+    it("leaves buys and sells to the lots", () => {
+      for (const change of ["lot.add", "lot.remove", "position.remove"] as const) {
+        expect(told(closedBy({ change }))).toEqual([]);
+      }
+    });
+
+    // The other alert's entry sorts first and carries no appliedFrom, but the
+    // closure carries the move, so the line is the move whichever is first.
+    it("tells one edit once across alerts, as the move it made", () => {
+      const by = { change: "alert.edit", alertId: "a1", condition: "price crosses above 45", moved: { from: 50, to: 45 } } as const;
+      expect(told(closedBy(by, "1", "other"), closedBy(by, "2", "a1"))).toEqual(["Oct 5: you lowered the level 50 to 45."]);
+    });
+  });
+
   it("records a dismissal as a decision, not an absence", () => {
     const story = tickerStory(
       "GO",

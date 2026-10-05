@@ -249,9 +249,21 @@ add a new one.
 editing or removing an alert on it, applying a suggested level, or adding, changing
 or removing a lot, a position or a stop, from the CLI or the page. A symbol you
 have just made a decision about stops asking for one. The entries are marked
-`applied`. Entries for the alert an edit moved record the move, and the rest record
-none, so a symbol's story says "you raised the level 50 to 61" only for a move that
-happened. `holdings cover` and `holdings import` don't close entries: they run on
+`applied`, and each records the change that closed it (`closedBy`), which the
+symbol's story tells once however many entries it closed:
+
+| Change | Story line |
+|---|---|
+| An edit or Apply that moved a static level | "you raised the level 50 to 61" |
+| Any other alert edit, of any kind | "you changed an alert to "trails 5% off the high"" |
+| Adding an alert, of any kind | "you added an alert, "price crosses above 60"" |
+| Removing an alert | "you removed the alert "sma200 (1D) is crossed"" |
+| Editing a lot | "you edited a MSFT lot" |
+| Adding, changing or removing a stop | "you set a MSFT stop" / "changed your…" / "removed your…" |
+| Buying or selling (lot added or removed, position removed) | nothing extra: the story already tells those from the lots |
+
+A change on a symbol with nothing open in the queue closes nothing, so it isn't
+told. Entries closed before 2026-10-05 have no `closedBy` and tell only a level move. `holdings cover` and `holdings import` don't close entries: they run on
 their own, or in bulk, and are not decisions about a symbol.
 
 ## Moving-average alerts

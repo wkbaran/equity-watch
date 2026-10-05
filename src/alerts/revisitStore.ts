@@ -12,7 +12,9 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_ALERT_DIRECTION } from "./models.js";
-import type { RevisitEntry, RevisitStatus } from "./revisit.js";
+import { describeAlertCondition } from "./describe.js";
+import type { Alert } from "./models.js";
+import type { RevisitClosure, RevisitEntry, RevisitStatus } from "./revisit.js";
 import { foldLegacyRevisits, type FoldResult } from "./reversion.js";
 import { loadAlerts, saveAlerts } from "./store.js";
 
@@ -203,11 +205,6 @@ export function applyRevisitLevel(
   // where to watch, not which crossing matters.
   const previous = alert.level;
   alert.level = target;
-  // Record the move on the entry itself so the ticker story can say what you
-  // did, not just that you did something.
-  entry.appliedFrom = previous;
-  entry.appliedTo = alert.level;
-  saveRevisits(revisitsPath, entries);
   // Re-seed the crossing baseline against the new level so the alert doesn't
   // immediately fire (or immediately go quiet) purely because the level moved.
   alert.lastKnownSide = entry.triggerPrice > alert.level ? "above" : "below";
@@ -215,33 +212,34 @@ export function applyRevisitLevel(
   alert.lastEvaluatedAt = new Date().toISOString();
   alert.mutedUntil = null;
   saveAlerts(alertsPath, alerts);
-  resolveRevisit(revisitsPath, id, "applied");
-  // Moving the alert is a decision about the symbol, so the rest of its open
-  // fires close too, the alert's own ones recording the same move.
-  const alsoClosed = closeRevisitsForSymbol(revisitsPath, entry.symbol, { alertId: alert.id, moved: { from: previous, to: alert.level } });
+  // Moving the alert is a decision about the symbol, so this entry closes with
+  // the rest of its open fires, the alert's own ones recording the move so the
+  // ticker story can say what you did, not just that you did something.
+  const closed = closeRevisitsForSymbol(revisitsPath, entry.symbol, {
+    change: "revisit.apply",
+    alertId: alert.id,
+    condition: describeAlertCondition(alert),
+    moved: { from: previous, to: alert.level },
+  });
+  const alsoClosed = closed.filter((c) => c !== id);
   return { ok: true, value: { entry, alertId: alert.id, from: previous, to: alert.level, alsoClosed } };
 }
 
 /**
  * Closes every open entry for a symbol after someone acted on it: an alert on
- * it added, edited or removed, or a lot or stop on it added, changed or
- * removed, from the CLI or the page. Any of those is the decision the
- * symbol's open fires were waiting on, so the queue shouldn't keep asking
+ * it added, edited, removed or re-levelled, or a lot or stop on it added,
+ * changed or removed, from the CLI or the page. Any of those is the decision
+ * the symbol's open fires were waiting on, so the queue shouldn't keep asking
  * (the user's rule, 2026-09-18 for an alert's own entries, widened to the
  * whole symbol and to holdings on 2026-10-05).
  *
  * Marked "applied", never "dismissed": a dismissed entry's story says "you
  * left the level where it was", which a removed alert or a new lot makes
- * false. Only `edited` (the alert an edit changed) gets `appliedFrom` and
- * `appliedTo`; every other entry closes with no move recorded, so the story
- * tells nothing it can't vouch for. Returns the ids closed, oldest first.
+ * false. Every entry gets `closedBy`, which is what the story tells. Only the
+ * moved alert's own entries get `appliedFrom`/`appliedTo`, which say what
+ * happened to *that* fire's level. Returns the ids closed, oldest first.
  */
-export function closeRevisitsForSymbol(
-  path: string,
-  symbol: string,
-  edited: { alertId: string; moved: { from: number | null; to: number | null } } | null = null,
-  now: Date = new Date()
-): string[] {
+export function closeRevisitsForSymbol(path: string, symbol: string, cause: RevisitClosure, now: Date = new Date()): string[] {
   if (!existsSync(path)) {
     return [];
   }
@@ -250,15 +248,24 @@ export function closeRevisitsForSymbol(
   const closed: string[] = [];
   for (const entry of entries) {
     if (entry.symbol.toUpperCase() !== target || entry.status !== "open") continue;
-    const moved = edited !== null && entry.alertId === edited.alertId ? edited.moved : { from: null, to: null };
+    const moved = cause.moved !== undefined && entry.alertId === cause.alertId ? cause.moved : null;
     entry.status = "applied";
     entry.resolvedAt = now.toISOString();
-    entry.appliedFrom = moved.from;
-    entry.appliedTo = moved.to;
+    entry.appliedFrom = moved?.from ?? null;
+    entry.appliedTo = moved?.to ?? null;
+    entry.closedBy = cause;
     closed.push(entry.id);
   }
   if (closed.length > 0) {
     saveRevisits(path, entries);
   }
   return closed;
+}
+
+/** `closeRevisitsForSymbol`'s cause for an alert edit: the move, when it moved a static level. */
+export function editClosure(before: Alert, after: Alert): RevisitClosure {
+  const from = before.kind === "static" ? before.level : null;
+  const to = after.kind === "static" ? after.level : null;
+  const moved = from !== null && to !== null && from !== to ? { from, to } : undefined;
+  return { change: "alert.edit", alertId: after.id, condition: describeAlertCondition(after), ...(moved ? { moved } : {}) };
 }

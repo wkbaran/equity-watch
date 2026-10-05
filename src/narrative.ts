@@ -376,6 +376,50 @@ function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
 }
 
 /**
+ * What a closed entry's story says was done, keyed so one change that closed
+ * several entries is told once. Null when there is nothing to tell:
+ *
+ * - **Buying and selling** close entries too, but `holdingLines` tells those
+ *   from the lots themselves, dated at the purchase, so a line here would
+ *   tell the same buy twice.
+ * - **Entries closed before `closedBy` existed** (2026-10-05) say only the
+ *   level move an edit or an apply recorded, as they always did.
+ */
+function closingChange(entry: RevisitEntry): { key: string; text: string } | null {
+  const by = entry.closedBy;
+  if (by === undefined) {
+    const from = entry.appliedFrom;
+    const to = entry.appliedTo;
+    return from == null || to == null ? null : { key: `${entry.alertId}|${entry.resolvedAt}|${from}|${to}`, text: levelMoveText(from, to) };
+  }
+  const key = `${by.change}|${entry.resolvedAt}|${by.alertId ?? ""}`;
+  const condition = by.condition === undefined ? "" : ` "${by.condition}"`;
+  switch (by.change) {
+    case "alert.edit":
+    case "revisit.apply":
+      return { key, text: by.moved ? levelMoveText(by.moved.from, by.moved.to) : `changed an alert to${condition}` };
+    case "alert.add":
+      return { key, text: `added an alert,${condition}` };
+    case "alert.remove":
+      return { key, text: `removed the alert${condition}` };
+    case "lot.edit":
+      return { key, text: `edited a ${entry.symbol} lot` };
+    case "stop.add":
+      return { key, text: `set a ${entry.symbol} stop` };
+    case "stop.edit":
+      return { key, text: `changed your ${entry.symbol} stop` };
+    case "stop.remove":
+      return { key, text: `removed your ${entry.symbol} stop` };
+    case "lot.add":
+    case "lot.remove":
+    case "position.remove":
+      return null;
+  }
+}
+
+const levelMoveText = (from: number, to: number): string => `${to > from ? "raised" : "lowered"} the level ${from} to ${to}`;
+
+/**
  * Threads one ticker's entries into a story. The interesting shape this
  * exposes is the chase: fired, re-levelled higher, fired again. That pattern
  * is invisible in a flat list of triggers but is the whole reason the revisit
@@ -406,10 +450,9 @@ export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: N
     });
   }
 
-  // One edit closes every open entry for its symbol (closeRevisitsForSymbol),
-  // so several entries can carry the same move. It happened once; say it once.
-  // Entries closed by some other change carry no move and add no line.
-  const movesTold = new Set<string>();
+  // One change closes every open entry for its symbol (closeRevisitsForSymbol),
+  // so several entries carry the same closure. It happened once; say it once.
+  const changesTold = new Set<string>();
   for (const entry of entries) {
     // With the history known, "Holding X" means held when it fired, not now:
     // a story that says you bought on Sep 3 can't call an Aug 20 fire a holding.
@@ -418,14 +461,12 @@ export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: N
         ? ctx
         : { heldSymbols: heldAt(symbol, entry.triggeredAt, ctx.holdingEvents) ? new Set([symbol.toUpperCase()]) : new Set<string>() };
     lines.push({ at: entry.triggeredAt, text: `${shortDate(entry.triggeredAt)}: ${triggerHeadline(entry, headlineCtx)}.` });
-    if (entry.status === "applied" && entry.appliedFrom != null && entry.appliedTo != null) {
-      const key = `${entry.alertId}|${entry.resolvedAt}|${entry.appliedFrom}|${entry.appliedTo}`;
-      if (movesTold.has(key)) continue;
-      movesTold.add(key);
-      lines.push({
-        at: entry.resolvedAt ?? entry.triggeredAt,
-        text: `${shortDate(entry.resolvedAt ?? entry.triggeredAt)}: you ${entry.appliedTo > entry.appliedFrom ? "raised" : "lowered"} the level ${entry.appliedFrom} to ${entry.appliedTo}.`,
-      });
+    if (entry.status === "applied") {
+      const change = closingChange(entry);
+      if (change === null || changesTold.has(change.key)) continue;
+      changesTold.add(change.key);
+      const at = entry.resolvedAt ?? entry.triggeredAt;
+      lines.push({ at, text: `${shortDate(at)}: you ${change.text}.` });
     } else if (entry.status === "dismissed") {
       lines.push({
         at: entry.resolvedAt ?? entry.triggeredAt,

@@ -555,7 +555,22 @@ describe("applyOp", () => {
     // The trigger was at 101, under the new 118, so the alert is armed below it
     // rather than instantly re-firing because the level moved.
     expect(loadAlerts(alertsFile)[0]).toMatchObject({ level: 118, lastKnownSide: "below", mutedUntil: null });
-    expect(loadRevisits(revisitsFile)[0]).toMatchObject({ status: "applied", appliedFrom: 100, appliedTo: 118 });
+    expect(loadRevisits(revisitsFile)[0]).toMatchObject({
+      status: "applied",
+      appliedFrom: 100,
+      appliedTo: 118,
+      closedBy: { change: "revisit.apply", alertId: "s1abcdef", condition: "price crosses above 118", moved: { from: 100, to: 118 } },
+    });
+  });
+
+  it("closes the symbol's other open entries along with the one applied", async () => {
+    saveAlerts(alertsFile, [makeStatic()]);
+    const entry = seedRevisit({ suggestedLevel: 118 });
+    saveRevisits(revisitsFile, [entry, { ...entry, id: "rv000002", alertId: "other123", suggestedLevel: null }]);
+    const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}), now: NOW };
+    const { result } = await applyOp(applyOpFor({ revisitId: "rv000001", alertId: "s1abcdef" }, SUGGESTED), ctx);
+    expect(result.message).toContain("Revisit rv000001, rv000002 marked applied.");
+    expect(loadRevisits(revisitsFile)[1]).toMatchObject({ status: "applied", appliedFrom: null, appliedTo: null, closedBy: { change: "revisit.apply" } });
   });
 
   it("applies an edited level instead of the suggestion", async () => {
@@ -625,12 +640,13 @@ describe("applyOp", () => {
     expect(result.ok).toBe(true);
     expect(result.message).toContain("Revisit rv000001, rv000002, rv000004 marked applied.");
     const byId = new Map(loadRevisits(revisitsFile).map((e) => [e.id, e]));
+    const closedBy = { change: "alert.edit", alertId: "s1abcdef", condition: "price crosses above 110", moved: { from: 100, to: 110 } };
     for (const id of ["rv000001", "rv000002"]) {
-      expect(byId.get(id)).toMatchObject({ status: "applied", appliedFrom: 100, appliedTo: 110, resolvedAt: "2026-09-15T15:00:00.000Z" });
+      expect(byId.get(id)).toMatchObject({ status: "applied", appliedFrom: 100, appliedTo: 110, resolvedAt: "2026-09-15T15:00:00.000Z", closedBy });
     }
     expect(byId.get("rv000003")).toMatchObject({ status: "dismissed", appliedTo: null });
     // Another alert on the symbol: closed, but its level didn't move.
-    expect(byId.get("rv000004")).toMatchObject({ status: "applied", appliedFrom: null, appliedTo: null });
+    expect(byId.get("rv000004")).toMatchObject({ status: "applied", appliedFrom: null, appliedTo: null, closedBy });
     expect(byId.get("rv000005")!.status).toBe("open");
   });
 
@@ -641,11 +657,18 @@ describe("applyOp", () => {
     expect(added.result.ok).toBe(true);
     expect(added.result.message).toContain("Revisit rv000001 marked applied.");
     expect(loadRevisits(revisitsFile).map((e) => e.status)).toEqual(["applied", "open"]);
+    expect(loadRevisits(revisitsFile)[0].closedBy).toEqual({ change: "alert.add", alertId: added.result.alertId, condition: "price crosses above 120" });
 
     saveAlerts(alertsFile, [makeStatic({ symbol: "ELSE" })]);
     const removed = await applyOp(remove("s1abcdef", "price crosses above 100"), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}), now: NOW });
     expect(removed.result.message).toContain("Revisit rv000002 marked applied.");
-    expect(loadRevisits(revisitsFile)[1]).toMatchObject({ status: "applied", appliedFrom: null, appliedTo: null, resolvedAt: "2026-09-15T15:00:00.000Z" });
+    expect(loadRevisits(revisitsFile)[1]).toMatchObject({
+      status: "applied",
+      appliedFrom: null,
+      appliedTo: null,
+      resolvedAt: "2026-09-15T15:00:00.000Z",
+      closedBy: { change: "alert.remove", alertId: "s1abcdef", condition: "price crosses above 100" },
+    });
   });
 
   it("leaves the queue alone when an add is refused", async () => {

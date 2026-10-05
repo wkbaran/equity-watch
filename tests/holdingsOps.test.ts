@@ -283,7 +283,7 @@ describe("holdings ops", () => {
     ["stop.add", { type: "stop.add", params: { symbol: "AAPL", stopPrice: 130 } }],
     ["stop.edit", { type: "stop.edit", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 }, params: { stopPrice: 150 } }],
     ["stop.remove", { type: "stop.remove", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 } }],
-  ])("%s closes the symbol's open revisits", async (_type, body) => {
+  ])("%s closes the symbol's open revisits", async (type, body) => {
     const base = newRevisitEntry(aaplAlert, 160, "2026-09-14T15:00:00.000Z", "regular");
     saveRevisits(revisitsFile, [
       { ...base, id: "rv000001" },
@@ -294,7 +294,7 @@ describe("holdings ops", () => {
     expect(r.ok).toBe(true);
     expect(r.message).toContain("Its open revisits were closed.");
     expect(loadRevisits(revisitsFile).map((e) => e.status)).toEqual(["applied", "dismissed", "open"]);
-    expect(loadRevisits(revisitsFile)[0]).toMatchObject({ appliedFrom: null, appliedTo: null });
+    expect(loadRevisits(revisitsFile)[0]).toMatchObject({ appliedFrom: null, appliedTo: null, closedBy: { change: type } });
   });
 
   it("position.remove closes the symbol's open revisits, and a refused op closes none", async () => {

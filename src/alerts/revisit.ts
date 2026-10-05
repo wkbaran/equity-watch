@@ -49,6 +49,38 @@ export interface RevisitMa {
 
 export type RevisitStatus = "open" | "applied" | "dismissed";
 
+/** The changes to a symbol that close its open entries (closeRevisitsForSymbol). */
+export type ClosingChange =
+  | "alert.add"
+  | "alert.edit"
+  | "alert.remove"
+  | "revisit.apply"
+  | "lot.add"
+  | "lot.edit"
+  | "lot.remove"
+  | "position.remove"
+  | "stop.add"
+  | "stop.edit"
+  | "stop.remove";
+
+/**
+ * What closed an entry, so the ticker story can tell the change and not just
+ * that the fire went away. One change closes every open entry on the symbol
+ * and stamps the same closure on each; the story tells it once.
+ */
+export interface RevisitClosure {
+  change: ClosingChange;
+  /** The alert the change was to: added, edited, removed, or re-levelled. */
+  alertId?: string;
+  /** That alert's condition in words: as it now reads, or as it read when removed. */
+  condition?: string;
+  /**
+   * A static level the change moved. On every entry the change closed, unlike
+   * `appliedFrom`/`appliedTo`, which only the moved alert's own entries carry.
+   */
+  moved?: { from: number; to: number };
+}
+
 export interface RevisitSignals {
   /** Breakout verdict from analysis.ts, once an analyze pass has run over this entry. */
   verdict: string | null;
@@ -137,6 +169,11 @@ export interface RevisitEntry {
    * `entryDirection` (src/alerts/reversion.ts) derives it for old entries.
    */
   direction?: CrossDirection;
+  /**
+   * The change to the symbol that closed this entry. Absent on open and
+   * dismissed entries, and on entries closed before 2026-10-05.
+   */
+  closedBy?: RevisitClosure;
   /**
    * When and where the price condition was met, if that was at an earlier
    * check than the one where volume qualified and the alert fired. Then

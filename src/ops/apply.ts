@@ -19,8 +19,8 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { describeAlertCondition } from "../alerts/describe.js";
 import { addAlert, editAlert, type MarketData } from "../alerts/engine.js";
 import { applyRelevelPatch, type RelevelPatch } from "../alerts/relevel.js";
-import type { RevisitEntry } from "../alerts/revisit.js";
-import { applyRevisitLevel, closeRevisitsForSymbol, loadRevisits, resolveRevisit, saveRevisits } from "../alerts/revisitStore.js";
+import type { RevisitClosure, RevisitEntry } from "../alerts/revisit.js";
+import { applyRevisitLevel, closeRevisitsForSymbol, editClosure, loadRevisits, resolveRevisit, saveRevisits } from "../alerts/revisitStore.js";
 import { loadAlerts, saveAlerts } from "../alerts/store.js";
 import type { Alert } from "../alerts/models.js";
 import { applyHoldingsOp, applyCoverOp } from "./holdings.js";
@@ -237,7 +237,8 @@ async function applyByType(op: Op, ctx: ApplyContext): Promise<Outcome> {
       if (!outcome.ok || outcome.symbol === null) {
         return outcome;
       }
-      const closed = closeSymbolRevisits(ctx, outcome.symbol);
+      // The switch narrows op.type to the lot, position and stop changes.
+      const closed = closeSymbolRevisits(ctx, outcome.symbol, { change: op.type });
       return closed.length === 0 ? outcome : { ...outcome, message: `${outcome.message} Its open revisits were closed.` };
     }
   }
@@ -246,14 +247,10 @@ async function applyByType(op: Op, ctx: ApplyContext): Promise<Outcome> {
 /**
  * Closes `symbol`'s open queue entries after an op acted on it
  * (closeRevisitsForSymbol), the same from every op so none can forget.
- * `edited` is the alert an edit changed, whose entries record the move.
+ * `cause` is what the ticker story will say happened.
  */
-function closeSymbolRevisits(
-  ctx: ApplyContext,
-  symbol: string,
-  edited: { alertId: string; moved: { from: number | null; to: number | null } } | null = null
-): string[] {
-  return closeRevisitsForSymbol(ctx.revisitsFile ?? DEFAULT_REVISITS_FILE, symbol, edited, ctx.now?.() ?? new Date());
+function closeSymbolRevisits(ctx: ApplyContext, symbol: string, cause: RevisitClosure): string[] {
+  return closeRevisitsForSymbol(ctx.revisitsFile ?? DEFAULT_REVISITS_FILE, symbol, cause, ctx.now?.() ?? new Date());
 }
 
 /** The tail of an alert op's message naming the entries it closed. */
@@ -281,7 +278,7 @@ async function applyAdd(op: Op, ctx: ApplyContext): Promise<Outcome> {
   }
   const a = result.added;
   const replaced = result.replaced ? ` Replaced alert ${result.replaced.id} (${describeAlertCondition(result.replaced)}).` : "";
-  const closed = closedText(closeSymbolRevisits(ctx, a.symbol));
+  const closed = closedText(closeSymbolRevisits(ctx, a.symbol, { change: "alert.add", alertId: a.id, condition: describeAlertCondition(a) }));
   return { symbol: a.symbol, alertId: a.id, ok: true, message: `Added ${a.kind} alert ${a.id}: ${describeAlertCondition(a)}.${replaced}${closed}` };
 }
 
@@ -362,7 +359,7 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
   const replaced = result.replaced
     ? ` Cancelled alert ${result.replaced.id} (${describeAlertCondition(result.replaced)}): the new level is closer to price on the same side.`
     : "";
-  const closed = closedText(closeSymbolRevisits(ctx, alert.symbol, { alertId, moved: levelMove(result.before, result.edited) }));
+  const closed = closedText(closeSymbolRevisits(ctx, alert.symbol, editClosure(result.before, result.edited)));
   return {
     symbol: alert.symbol,
     alertId,
@@ -385,7 +382,7 @@ function applyRemove(op: Op, ctx: ApplyContext): Outcome {
   const { alerts, alert, condition: now } = guard;
   const alertId = alert.id;
   saveAlerts(ctx.alertsFile, alerts.filter((a) => a.id !== alertId));
-  const closed = closedText(closeSymbolRevisits(ctx, alert.symbol));
+  const closed = closedText(closeSymbolRevisits(ctx, alert.symbol, { change: "alert.remove", alertId, condition: now }));
   return { symbol: alert.symbol, alertId, ok: true, message: `Removed ${alert.kind} alert ${alertId} (${alert.symbol}: ${now}).${closed}` };
 }
 
@@ -556,16 +553,4 @@ function applyDismiss(op: Op, ctx: ApplyContext): Outcome {
     ok: true,
     message: `Dismissed revisit ${revisitId} (${entry.symbol}) from the queue. Alert ${entry.alertId} is unchanged and still watching.`,
   };
-}
-
-/**
- * The level pair an edit records on the entries it closes, the same pair
- * `alert revisit apply` writes, so the page and ticker story can say what
- * moved. Both null when the level didn't (a direction change, a trailing or
- * moving-average alert).
- */
-export function levelMove(before: Alert, after: Alert): { from: number | null; to: number | null } {
-  const from = before.kind === "static" ? before.level : null;
-  const to = after.kind === "static" ? after.level : null;
-  return from === to ? { from: null, to: null } : { from, to };
 }
