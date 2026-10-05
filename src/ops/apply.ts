@@ -20,7 +20,7 @@ import { describeAlertCondition } from "../alerts/describe.js";
 import { addAlert, editAlert, type MarketData } from "../alerts/engine.js";
 import { applyRelevelPatch, type RelevelPatch } from "../alerts/relevel.js";
 import type { RevisitEntry } from "../alerts/revisit.js";
-import { applyRevisitLevel, closeRevisitsForEdit, loadRevisits, resolveRevisit, saveRevisits } from "../alerts/revisitStore.js";
+import { applyRevisitLevel, closeRevisitsForSymbol, loadRevisits, resolveRevisit, saveRevisits } from "../alerts/revisitStore.js";
 import { loadAlerts, saveAlerts } from "../alerts/store.js";
 import type { Alert } from "../alerts/models.js";
 import { applyHoldingsOp, applyCoverOp } from "./holdings.js";
@@ -129,7 +129,10 @@ export interface ApplyContext {
   alertsFile: string;
   /** Default holdings.json. */
   holdingsFile?: string;
-  /** Default revisits.json. Read by a dismiss, and by an edit sent from a trigger's details panel. */
+  /**
+   * Default revisits.json. Read by the revisit ops, and written by every op
+   * that acts on a symbol: those close its open entries (closeSymbolRevisits).
+   */
   revisitsFile?: string;
   opLogFile: string;
   market: MarketData;
@@ -226,9 +229,36 @@ async function applyByType(op: Op, ctx: ApplyContext): Promise<Outcome> {
       return applyDismiss(op, ctx);
     case "holdings.cover":
       return applyCover(op, ctx);
-    default:
-      return applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
+    default: {
+      // Lots, positions and stops. A change to any of them is a decision
+      // about the symbol, so its open fires stop asking. The message is
+      // public and holdings messages carry no digits, so no entry ids.
+      const outcome = applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
+      if (!outcome.ok || outcome.symbol === null) {
+        return outcome;
+      }
+      const closed = closeSymbolRevisits(ctx, outcome.symbol);
+      return closed.length === 0 ? outcome : { ...outcome, message: `${outcome.message} Its open revisits were closed.` };
+    }
   }
+}
+
+/**
+ * Closes `symbol`'s open queue entries after an op acted on it
+ * (closeRevisitsForSymbol), the same from every op so none can forget.
+ * `edited` is the alert an edit changed, whose entries record the move.
+ */
+function closeSymbolRevisits(
+  ctx: ApplyContext,
+  symbol: string,
+  edited: { alertId: string; moved: { from: number | null; to: number | null } } | null = null
+): string[] {
+  return closeRevisitsForSymbol(ctx.revisitsFile ?? DEFAULT_REVISITS_FILE, symbol, edited, ctx.now?.() ?? new Date());
+}
+
+/** The tail of an alert op's message naming the entries it closed. */
+function closedText(ids: string[]): string {
+  return ids.length === 0 ? "" : ` Revisit ${ids.join(", ")} marked applied.`;
 }
 
 const reject = (symbol: string | null, alertId: string | null, message: string): Outcome => ({ symbol, alertId, ok: false, message });
@@ -251,7 +281,8 @@ async function applyAdd(op: Op, ctx: ApplyContext): Promise<Outcome> {
   }
   const a = result.added;
   const replaced = result.replaced ? ` Replaced alert ${result.replaced.id} (${describeAlertCondition(result.replaced)}).` : "";
-  return { symbol: a.symbol, alertId: a.id, ok: true, message: `Added ${a.kind} alert ${a.id}: ${describeAlertCondition(a)}.${replaced}` };
+  const closed = closedText(closeSymbolRevisits(ctx, a.symbol));
+  return { symbol: a.symbol, alertId: a.id, ok: true, message: `Added ${a.kind} alert ${a.id}: ${describeAlertCondition(a)}.${replaced}${closed}` };
 }
 
 /**
@@ -307,7 +338,7 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
   }
   const { alert } = guard;
   const alertId = alert.id;
-  // Any edit closes the alert's open queue entries (closeRevisitsForEdit), so
+  // Any edit closes the symbol's open queue entries (closeSymbolRevisits), so
   // an edit never needs to name one. It used to: a trigger panel sent
   // target.revisitId and this checked the entry still existed and was open
   // before editing. That guard now contradicts the rule - submitting a change
@@ -316,7 +347,6 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
   // other panel). Staleness is still guarded, by expect.condition in
   // guardedAlert, which is about the alert rather than the queue. An older
   // page may still send revisitId; it is ignored.
-  const revisitsFile = ctx.revisitsFile ?? DEFAULT_REVISITS_FILE;
   const fields = editFieldsFromJson(op.params);
   if (!fields.ok) {
     return reject(alert.symbol, alertId, fields.error);
@@ -332,8 +362,7 @@ async function applyEdit(op: Op, ctx: ApplyContext): Promise<Outcome> {
   const replaced = result.replaced
     ? ` Cancelled alert ${result.replaced.id} (${describeAlertCondition(result.replaced)}): the new level is closer to price on the same side.`
     : "";
-  const closedIds = closeRevisitsForEdit(revisitsFile, alertId, levelMove(result.before, result.edited), ctx.now?.() ?? new Date());
-  const closed = closedIds.length === 0 ? "" : ` Revisit ${closedIds.join(", ")} marked applied.`;
+  const closed = closedText(closeSymbolRevisits(ctx, alert.symbol, { alertId, moved: levelMove(result.before, result.edited) }));
   return {
     symbol: alert.symbol,
     alertId,
@@ -356,7 +385,8 @@ function applyRemove(op: Op, ctx: ApplyContext): Outcome {
   const { alerts, alert, condition: now } = guard;
   const alertId = alert.id;
   saveAlerts(ctx.alertsFile, alerts.filter((a) => a.id !== alertId));
-  return { symbol: alert.symbol, alertId, ok: true, message: `Removed ${alert.kind} alert ${alertId} (${alert.symbol}: ${now}).` };
+  const closed = closedText(closeSymbolRevisits(ctx, alert.symbol));
+  return { symbol: alert.symbol, alertId, ok: true, message: `Removed ${alert.kind} alert ${alertId} (${alert.symbol}: ${now}).${closed}` };
 }
 
 /**
@@ -469,12 +499,12 @@ function applyApply(op: Op, ctx: ApplyContext): Outcome {
   if (!result.ok) {
     return reject(entry.symbol, entry.alertId, `Not applied: ${result.reason}`);
   }
-  const { from, to } = result.value;
+  const { from, to, alsoClosed } = result.value;
   return {
     symbol: entry.symbol,
     alertId: entry.alertId,
     ok: true,
-    message: `${entry.symbol}: alert ${entry.alertId} re-levelled ${from} → ${to}. Revisit ${revisitId} marked applied.`,
+    message: `${entry.symbol}: alert ${entry.alertId} re-levelled ${from} → ${to}.${closedText([revisitId, ...alsoClosed])}`,
   };
 }
 

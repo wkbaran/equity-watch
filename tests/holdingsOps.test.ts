@@ -9,6 +9,9 @@ import { editLot, removeLot, removePosition, replaceStop } from "../src/holdings
 import type { HoldingsStore } from "../src/holdings/models.js";
 import { loadHoldingsStore, saveHoldingsStore } from "../src/holdings/store.js";
 import { applyOp, parseOp, type OpResult } from "../src/ops/apply.js";
+import type { StaticAlert } from "../src/alerts/models.js";
+import { newRevisitEntry } from "../src/alerts/revisit.js";
+import { loadRevisits, saveRevisits } from "../src/alerts/revisitStore.js";
 import { parseLotEdit, parseLotInput, parseStopInput } from "../src/ops/validate.js";
 import type { Quote } from "../src/providers/schwab.js";
 import { NO_OPS, siteDocument, siteFingerprint, writeSite } from "../src/web/site.js";
@@ -40,11 +43,13 @@ const noMarket: MarketData = {
 let dir: string;
 let holdingsFile: string;
 let opLogFile: string;
+let revisitsFile: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "holdings-ops-"));
   holdingsFile = join(dir, "holdings.json");
   opLogFile = join(dir, "ops.log.jsonl");
+  revisitsFile = join(dir, "revisits.json");
   saveHoldingsStore(holdingsFile, store());
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -53,8 +58,29 @@ let seq = 0;
 async function apply(body: Record<string, unknown>): Promise<OpResult> {
   const parsed = parseOp({ id: `op-holdings-${String(++seq).padStart(4, "0")}`, ...body });
   if (!parsed.ok) throw new Error(parsed.error);
-  return (await applyOp(parsed.op, { alertsFile: join(dir, "alerts.json"), holdingsFile, opLogFile, market: noMarket })).result;
+  return (await applyOp(parsed.op, { alertsFile: join(dir, "alerts.json"), holdingsFile, revisitsFile, opLogFile, market: noMarket })).result;
 }
+
+const aaplAlert: StaticAlert = {
+  id: "aapl0001",
+  symbol: "AAPL",
+  side: "below",
+  status: "live",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  livePriceAtCreation: 150,
+  triggerCount: 0,
+  lastTriggeredAt: null,
+  lastTriggerPrice: null,
+  mutedUntil: null,
+  watchingSince: "2026-01-01T00:00:00.000Z",
+  watchingSinceApprox: false,
+  priceAtWatchStart: null,
+  triggerSnapshot: null,
+  kind: "static",
+  level: 155,
+  direction: "up",
+  lastKnownSide: "below",
+};
 
 const AAPL1_AS_SHOWN = { count: 10, basisPerShare: 150, purchaseDate: "2026-09-01", account: "roth" };
 
@@ -246,6 +272,40 @@ describe("holdings ops", () => {
     expect(await apply({ type: "lot.edit", params: { count: 1 } })).toMatchObject({ ok: false, message: "A lot edit needs target.lotId." });
     expect(await apply({ type: "stop.remove" })).toMatchObject({ ok: false, message: "A stop removal needs target.stopId." });
     expect(await apply({ type: "stop.edit", params: { stopPrice: 1 } })).toMatchObject({ ok: false, message: "A stop edit needs target.stopId." });
+  });
+
+  // A change to a lot, a position or a stop is a decision about the symbol,
+  // so its open fires leave the revisit queue; other symbols' stay.
+  it.each([
+    ["lot.add", { type: "lot.add", params: { symbol: "AAPL", count: 4, basisPerShare: 120.5 } }],
+    ["lot.edit", { type: "lot.edit", target: { lotId: "lotaapl1" }, expect: AAPL1_AS_SHOWN, params: { count: 11 } }],
+    ["lot.remove", { type: "lot.remove", target: { lotId: "lotaapl1" }, expect: AAPL1_AS_SHOWN }],
+    ["stop.add", { type: "stop.add", params: { symbol: "AAPL", stopPrice: 130 } }],
+    ["stop.edit", { type: "stop.edit", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 }, params: { stopPrice: 150 } }],
+    ["stop.remove", { type: "stop.remove", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 } }],
+  ])("%s closes the symbol's open revisits", async (_type, body) => {
+    const base = newRevisitEntry(aaplAlert, 160, "2026-09-14T15:00:00.000Z", "regular");
+    saveRevisits(revisitsFile, [
+      { ...base, id: "rv000001" },
+      { ...base, id: "rv000002", status: "dismissed" },
+      { ...base, id: "rv000003", symbol: "MSFT" },
+    ]);
+    const r = await apply(body);
+    expect(r.ok).toBe(true);
+    expect(r.message).toContain("Its open revisits were closed.");
+    expect(loadRevisits(revisitsFile).map((e) => e.status)).toEqual(["applied", "dismissed", "open"]);
+    expect(loadRevisits(revisitsFile)[0]).toMatchObject({ appliedFrom: null, appliedTo: null });
+  });
+
+  it("position.remove closes the symbol's open revisits, and a refused op closes none", async () => {
+    const base = newRevisitEntry({ ...aaplAlert, symbol: "MSFT" }, 400, "2026-09-14T15:00:00.000Z", "regular");
+    saveRevisits(revisitsFile, [{ ...base, id: "rv000001" }]);
+    const refused = await apply({ type: "stop.remove", target: { stopId: "stopmsft" }, expect: { stopPrice: 999 } });
+    expect(refused.ok).toBe(false);
+    expect(loadRevisits(revisitsFile)[0].status).toBe("open");
+    const r = await apply({ type: "position.remove", target: { symbol: "MSFT" }, expect: { lotIds: ["lotmsft1"] } });
+    expect(r.ok).toBe(true);
+    expect(loadRevisits(revisitsFile)[0].status).toBe("applied");
   });
 
   // opResults are published in the public dashboard.json.

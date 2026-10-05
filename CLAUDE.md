@@ -549,13 +549,25 @@ Things that look simplifiable and aren't:
   still queued, because a later edit may target an alert an earlier add creates.
 - **Edits target by id only.** `findAlert` also accepts a ticker. Don't pass an
   op's target through it, or an edit can land on a different alert on that symbol.
-- **Every edit closes the alert's open revisit entries**, wherever it is made:
-  `alert edit`, the alert's panel, or a trigger's panel (the user's rule,
-  2026-09-18; before that only the trigger panel closed its one entry).
-  `closeRevisitsForEdit` marks them `applied`, not `dismissed`, with
-  `appliedFrom`/`appliedTo` from `levelMove` when the level moved, as
-  `alert revisit apply` records. One edit can therefore stamp the same move on
-  several entries; `tickerStory` tells it once.
+- **Acting on a symbol closes all of its open revisit entries**, wherever it is
+  done (the user's rule: 2026-09-18 for an alert's own entries on edit, widened
+  on 2026-10-05 to the whole symbol, and to adds, removes, `revisit.apply`, and
+  every lot, position and stop change). `closeRevisitsForSymbol` is the one
+  function that does it. `closeSymbolRevisits` in `src/ops/apply.ts` calls it
+  for ops, and the CLI's `alert add/edit/remove`, `alert revisit apply`,
+  `holdings add-lot` and `holdings stop add/remove` call it directly.
+  `holdings cover` and `import` deliberately don't: they are automatic or bulk,
+  not a decision about a symbol.
+  - **`applied`, never `dismissed`, and no invented move.** A dismissed entry's
+    story line is "you left the level where it was", which is false after a
+    removed alert or a new lot. Only the edited alert's entries get
+    `appliedFrom`/`appliedTo` (from `levelMove`); the others close with nulls
+    and add no story line. One edit can stamp the same move on several entries.
+    `tickerStory` tells it once, and its "re-levelled N times" counts distinct
+    moves, not applied entries.
+  - **Holdings op messages say "Its open revisits were closed." with no ids.**
+    Revisit ids contain digits, and holdings results are public and must have
+    none (a test asserts it).
   - **An edit names no entry, and `target.revisitId` is ignored** (2026-09-22).
     A trigger panel used to send it, and `applyEdit` checked the entry existed,
     belonged to that alert, and was still open *before* editing. That guard

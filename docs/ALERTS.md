@@ -245,8 +245,14 @@ its evaluation, as a new alert would.
 Changing a moving average back into anything else is not an edit: remove it and
 add a new one.
 
-**Every edit closes that alert's open revisit entries**, wherever it is made,
-marking them `applied` and recording the level move.
+**Acting on a symbol closes all of its open revisit entries.** That means adding,
+editing or removing an alert on it, applying a suggested level, or adding, changing
+or removing a lot, a position or a stop, from the CLI or the page. A symbol you
+have just made a decision about stops asking for one. The entries are marked
+`applied`. Entries for the alert an edit moved record the move, and the rest record
+none, so a symbol's story says "you raised the level 50 to 61" only for a move that
+happened. `holdings cover` and `holdings import` don't close entries: they run on
+their own, or in bulk, and are not decisions about a symbol.
 
 ## Moving-average alerts
 

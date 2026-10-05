@@ -105,8 +105,10 @@ number as the rail and the overview tile.
   decision: **Suggest level** (a `revisit.relevel` op, which fetches that symbol's
   bars and proposes a level and a priority for that one entry), **Apply → 61** once
   there is a suggestion (a `revisit.apply` op, which re-levels the alert and closes
-  the entry), and **Dismiss** (a `revisit.dismiss` op, which closes the entry and
-  leaves the alert alone).
+  the symbol's open entries), and **Dismiss** (a `revisit.dismiss` op, which closes
+  that one entry and leaves the alert alone). Any other change to the symbol (an
+  alert added, edited or removed, or a lot or stop changed) also takes all of its
+  rows off the queue; see docs/ALERTS.md.
 
   Under the level it says what the suggestion was read off — "Basis: 60d high" —
   because the number alone isn't something you can disagree with. When a fire can't

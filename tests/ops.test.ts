@@ -224,7 +224,7 @@ describe("applyOp", () => {
 
   it("adds an alert and logs the result", async () => {
     const market = fakeMarket({ GMED: 75 });
-    const { result, duplicate } = await applyOp(add({ symbol: "gmed", level: 80.5 }), { alertsFile, opLogFile, market, now: NOW });
+    const { result, duplicate } = await applyOp(add({ symbol: "gmed", level: 80.5 }), { alertsFile, revisitsFile, opLogFile, market, now: NOW });
     expect(duplicate).toBe(false);
     expect(result).toMatchObject({ id: "op-add-0001", type: "alert.add", symbol: "GMED", ok: true, appliedAt: "2026-09-15T15:00:00.000Z" });
     expect(result.message).toContain("price crosses above 80.5");
@@ -236,8 +236,8 @@ describe("applyOp", () => {
 
   it("replaces a nearer alert on the same side, as a typed add does", async () => {
     const market = fakeMarket({ GMED: 75 });
-    const near = await applyOp(add({ symbol: "GMED", level: 78 }), { alertsFile, opLogFile, market, now: NOW });
-    const far = await applyOp(add({ symbol: "GMED", level: 90 }, "op-add-0002"), { alertsFile, opLogFile, market, now: NOW });
+    const near = await applyOp(add({ symbol: "GMED", level: 78 }), { alertsFile, revisitsFile, opLogFile, market, now: NOW });
+    const far = await applyOp(add({ symbol: "GMED", level: 90 }, "op-add-0002"), { alertsFile, revisitsFile, opLogFile, market, now: NOW });
     expect(far.result.ok).toBe(true);
     expect(far.result.message).toContain(`Replaced alert ${near.result.alertId}`);
     const live = loadAlerts(alertsFile).filter((a) => a.status === "live");
@@ -248,8 +248,8 @@ describe("applyOp", () => {
   it("applies the same op id only once", async () => {
     const market = fakeMarket({ GMED: 75 });
     const op = add({ symbol: "GMED", level: 80.5 });
-    const first = await applyOp(op, { alertsFile, opLogFile, market });
-    const second = await applyOp(op, { alertsFile, opLogFile, market });
+    const first = await applyOp(op, { alertsFile, revisitsFile, opLogFile, market });
+    const second = await applyOp(op, { alertsFile, revisitsFile, opLogFile, market });
     expect(second).toEqual({ result: first.result, duplicate: true });
     expect(loadAlerts(alertsFile)).toHaveLength(1);
     expect(loadOpLog(opLogFile)).toHaveLength(1);
@@ -258,12 +258,12 @@ describe("applyOp", () => {
 
   it("logs validation and engine rejections as results", async () => {
     const market = fakeMarket({ GMED: 80.5 });
-    const invalid = await applyOp(add({ symbol: "GMED", level: "abc" }, "op-add-0002"), { alertsFile, opLogFile, market });
+    const invalid = await applyOp(add({ symbol: "GMED", level: "abc" }, "op-add-0002"), { alertsFile, revisitsFile, opLogFile, market });
     expect(invalid.result).toMatchObject({ ok: false, symbol: "GMED" });
     expect(invalid.result.message).toContain('Invalid --level "abc"');
-    const noQuote = await applyOp(add({ symbol: "NOPE", level: 10 }, "op-add-0003"), { alertsFile, opLogFile, market });
+    const noQuote = await applyOp(add({ symbol: "NOPE", level: 10 }, "op-add-0003"), { alertsFile, revisitsFile, opLogFile, market });
     expect(noQuote.result).toMatchObject({ ok: false, message: "Not added: No quote available for NOPE." });
-    const atPrice = await applyOp(add({ symbol: "GMED", level: 80.5 }, "op-add-0004"), { alertsFile, opLogFile, market });
+    const atPrice = await applyOp(add({ symbol: "GMED", level: 80.5 }, "op-add-0004"), { alertsFile, revisitsFile, opLogFile, market });
     expect(atPrice.result.ok).toBe(false);
     expect(loadAlerts(alertsFile)).toEqual([]);
     expect(loadOpLog(opLogFile)).toHaveLength(3);
@@ -272,7 +272,7 @@ describe("applyOp", () => {
   it("edits an alert whose condition still matches the page", async () => {
     saveAlerts(alertsFile, [makeStatic()]);
     const market = fakeMarket({ TEST: 105 });
-    const { result } = await applyOp(edit("s1abcdef", "price crosses above 100", { level: 110 }), { alertsFile, opLogFile, market });
+    const { result } = await applyOp(edit("s1abcdef", "price crosses above 100", { level: 110 }), { alertsFile, revisitsFile, opLogFile, market });
     expect(result).toMatchObject({ ok: true, symbol: "TEST", alertId: "s1abcdef" });
     expect(result.message).toBe('Edited static alert s1abcdef: was "price crosses above 100", now "price crosses above 110".');
     expect((loadAlerts(alertsFile)[0] as StaticAlert).level).toBe(110);
@@ -351,7 +351,7 @@ describe("applyOp", () => {
 
   it("removes an alert that still reads as the page showed it", async () => {
     saveAlerts(alertsFile, [makeStatic(), makeStatic({ id: "keep1234" })]);
-    const { result } = await applyOp(remove("s1abcdef", "price crosses above 100"), { alertsFile, opLogFile, market: fakeMarket({}) });
+    const { result } = await applyOp(remove("s1abcdef", "price crosses above 100"), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}) });
     expect(result).toMatchObject({ ok: true, type: "alert.remove", symbol: "TEST", alertId: "s1abcdef" });
     expect(result.message).toBe("Removed static alert s1abcdef (TEST: price crosses above 100).");
     expect(loadAlerts(alertsFile).map((a) => a.id)).toEqual(["keep1234"]);
@@ -365,7 +365,7 @@ describe("applyOp", () => {
     ["TEST", "price crosses above 100", "No alert with id TEST"],
   ])("refuses to remove %s expecting %s", async (alertId, condition, message) => {
     saveAlerts(alertsFile, [makeStatic()]);
-    const { result } = await applyOp(remove(alertId, condition), { alertsFile, opLogFile, market: fakeMarket({}) });
+    const { result } = await applyOp(remove(alertId, condition), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}) });
     expect(result.ok).toBe(false);
     expect(result.message).toContain(message);
     expect(loadAlerts(alertsFile)).toHaveLength(1);
@@ -607,9 +607,10 @@ describe("applyOp", () => {
     expect(loadAlerts(alertsFile)[0]).toMatchObject({ level: 100 });
   });
 
-  // An edit made anywhere is the decision the alert's open fires were waiting
-  // on, so they all close, not just one named by a trigger panel.
-  it("closes every open entry for the alert, even when the edit names none", async () => {
+  // An edit made anywhere is the decision the symbol's open fires were waiting
+  // on, so they all close, not just one named by a trigger panel, and not just
+  // the edited alert's. Only the edited alert's entries record the move.
+  it("closes every open entry for the symbol, even when the edit names none", async () => {
     saveAlerts(alertsFile, [makeStatic()]);
     const base = newRevisitEntry(makeStatic(), 101, "2026-09-14T15:00:00.000Z", "regular");
     saveRevisits(revisitsFile, [
@@ -617,17 +618,41 @@ describe("applyOp", () => {
       { ...base, id: "rv000002", triggeredAt: "2026-09-15T14:00:00.000Z" },
       { ...base, id: "rv000003", status: "dismissed" },
       { ...base, id: "rv000004", alertId: "other123" },
+      { ...base, id: "rv000005", alertId: "else1234", symbol: "ELSE" },
     ]);
     const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }), now: NOW };
     const { result } = await applyOp(edit("s1abcdef", "price crosses above 100", { level: 110 }), ctx);
     expect(result.ok).toBe(true);
-    expect(result.message).toContain("Revisit rv000001, rv000002 marked applied.");
+    expect(result.message).toContain("Revisit rv000001, rv000002, rv000004 marked applied.");
     const byId = new Map(loadRevisits(revisitsFile).map((e) => [e.id, e]));
     for (const id of ["rv000001", "rv000002"]) {
       expect(byId.get(id)).toMatchObject({ status: "applied", appliedFrom: 100, appliedTo: 110, resolvedAt: "2026-09-15T15:00:00.000Z" });
     }
     expect(byId.get("rv000003")).toMatchObject({ status: "dismissed", appliedTo: null });
-    expect(byId.get("rv000004")!.status).toBe("open");
+    // Another alert on the symbol: closed, but its level didn't move.
+    expect(byId.get("rv000004")).toMatchObject({ status: "applied", appliedFrom: null, appliedTo: null });
+    expect(byId.get("rv000005")!.status).toBe("open");
+  });
+
+  it("closes the symbol's open entries when an alert on it is added or removed", async () => {
+    const base = newRevisitEntry(makeStatic(), 101, "2026-09-14T15:00:00.000Z", "regular");
+    saveRevisits(revisitsFile, [{ ...base, id: "rv000001" }, { ...base, id: "rv000002", symbol: "ELSE" }]);
+    const added = await applyOp(add({ symbol: "test", level: 120 }), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }), now: NOW });
+    expect(added.result.ok).toBe(true);
+    expect(added.result.message).toContain("Revisit rv000001 marked applied.");
+    expect(loadRevisits(revisitsFile).map((e) => e.status)).toEqual(["applied", "open"]);
+
+    saveAlerts(alertsFile, [makeStatic({ symbol: "ELSE" })]);
+    const removed = await applyOp(remove("s1abcdef", "price crosses above 100"), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}), now: NOW });
+    expect(removed.result.message).toContain("Revisit rv000002 marked applied.");
+    expect(loadRevisits(revisitsFile)[1]).toMatchObject({ status: "applied", appliedFrom: null, appliedTo: null, resolvedAt: "2026-09-15T15:00:00.000Z" });
+  });
+
+  it("leaves the queue alone when an add is refused", async () => {
+    seedRevisit();
+    const { result } = await applyOp(add({ symbol: "TEST", level: "abc" }), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }) });
+    expect(result.ok).toBe(false);
+    expect(loadRevisits(revisitsFile)[0].status).toBe("open");
   });
 
   it("says nothing about the queue when the alert has no open entries", async () => {
@@ -639,7 +664,7 @@ describe("applyOp", () => {
 
   it("rejects an edit when the alert changed since the page loaded", async () => {
     saveAlerts(alertsFile, [makeStatic({ level: 95 })]);
-    const { result } = await applyOp(edit("s1abcdef", "price crosses above 100", { level: 110 }), { alertsFile, opLogFile, market: fakeMarket({ TEST: 105 }) });
+    const { result } = await applyOp(edit("s1abcdef", "price crosses above 100", { level: 110 }), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }) });
     expect(result.ok).toBe(false);
     expect(result.message).toContain('It is now "price crosses above 95"');
     expect((loadAlerts(alertsFile)[0] as StaticAlert).level).toBe(95);
@@ -647,7 +672,7 @@ describe("applyOp", () => {
 
   it("targets edits by id, never by symbol", async () => {
     saveAlerts(alertsFile, [makeStatic()]);
-    const { result } = await applyOp(edit("TEST", "price crosses above 100", { level: 110 }), { alertsFile, opLogFile, market: fakeMarket({ TEST: 105 }) });
+    const { result } = await applyOp(edit("TEST", "price crosses above 100", { level: 110 }), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ TEST: 105 }) });
     expect(result).toMatchObject({ ok: false, message: "No alert with id TEST. It may have been removed." });
   });
 
@@ -659,7 +684,7 @@ describe("applyOp", () => {
     const apply = async (body: Record<string, unknown>) => {
       const parsed = parseOp({ type: "alert.edit", ...body });
       if (!parsed.ok) throw new Error(parsed.error);
-      return (await applyOp(parsed.op, { alertsFile, opLogFile, market })).result;
+      return (await applyOp(parsed.op, { alertsFile, revisitsFile, opLogFile, market })).result;
     };
     expect(await apply({ id: "op-bad-0001", expect: { condition: "c" }, params: { level: 1 } })).toMatchObject({ ok: false, message: "An edit needs target.alertId." });
     expect(await apply({ id: "op-bad-0002", target: { alertId: "s1abcdef" }, params: { level: 1 } })).toMatchObject({ ok: false, message: "An edit needs expect.condition." });
@@ -673,7 +698,7 @@ describe("applyOp", () => {
   it("rejects an edit the alert can't take, as a result", async () => {
     saveAlerts(alertsFile, [makeStatic()]);
     // A trail would make it trailing, which needs a direction.
-    const { result } = await applyOp(edit("s1abcdef", "price crosses above 100", { trailPercent: 3 }), { alertsFile, opLogFile, market: fakeMarket({}) });
+    const { result } = await applyOp(edit("s1abcdef", "price crosses above 100", { trailPercent: 3 }), { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}) });
     expect(result.ok).toBe(false);
     expect(result.message).toContain("Give the direction");
   });
@@ -683,7 +708,7 @@ describe("applyOp", () => {
     market.getQuotes = async () => {
       throw new Error("Schwab down");
     };
-    await expect(applyOp(add({ symbol: "GMED", level: 80.5 }), { alertsFile, opLogFile, market })).rejects.toThrow("Schwab down");
+    await expect(applyOp(add({ symbol: "GMED", level: 80.5 }), { alertsFile, revisitsFile, opLogFile, market })).rejects.toThrow("Schwab down");
     expect(existsSync(opLogFile)).toBe(false);
   });
 });
@@ -698,11 +723,13 @@ describe("recentOpResults", () => {
 describe("pullOps", () => {
   let dir: string;
   let alertsFile: string;
+  let revisitsFile: string;
   let opLogFile: string;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "ops-pull-"));
     alertsFile = join(dir, "alerts.json");
+    revisitsFile = join(dir, "revisits.json");
     opLogFile = join(dir, "ops.log.jsonl");
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -734,7 +761,7 @@ describe("pullOps", () => {
 
   it("applies, logs, then deletes each message, across batches", async () => {
     const queue = fakeQueue([addBody("op-pull-001", "AAA"), "not json", addBody("op-pull-002", "NOPE"), addBody("op-pull-001", "AAA")]);
-    const summary = await pullOps(queue, { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) }, { max: 10, waitSeconds: 20, log });
+    const summary = await pullOps(queue, { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ AAA: 75 }) }, { max: 10, waitSeconds: 20, log });
     expect(summary).toMatchObject({ applied: 1, rejected: 1, duplicates: 1, malformed: 1, error: null });
     expect(summary.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(queue.removed).toEqual(["r0", "r1", "r2", "r3"]);
@@ -749,7 +776,7 @@ describe("pullOps", () => {
     market.getQuotes = async () => {
       throw new Error("token expired");
     };
-    const summary = await pullOps(queue, { alertsFile, opLogFile, market }, { max: 10, waitSeconds: 0, log });
+    const summary = await pullOps(queue, { alertsFile, revisitsFile, opLogFile, market }, { max: 10, waitSeconds: 0, log });
     expect(summary.error).toBe("op-pull-003: token expired");
     expect(queue.removed).toEqual([]);
     expect(existsSync(opLogFile) ? readFileSync(opLogFile, "utf-8") : "").toBe("");
@@ -768,7 +795,7 @@ describe("pullOps", () => {
     market.getQuotes = async () => {
       throw new Error("token expired");
     };
-    const summary = await pullOps(queue, { alertsFile, opLogFile, market }, { max: 10, waitSeconds: 0, log });
+    const summary = await pullOps(queue, { alertsFile, revisitsFile, opLogFile, market }, { max: 10, waitSeconds: 0, log });
     // The error that stopped the drain is the one reported, not the release's.
     expect(summary.error).toBe("op-pull-rel: token expired");
   });
@@ -778,7 +805,7 @@ describe("pullOps", () => {
       const queue = fakeQueue([addBody("op-pull-pf1", "AAA")]);
       const summary = await pullOps(
         queue,
-        { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) },
+        { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ AAA: 75 }) },
         { max: 10, waitSeconds: 0, log, preflight: async () => "Token refresh failed (400)." }
       );
       // The whole point: receiving is itself irreversible for the length of the
@@ -795,7 +822,7 @@ describe("pullOps", () => {
       const queue = fakeQueue([addBody("op-pull-pf2", "AAA")]);
       const summary = await pullOps(
         queue,
-        { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) },
+        { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ AAA: 75 }) },
         { max: 10, waitSeconds: 0, log, preflight: async () => null }
       );
       expect(summary).toMatchObject({ applied: 1, blocked: null, error: null });
@@ -804,7 +831,7 @@ describe("pullOps", () => {
 
     it("is optional, so every other caller is unaffected", async () => {
       const queue = fakeQueue([addBody("op-pull-pf3", "AAA")]);
-      const summary = await pullOps(queue, { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) }, { max: 10, waitSeconds: 0, log });
+      const summary = await pullOps(queue, { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ AAA: 75 }) }, { max: 10, waitSeconds: 0, log });
       expect(summary).toMatchObject({ applied: 1, blocked: null });
     });
   });
@@ -815,7 +842,7 @@ describe("pullOps", () => {
     const queue = fakeQueue(bodies);
     const summary = await pullOps(
       queue,
-      { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) },
+      { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ AAA: 75 }) },
       { max: Number.POSITIVE_INFINITY, waitSeconds: 0, log }
     );
     // Each add supersedes the previous alert on the same symbol and side, so all 25 apply.
@@ -825,7 +852,7 @@ describe("pullOps", () => {
 
   it("respects --max when one is given", async () => {
     const queue = fakeQueue([addBody("op-pull-005", "AAA"), addBody("op-pull-006", "AAA"), addBody("op-pull-007", "AAA")]);
-    await pullOps(queue, { alertsFile, opLogFile, market: fakeMarket({ AAA: 75 }) }, { max: 1, waitSeconds: 0, log });
+    await pullOps(queue, { alertsFile, revisitsFile, opLogFile, market: fakeMarket({ AAA: 75 }) }, { max: 1, waitSeconds: 0, log });
     expect(queue.removed).toEqual(["r0"]);
   });
 });

@@ -855,11 +855,11 @@
       form = { alertId: a.id, condition: a.condition, revisitId, el: buildEditForm(a, revisitId) };
       editForms.set(slot, form);
     }
-    // Any edit takes the alert's open fires off the queue (closeRevisitsForEdit
+    // Any edit takes the symbol's open fires off the queue (closeRevisitsForSymbol
     // in the worker), wherever it is made. Say so before it happens.
-    const open = (current?.revisitQueue ?? []).filter((r) => r.alertId === a.id).length;
+    const open = (current?.revisitQueue ?? []).filter((r) => r.symbol === a.symbol).length;
     const closes =
-      open === 0 ? null : h("p", { class: "note", text: `Saving an edit also takes ${open === 1 ? "this alert's open fire" : `this alert's ${open} open fires`} off the revisit queue.` });
+      open === 0 ? null : h("p", { class: "note", text: `Saving an edit also takes ${open === 1 ? `${a.symbol}'s open fire` : `${a.symbol}'s ${open} open fires`} off the revisit queue.` });
     return [...pending, ...(closes ? [closes] : []), form.el];
   }
 

@@ -406,8 +406,9 @@ export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: N
     });
   }
 
-  // One edit closes every open entry for its alert (closeRevisitsForEdit), so
-  // several entries can carry the same move. It happened once; say it once.
+  // One edit closes every open entry for its symbol (closeRevisitsForSymbol),
+  // so several entries can carry the same move. It happened once; say it once.
+  // Entries closed by some other change carry no move and add no line.
   const movesTold = new Set<string>();
   for (const entry of entries) {
     // With the history known, "Holding X" means held when it fired, not now:
@@ -438,7 +439,13 @@ export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: N
   lines.sort((a, b) => a.at.localeCompare(b.at));
 
   const triggers = entries.length;
-  const applied = entries.filter((e) => e.status === "applied").length;
+  // Moves, not closed entries: one edit closes several, and a lot or stop
+  // change closes them with no move at all.
+  const applied = new Set(
+    entries
+      .filter((e) => e.status === "applied" && e.appliedFrom != null && e.appliedTo != null)
+      .map((e) => `${e.alertId}|${e.resolvedAt}|${e.appliedFrom}|${e.appliedTo}`)
+  ).size;
   const open = entries.filter((e) => e.status === "open").length;
   const reversed = entries.filter((e) => reversalOf(e) !== null).length;
   const first = entries[0];

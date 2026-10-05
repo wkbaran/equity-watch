@@ -151,6 +151,8 @@ export interface ApplyRevisitResult {
   alertId: string;
   from: number;
   to: number;
+  /** The symbol's other open entries, closed along with this one (closeRevisitsForSymbol). */
+  alsoClosed: string[];
 }
 
 export function applyRevisitLevel(
@@ -214,30 +216,41 @@ export function applyRevisitLevel(
   alert.mutedUntil = null;
   saveAlerts(alertsPath, alerts);
   resolveRevisit(revisitsPath, id, "applied");
-  return { ok: true, value: { entry, alertId: alert.id, from: previous, to: alert.level } };
+  // Moving the alert is a decision about the symbol, so the rest of its open
+  // fires close too, the alert's own ones recording the same move.
+  const alsoClosed = closeRevisitsForSymbol(revisitsPath, entry.symbol, { alertId: alert.id, moved: { from: previous, to: alert.level } });
+  return { ok: true, value: { entry, alertId: alert.id, from: previous, to: alert.level, alsoClosed } };
 }
 
 /**
- * Closes every open entry for one alert after that alert was edited, from
- * anywhere: the CLI, the alert's own panel, or a trigger's panel. Editing the
- * alert is the decision an open fire was waiting on, so the queue shouldn't
- * keep asking (the user's rule, 2026-09-18). Marked "applied", not
- * "dismissed": something was done, and `moved` lets the page and the ticker
- * story say what. Returns the ids closed, oldest first.
+ * Closes every open entry for a symbol after someone acted on it: an alert on
+ * it added, edited or removed, or a lot or stop on it added, changed or
+ * removed, from the CLI or the page. Any of those is the decision the
+ * symbol's open fires were waiting on, so the queue shouldn't keep asking
+ * (the user's rule, 2026-09-18 for an alert's own entries, widened to the
+ * whole symbol and to holdings on 2026-10-05).
+ *
+ * Marked "applied", never "dismissed": a dismissed entry's story says "you
+ * left the level where it was", which a removed alert or a new lot makes
+ * false. Only `edited` (the alert an edit changed) gets `appliedFrom` and
+ * `appliedTo`; every other entry closes with no move recorded, so the story
+ * tells nothing it can't vouch for. Returns the ids closed, oldest first.
  */
-export function closeRevisitsForEdit(
+export function closeRevisitsForSymbol(
   path: string,
-  alertId: string,
-  moved: { from: number | null; to: number | null },
+  symbol: string,
+  edited: { alertId: string; moved: { from: number | null; to: number | null } } | null = null,
   now: Date = new Date()
 ): string[] {
   if (!existsSync(path)) {
     return [];
   }
+  const target = symbol.toUpperCase();
   const entries = loadRevisits(path);
   const closed: string[] = [];
   for (const entry of entries) {
-    if (entry.alertId !== alertId || entry.status !== "open") continue;
+    if (entry.symbol.toUpperCase() !== target || entry.status !== "open") continue;
+    const moved = edited !== null && entry.alertId === edited.alertId ? edited.moved : { from: null, to: null };
     entry.status = "applied";
     entry.resolvedAt = now.toISOString();
     entry.appliedFrom = moved.from;

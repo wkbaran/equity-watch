@@ -35,7 +35,7 @@ import { writeAlertTriggerReport } from "./alerts/report.js";
 import { explainPriority, type RevisitEntry } from "./alerts/revisit.js";
 import {
   applyRevisitLevel,
-  closeRevisitsForEdit,
+  closeRevisitsForSymbol,
   listRevisits,
   loadRevisits,
   migrateDirectionStores,
@@ -646,8 +646,11 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
     return;
   }
   const a = result.added!;
+  // A new alert is a decision about the symbol, so its open fires stop asking.
+  const closed = closeRevisitsForSymbol(opts.revisitsFile, a.symbol);
   if (a.kind === "volume") {
     console.log(`Added volume alert ${a.id} (${a.symbol}, ${describeVolumeCondition(a.volume)}).`);
+    printClosed(closed);
     return;
   }
   if (a.kind === "ma") {
@@ -655,6 +658,7 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
       `Added ma alert ${a.id} (${a.symbol}, ${describeMaAlert(a)}). ` +
         `The next check records where price sits; it can fire from the check after that.`
     );
+    printClosed(closed);
     return;
   }
   const trigger = effectiveTrigger(a);
@@ -667,6 +671,14 @@ async function cmdAlertAdd(opts: AlertAddOpts): Promise<void> {
     );
   } else {
     console.log(`Added ${a.kind} alert ${a.id} (${a.symbol}, ${a.side}, trigger ${trigger}${andVolume}${direction}).`);
+  }
+  printClosed(closed);
+}
+
+/** Names the queue entries an alert or holdings change closed (closeRevisitsForSymbol). */
+function printClosed(ids: string[]): void {
+  if (ids.length > 0) {
+    console.log(`Revisit ${ids.join(", ")} marked applied.`);
   }
 }
 
@@ -936,6 +948,7 @@ function cmdAlertRemove(id: string, opts: AlertCommonOpts): void {
   }
   const a = found.alert;
   console.log(`Removed ${a.kind} alert ${a.id} (${a.symbol}: ${describeAlertCondition(a)}).`);
+  printClosed(closeRevisitsForSymbol(opts.revisitsFile, a.symbol));
 }
 
 interface AlertEditOpts extends AlertCommonOpts {
@@ -994,11 +1007,8 @@ async function cmdAlertEdit(id: string, opts: AlertEditOpts): Promise<void> {
   if (edit.ma !== undefined) {
     console.log("The next check records where price sits against the new average; it can fire from the check after that.");
   }
-  // Editing the alert is the decision its open queue entries were waiting on.
-  const closed = closeRevisitsForEdit(opts.revisitsFile, a.id, levelMove(result.before!, a));
-  if (closed.length > 0) {
-    console.log(`Revisit ${closed.join(", ")} marked applied.`);
-  }
+  // Editing the alert is the decision the symbol's open queue entries were waiting on.
+  printClosed(closeRevisitsForSymbol(opts.revisitsFile, a.symbol, { alertId: a.id, moved: levelMove(result.before!, a) }));
 }
 
 /** Levenshtein distance, for suggesting a command when a "symbol" looks like a typo of one. */
@@ -1305,8 +1315,8 @@ function cmdRevisitResolve(id: string, action: "applied" | "dismissed", opts: Re
     console.error(result.reason);
     process.exit(1);
   }
-  const { entry, alertId, from, to } = result.value;
-  console.log(`${entry.symbol}: alert ${alertId} re-levelled ${from} → ${to}. Revisit ${id} marked applied.`);
+  const { entry, alertId, from, to, alsoClosed } = result.value;
+  console.log(`${entry.symbol}: alert ${alertId} re-levelled ${from} → ${to}. Revisit ${[id, ...alsoClosed].join(", ")} marked applied.`);
 }
 
 interface MigrateDirectionsOpts extends AlertCommonOpts {
@@ -1339,7 +1349,12 @@ interface HoldingsCommonOpts extends CommonOpts {
   holdingsFile: string;
 }
 
-interface HoldingsAddLotOpts extends HoldingsCommonOpts {
+/** The holdings commands that change a lot or stop, which close the symbol's open queue entries. */
+interface HoldingsChangeOpts extends HoldingsCommonOpts {
+  revisitsFile: string;
+}
+
+interface HoldingsAddLotOpts extends HoldingsChangeOpts {
   symbol: string;
   count: string;
   basis: string;
@@ -1350,7 +1365,7 @@ interface HoldingsListOpts extends HoldingsCommonOpts {
   symbol?: string;
 }
 
-interface HoldingsStopAddOpts extends HoldingsCommonOpts {
+interface HoldingsStopAddOpts extends HoldingsChangeOpts {
   symbol: string;
   price: string;
   count?: string;
@@ -1364,6 +1379,7 @@ function cmdHoldingsAddLot(opts: HoldingsAddLotOpts): void {
     purchaseDate: opts.date,
   });
   console.log(`Added lot ${lot.id}: ${lot.count} ${lot.symbol} @ ${lot.basisPerShare} on ${lot.purchaseDate}.`);
+  printClosed(closeRevisitsForSymbol(opts.revisitsFile, lot.symbol));
 }
 
 function cmdHoldingsList(opts: HoldingsListOpts): void {
@@ -1394,6 +1410,7 @@ function cmdHoldingsStopAdd(opts: HoldingsStopAddOpts): void {
     count: opts.count !== undefined ? parseFloat(opts.count) : null,
   });
   console.log(`Added stop ${stop.id}: ${stop.symbol} @ ${stop.stopPrice} (${stop.count ?? "all"} shares).`);
+  printClosed(closeRevisitsForSymbol(opts.revisitsFile, stop.symbol));
 }
 
 function cmdHoldingsStopList(opts: HoldingsListOpts): void {
@@ -1408,9 +1425,14 @@ function cmdHoldingsStopList(opts: HoldingsListOpts): void {
   }
 }
 
-function cmdHoldingsStopRemove(id: string, opts: HoldingsCommonOpts): void {
-  const removed = removeStop(opts.holdingsFile, id);
-  console.log(removed ? `Removed stop ${id}.` : `No stop with id ${id}.`);
+function cmdHoldingsStopRemove(id: string, opts: HoldingsChangeOpts): void {
+  const stop = loadHoldingsStore(opts.holdingsFile).stops.find((s) => s.id === id);
+  if (stop === undefined || !removeStop(opts.holdingsFile, id)) {
+    console.log(`No stop with id ${id}.`);
+    return;
+  }
+  console.log(`Removed stop ${id}.`);
+  printClosed(closeRevisitsForSymbol(opts.revisitsFile, stop.symbol));
 }
 
 async function cmdHoldingsCheck(opts: HoldingsCommonOpts & { config: string; profileCacheDir: string }): Promise<void> {
@@ -2428,6 +2450,9 @@ function buildProgram(): Command {
 
   const withHoldingsCommon = (cmd: Command): Command =>
     withCommon(cmd).option(...HOLDINGS_FILE_OPTION);
+  /** For the commands that change a lot or stop: those close the symbol's open queue entries. */
+  const withHoldingsChange = (cmd: Command): Command =>
+    withHoldingsCommon(cmd).option("--revisits-file <path>", "Path to the revisit-queue JSON store", "revisits.json");
 
   withHoldingsCommon(holdingsCmd.command("cover"))
     .description("Create a starting alert for each held position that has none (10% above basis, or just above price)")
@@ -2449,7 +2474,7 @@ function buildProgram(): Command {
     .option("--dry-run", "Print the plan without writing anything")
     .action((opts: HoldingsImportOpts) => cmdHoldingsImport(opts));
 
-  withHoldingsCommon(holdingsCmd.command("add-lot"))
+  withHoldingsChange(holdingsCmd.command("add-lot"))
     .description("Record a purchase lot")
     .requiredOption("--symbol <symbol>", "Ticker symbol")
     .requiredOption("--count <n>", "Shares purchased")
@@ -2464,7 +2489,7 @@ function buildProgram(): Command {
 
   const stopCmd = holdingsCmd.command("stop").description("Manage stops (record-keeping only, not live-monitored yet)");
 
-  withHoldingsCommon(stopCmd.command("add"))
+  withHoldingsChange(stopCmd.command("add"))
     .description("Record a stop")
     .requiredOption("--symbol <symbol>", "Ticker symbol")
     .requiredOption("--price <price>", "Stop price")
@@ -2476,9 +2501,9 @@ function buildProgram(): Command {
     .option("--symbol <symbol>", "Only show this symbol")
     .action((opts: HoldingsListOpts) => cmdHoldingsStopList(opts));
 
-  withHoldingsCommon(stopCmd.command("remove <id>"))
+  withHoldingsChange(stopCmd.command("remove <id>"))
     .description("Remove a stop by id")
-    .action((id: string, opts: HoldingsCommonOpts) => cmdHoldingsStopRemove(id, opts));
+    .action((id: string, opts: HoldingsChangeOpts) => cmdHoldingsStopRemove(id, opts));
 
   withHoldingsCommon(holdingsCmd.command("check"))
     .description("Check holdings for the 10%-above-basis, month-stagnant, and 3%-appreciation alerts")

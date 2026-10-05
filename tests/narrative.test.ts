@@ -336,6 +336,23 @@ describe("tickerStory", () => {
     expect(story.lines.some((l) => l.text.includes("you lowered the level 50 to 45"))).toBe(true);
   });
 
+  // A lot or stop change, or another alert's edit, closes entries with no move.
+  it("counts moves rather than closed entries, and says nothing for a close with no move", () => {
+    const moved = { status: "applied" as const, appliedFrom: 50, appliedTo: 55, resolvedAt: "2026-09-18T15:00:00Z" };
+    const closed = { status: "applied" as const, appliedFrom: null, appliedTo: null, resolvedAt: "2026-09-19T15:00:00Z" };
+    const story = tickerStory(
+      "QQ",
+      [
+        entry({ id: "1", symbol: "QQ", triggeredAt: "2026-09-16T14:00:00Z", levelAtTrigger: 50, ...moved }),
+        entry({ id: "2", symbol: "QQ", triggeredAt: "2026-09-17T14:00:00Z", levelAtTrigger: 50, ...moved }),
+        entry({ id: "3", symbol: "QQ", triggeredAt: "2026-09-18T16:00:00Z", levelAtTrigger: 50, ...closed }),
+      ],
+      NONE
+    );
+    expect(story.summary).toBe("QQ has fired 3 times since Sep 16, re-levelled 1 time.");
+    expect(story.lines.map((l) => l.text).filter((t) => t.includes("you "))).toEqual(["Sep 18: you raised the level 50 to 55."]);
+  });
+
   it("records a dismissal as a decision, not an absence", () => {
     const story = tickerStory(
       "GO",
