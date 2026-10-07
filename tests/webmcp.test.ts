@@ -6,6 +6,7 @@ import {
   editFieldsFromJson,
   parseLotEdit,
   parseLotInput,
+  parseSaleParams,
   parseStopEdit,
   parseStopInput,
   type Parsed,
@@ -89,6 +90,7 @@ describe("tool schemas match the worker's validators", () => {
   it("add_lot", () => props("add_lot").forEach((k) => acceptsKey(parseLotInput, k)));
   it("edit_lot", () => props("edit_lot", ["lotId"]).forEach((k) => acceptsKey(parseLotEdit, k)));
   it("add_stop", () => props("add_stop").forEach((k) => acceptsKey(parseStopInput, k)));
+  it("sell_shares", () => props("sell_shares", ["symbol", "lotId"]).forEach((k) => acceptsKey((p) => parseSaleParams(p, "position"), k)));
   it("edit_stop", () => props("edit_stop", ["stopId"]).forEach((k) => acceptsKey(parseStopEdit, k)));
 
   it("every required property exists, and objects refuse extras", () => {

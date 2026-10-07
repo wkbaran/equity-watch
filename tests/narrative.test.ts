@@ -616,6 +616,17 @@ describe("holdings in the story", () => {
     expect(buildStories([entry({ symbol: "MKS" })], ctx)).toEqual([]);
   });
 
+  it("calls a removal a sale only when one was recorded, and a partial one keeps the lot", () => {
+    const sold = (lotId: string, at: string, partial = false): HoldingEvent => ({ type: "lot.remove", at, symbol: "TGT", lotId, sold: true, ...(partial ? { partial } : {}) });
+    expect(
+      texts([
+        add("l1", "2026-09-11T15:00:00.000Z"),
+        sold("l1", "2026-09-16T15:00:00.000Z", true),
+        sold("l1", "2026-09-18T15:00:00.000Z"),
+      ])
+    ).toEqual(["Sep 10: TGT crossed above 110.", "Sep 11: you bought TGT.", "Sep 16: you sold part of your TGT position.", "Sep 18: you sold your TGT position."]);
+  });
+
   it("never states a size", () => {
     const lines = texts([add("l1", "2026-09-11T15:00:00.000Z"), add("l2", "2026-09-14T15:00:00.000Z"), remove("l1", "2026-09-16T15:00:00.000Z")]);
     for (const line of lines.slice(1)) expect(line.replace(/^Sep \d+: /, "")).not.toMatch(/\d/);
@@ -641,6 +652,34 @@ describe("holdingHistory", () => {
       "lot.add l0 2026-07-01T12:00:00.000Z",
       "lot.remove l0 2026-07-01T12:00:00.000Z",
       "lot.add l1 2026-08-01T12:00:00.000Z",
+    ]);
+  });
+
+  it("tells a sale's trimmed lots as partial and its emptied lots as sold, at the sale date", () => {
+    const lot = { id: "l1", symbol: "TGT", count: 3, basisPerShare: 100, purchaseDate: "2026-08-01", createdAt: "2026-08-01T15:00:00.000Z" };
+    const events = holdingHistory({
+      lots: [lot],
+      stops: [],
+      alertState: [],
+      removedLots: [{ lotId: "l0", symbol: "TGT", purchaseDate: "2026-07-01", createdAt: "2026-07-01T15:00:00.000Z", removedAt: "2026-09-02T12:00:00.000Z" }],
+      sales: [
+        {
+          id: "s1",
+          symbol: "TGT",
+          count: 7,
+          price: 120,
+          soldOn: "2026-09-02",
+          recordedAt: "2026-09-20T15:00:00.000Z",
+          lots: [
+            { lotId: "l0", count: 5, basisPerShare: 90, purchaseDate: "2026-07-01", emptied: true },
+            { lotId: "l1", count: 2, basisPerShare: 100, purchaseDate: "2026-08-01", emptied: false },
+          ],
+        },
+      ],
+    });
+    expect(events.filter((e) => e.type === "lot.remove")).toEqual([
+      { type: "lot.remove", at: "2026-09-02T12:00:00.000Z", symbol: "TGT", lotId: "l1", partial: true, sold: true },
+      { type: "lot.remove", at: "2026-09-02T12:00:00.000Z", symbol: "TGT", lotId: "l0", sold: true },
     ]);
   });
 });

@@ -5,14 +5,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MarketData } from "../src/alerts/engine.js";
 import { buildDashboard } from "../src/dashboard.js";
-import { editLot, removeLot, removePosition, replaceStop } from "../src/holdings/engine.js";
+import { editLot, removeLot, removePosition, replaceStop, sellShares } from "../src/holdings/engine.js";
 import type { HoldingsStore } from "../src/holdings/models.js";
 import { loadHoldingsStore, saveHoldingsStore } from "../src/holdings/store.js";
 import { applyOp, parseOp, type OpResult } from "../src/ops/apply.js";
 import type { StaticAlert } from "../src/alerts/models.js";
 import { newRevisitEntry } from "../src/alerts/revisit.js";
 import { loadRevisits, saveRevisits } from "../src/alerts/revisitStore.js";
-import { parseLotEdit, parseLotInput, parseStopInput } from "../src/ops/validate.js";
+import { parseLotEdit, parseLotInput, parseSaleParams, parseStopInput } from "../src/ops/validate.js";
 import type { Quote } from "../src/providers/schwab.js";
 import { NO_OPS, siteDocument, siteFingerprint, writeSite } from "../src/web/site.js";
 import { VAULT_FILE, openVault, sealVault, vaultContents, type VaultDocument } from "../src/web/vault.js";
@@ -169,7 +169,118 @@ describe("holdings engine", () => {
   });
 });
 
+describe("selling shares", () => {
+  const NOW = new Date("2026-10-07T18:00:00.000Z");
+
+  it("takes the oldest lot first and trims the next, keeping its id and basis", () => {
+    const r = sellShares(holdingsFile, { symbol: "AAPL", count: 12, price: 180, soldOn: "2026-10-07" }, NOW);
+    expect(r).toMatchObject({ ok: true, closedPosition: false });
+    const s = loadHoldingsStore(holdingsFile);
+    expect(s.lots.filter((l) => l.symbol === "AAPL")).toMatchObject([{ id: "lotaapl2", count: 3, basisPerShare: 170 }]);
+    expect(s.sales).toEqual([
+      {
+        id: expect.any(String),
+        symbol: "AAPL",
+        count: 12,
+        price: 180,
+        soldOn: "2026-10-07",
+        recordedAt: NOW.toISOString(),
+        lots: [
+          { lotId: "lotaapl1", count: 10, basisPerShare: 150, purchaseDate: "2026-09-01", emptied: true },
+          { lotId: "lotaapl2", count: 2, basisPerShare: 170, purchaseDate: "2026-09-08", emptied: false },
+        ],
+      },
+    ]);
+    // Only the emptied lot is a removal; the stop stays with the shares left.
+    expect(s.removedLots?.map((r) => r.lotId)).toEqual(["lotaapl1"]);
+    expect(s.stops.map((x) => x.id)).toEqual(["stopaapl", "stopmsft"]);
+  });
+
+  it("dates a backdated sale's removals at the sale, not when it was entered", () => {
+    sellShares(holdingsFile, { symbol: "MSFT", count: 3, price: 420, soldOn: "2026-10-01" }, NOW);
+    expect(loadHoldingsStore(holdingsFile).removedLots?.[0].removedAt).toBe("2026-10-01T12:00:00.000Z");
+  });
+
+  it("sells from one lot, or one account, only", () => {
+    sellShares(holdingsFile, { symbol: "AAPL", count: 2, price: 180, lotId: "lotaapl2" }, NOW);
+    expect(loadHoldingsStore(holdingsFile).lots.map((l) => [l.id, l.count])).toEqual([["lotaapl1", 10], ["lotaapl2", 3], ["lotmsft1", 3]]);
+    // "" is the lots with no account label.
+    expect(sellShares(holdingsFile, { symbol: "AAPL", count: 4, price: 180, account: "" }, NOW)).toMatchObject({ ok: false, reason: "too-many" });
+    expect(sellShares(holdingsFile, { symbol: "AAPL", count: 1, price: 180, account: "ira" }, NOW)).toMatchObject({ ok: false, reason: "no-lots" });
+    sellShares(holdingsFile, { symbol: "AAPL", count: 3, price: 180, account: "" }, NOW);
+    expect(loadHoldingsStore(holdingsFile).lots.map((l) => l.id)).toEqual(["lotaapl1", "lotmsft1"]);
+  });
+
+  it("selling the last share closes the position like removing the last lot", () => {
+    expect(sellShares(holdingsFile, { symbol: "MSFT", count: 3, price: 420 }, NOW)).toMatchObject({ ok: true, closedPosition: true });
+    const s = loadHoldingsStore(holdingsFile);
+    expect(s.stops.map((x) => x.id)).toEqual(["stopaapl"]);
+    expect(s.alertState).toEqual([]);
+  });
+
+  it("refuses more shares than are there, and changes nothing", () => {
+    expect(sellShares(holdingsFile, { symbol: "AAPL", count: 16, price: 180 }, NOW)).toEqual({ ok: false, reason: "too-many" });
+    expect(loadHoldingsStore(holdingsFile)).toEqual(store());
+  });
+
+  it.each([
+    [{}, { ok: true, value: {} }],
+    [{ price: "52.1" }, { ok: true, value: { price: 52.1 } }],
+    [{ count: 3, price: 52, soldOn: "2026-10-01", account: " roth " }, { ok: true, value: { count: 3, price: 52, soldOn: "2026-10-01", account: "roth" } }],
+    [{ count: 3 }, { ok: false, error: "A sale needs a price." }],
+    [{ price: 0 }, { ok: false, error: "Price must be a positive number." }],
+    [{ price: 5, soldOn: "2026-02-30" }, { ok: false, error: "Sale date must be a real date." }],
+  ])("parses position sale params %j", (params, expected) => {
+    expect(parseSaleParams(params, "position")).toEqual(expected);
+  });
+
+  it("takes no account on a lot", () => {
+    expect(parseSaleParams({ price: 5, account: "roth" }, "lot")).toEqual({ ok: false, error: 'Unknown field "account".' });
+  });
+});
+
 describe("holdings ops", () => {
+  it("lot.remove with a price sells it, all or part", async () => {
+    expect(await apply({ type: "lot.remove", target: { lotId: "lotaapl1" }, expect: AAPL1_AS_SHOWN, params: { count: 4, price: 180 } })).toMatchObject({
+      ok: true,
+      message: "Sold part of a lot of AAPL.",
+    });
+    expect(loadHoldingsStore(holdingsFile).lots[0]).toMatchObject({ id: "lotaapl1", count: 6 });
+    expect(await apply({ type: "lot.remove", target: { lotId: "lotmsft1" }, expect: { count: 3, basisPerShare: 410, purchaseDate: "2026-08-20" }, params: { price: 420 } })).toMatchObject({
+      ok: true,
+      message: "Sold the last of MSFT, so the position and its stops are gone.",
+    });
+    expect(loadHoldingsStore(holdingsFile).sales?.map((x) => [x.symbol, x.count, x.price])).toEqual([["AAPL", 4, 180], ["MSFT", 3, 420]]);
+  });
+
+  it("position.remove with a price sells part of it oldest first, guarded on the sizes shown", async () => {
+    const lotIds = ["lotaapl1", "lotaapl2"];
+    expect(await apply({ type: "position.remove", target: { symbol: "AAPL" }, expect: { lotIds, shares: 14 }, params: { count: 12, price: 180 } })).toMatchObject({
+      ok: false,
+      message: "Not removed: the AAPL position changed since the page loaded.",
+    });
+    expect(await apply({ type: "position.remove", target: { symbol: "AAPL" }, expect: { lotIds, shares: 15 }, params: { count: 16, price: 180 } })).toMatchObject({
+      ok: false,
+      message: "Not sold: that is more AAPL shares than the position holds.",
+    });
+    expect(await apply({ type: "position.remove", target: { symbol: "AAPL" }, expect: { lotIds, shares: 15 }, params: { count: 12, price: 180 } })).toMatchObject({
+      ok: true,
+      message: "Sold part of the AAPL position.",
+    });
+    expect(loadHoldingsStore(holdingsFile).lots.filter((l) => l.symbol === "AAPL")).toMatchObject([{ id: "lotaapl2", count: 3 }]);
+  });
+
+  it("position.remove with a price and an account sells only that account's lots", async () => {
+    const r = await apply({ type: "position.remove", target: { symbol: "AAPL" }, expect: { lotIds: ["lotaapl1", "lotaapl2"] }, params: { price: 180, account: "roth" } });
+    expect(r).toMatchObject({ ok: true, message: "Sold part of the AAPL position." });
+    expect(loadHoldingsStore(holdingsFile).lots.filter((l) => l.symbol === "AAPL").map((l) => l.id)).toEqual(["lotaapl2"]);
+  });
+
+  it("a removal without a price still records no sale", async () => {
+    await apply({ type: "position.remove", target: { symbol: "MSFT" }, expect: { lotIds: ["lotmsft1"] }, params: {} });
+    expect(loadHoldingsStore(holdingsFile).sales).toBeUndefined();
+  });
+
   it("adds a lot", async () => {
     const r = await apply({ type: "lot.add", params: { symbol: "nvda", count: 4, basisPerShare: 120.5, purchaseDate: "2026-09-12", account: "margin" } });
     expect(r).toMatchObject({ ok: true, symbol: "NVDA", alertId: null, message: "Added a lot of NVDA." });
@@ -319,6 +430,11 @@ describe("holdings ops", () => {
       await apply({ type: "stop.remove", target: { stopId: "stopmsft" }, expect: { stopPrice: 999 } }),
       await apply({ type: "stop.edit", target: { stopId: "stopmsft" }, expect: { stopPrice: 999 }, params: { stopPrice: 400 } }),
       await apply({ type: "stop.edit", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 }, params: { stopPrice: 150 } }),
+      await apply({ type: "lot.remove", target: { lotId: "lotaapl1" }, expect: AAPL1_AS_SHOWN, params: { count: 4, price: 180.25 } }),
+      await apply({ type: "lot.remove", target: { lotId: "lotaapl1" }, expect: { ...AAPL1_AS_SHOWN, count: 6 }, params: { count: 7, price: 180.25 } }),
+      await apply({ type: "lot.remove", target: { lotId: "lotaapl1" }, expect: { ...AAPL1_AS_SHOWN, count: 6 }, params: { count: 2 } }),
+      await apply({ type: "position.remove", target: { symbol: "AAPL" }, expect: { lotIds: ["lotaapl1", "lotaapl2"] }, params: { count: 99, price: 180.25 } }),
+      await apply({ type: "position.remove", target: { symbol: "AAPL" }, expect: { lotIds: ["lotaapl1", "lotaapl2"] }, params: { count: 3, price: 180.25 } }),
       await apply({ type: "position.remove", target: { symbol: "MSFT" }, expect: { lotIds: ["lotmsft1"] } }),
     ];
     for (const r of results) {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { MarketData } from "../alerts/engine.js";
-import { computeBasis, type HoldingsStore, type Lot, type Stop } from "./models.js";
+import { computeBasis, saleStoryTime, type HoldingsStore, type Lot, type Sale, type SaleLot, type Stop } from "./models.js";
 import { loadHoldingsStore, saveHoldingsStore } from "./store.js";
 import type { HoldingsNotifier } from "./notify.js";
 import { localDateString } from "../timezone.js";
@@ -164,8 +164,7 @@ export function editLot(path: string, id: string, edit: LotEdit): Lot | null {
  * old position's armed/notified state.
  */
 /** Keeps the removal for the ticker's story (RemovedLot says why, and what it may not carry). */
-function recordRemoval(store: HoldingsStore, lots: Lot[], now: Date): void {
-  const removedAt = now.toISOString();
+function recordRemoval(store: HoldingsStore, lots: Lot[], now: Date, removedAt: string = now.toISOString()): void {
   store.removedLots = [
     ...(store.removedLots ?? []),
     ...lots.map((l) => ({ lotId: l.id, symbol: l.symbol, purchaseDate: l.purchaseDate, createdAt: l.createdAt, removedAt })),
@@ -206,6 +205,93 @@ export function removePosition(path: string, symbol: string, now: Date = new Dat
   saveHoldingsStore(path, store);
   return { lots, stops };
 }
+
+export interface SaleInput {
+  symbol: string;
+  count: number;
+  price: number;
+  /** Defaults to today's local date. */
+  soldOn?: string;
+  /** Take only from this lot. */
+  lotId?: string;
+  /** Take only from lots in this account, oldest first. Ignored with lotId. */
+  account?: string;
+}
+
+/**
+ * Lots in the order a sale takes from them: oldest purchase first, which is
+ * the brokers' default (FIFO), with the entry time and id as tie-breaks so the
+ * order never depends on how the store happens to be sorted. Exported because
+ * web/app.js previews the same order and `tests/holdings.test.ts` diffs it.
+ */
+export function saleOrder<T extends Pick<Lot, "id" | "purchaseDate"> & { createdAt?: string }>(lots: T[]): T[] {
+  return [...lots].sort(
+    (a, b) => a.purchaseDate.localeCompare(b.purchaseDate) || (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.id.localeCompare(b.id)
+  );
+}
+
+export type SaleResult = { ok: true; sale: Sale; closedPosition: boolean } | { ok: false; reason: "no-lots" | "too-many" };
+
+/**
+ * Sells `count` shares at `price`, taking whole lots oldest first and trimming
+ * the last one it reaches, or only from one lot or one account. An emptied lot
+ * is removed and recorded the way removeLot records one; selling the last
+ * share closes the position and its stops, as removing the last lot does.
+ */
+export function sellShares(path: string, input: SaleInput, now: Date = new Date()): SaleResult {
+  const store = loadHoldingsStore(path);
+  const eligible = saleOrder(
+    store.lots.filter(
+      (l) =>
+        l.symbol === input.symbol &&
+        (input.lotId !== undefined ? l.id === input.lotId : input.account === undefined || (l.account ?? "") === input.account)
+    )
+  );
+  if (eligible.length === 0) {
+    return { ok: false, reason: "no-lots" };
+  }
+  const available = eligible.reduce((sum, l) => sum + l.count, 0);
+  // A hair of slack for fractional shares typed back as they were shown.
+  if (input.count > available + 1e-9) {
+    return { ok: false, reason: "too-many" };
+  }
+
+  const sale: Sale = {
+    id: randomUUID().slice(0, 8),
+    symbol: input.symbol,
+    count: input.count,
+    price: input.price,
+    soldOn: input.soldOn ?? localDateString(now),
+    recordedAt: now.toISOString(),
+    lots: [],
+  };
+  const emptied: Lot[] = [];
+  let left = input.count;
+  for (const lot of eligible) {
+    if (left <= 1e-9) break;
+    const take = Math.min(lot.count, left);
+    left -= take;
+    const remaining = roundShares(lot.count - take);
+    const part: SaleLot = { lotId: lot.id, count: take, basisPerShare: lot.basisPerShare, purchaseDate: lot.purchaseDate, emptied: remaining <= 0 };
+    sale.lots.push(part);
+    if (part.emptied) emptied.push(lot);
+    else lot.count = remaining;
+  }
+
+  const gone = new Set(emptied.map((l) => l.id));
+  store.lots = store.lots.filter((l) => !gone.has(l.id));
+  recordRemoval(store, emptied, now, saleStoryTime(sale));
+  store.sales = [...(store.sales ?? []), sale];
+  const closedPosition = !store.lots.some((l) => l.symbol === input.symbol);
+  if (closedPosition) {
+    closePosition(store, input.symbol);
+  }
+  saveHoldingsStore(path, store);
+  return { ok: true, sale, closedPosition };
+}
+
+/** Share counts can be fractional; keep a subtraction's float noise out of the store. */
+const roundShares = (n: number): number => Math.round(n * 1e6) / 1e6;
 
 export function addStop(path: string, input: { symbol: string; stopPrice: number; count?: number | null }): Stop {
   const store = loadHoldingsStore(path);

@@ -1005,6 +1005,32 @@ set): `canEdit()` reads `current.site.ops`, so before the first poll everyone lo
 locked, and gating in `parseRoute` bounced an unlocked `#/stories` load to the
 overview.
 
+## Sales ride on the removal ops, and the page previews the worker's lot order
+
+Since 2026-10-07 the page's position panel sells shares instead of removing lots
+(docs/HOLDINGS.md "Selling"). Things that look simplifiable and aren't:
+
+- **There is no `position.sell` op.** A `price` in `lot.remove`/`position.remove`
+  params makes it a sale (`parseSaleParams`). A new op type would have needed the
+  Lambda's `TARGET_KEY` and a stack deploy. Empty params are still a plain
+  removal, which is what "Remove without a sale" sends for a lot entered by mistake.
+- **The op always carries a price.** "Empty means the current price" is decided
+  in the browser (and in `sell_shares`), from the vault's `HoldingRow.price`,
+  read at submit time. The worker has no quote to default from, and holdings ops
+  deliberately need no market data.
+- **`saleOrder` exists twice**, in `src/holdings/engine.ts` and `web/app.js`, and
+  `tests/holdings.test.ts` diffs them. The lots table is the preview ("all 10",
+  "2 of 5"), so a page that sorted differently would promise one lot and the
+  worker would sell another. Its tie-break reads `createdAt`, which is why the
+  vault's lots carry it now.
+- **A partly sold lot keeps its id and shrinks.** Only emptied lots go into
+  `removedLots`. The story learns about the trim from `sales` (`holdingHistory`
+  emits a `partial` removal), so `heldAt` and `holdingLines` must not drop a lot
+  on a partial event.
+- **`sales` holds size and price, so it stays in `holdings.json`.** It isn't in
+  the vault yet. The story says "you sold part of your X position" with no
+  numbers, like every other holdings line.
+
 ## Trigger details before 2026-09-13 are incomplete, and can't be backfilled
 
 `RevisitEntry.condition` and `RevisitEntry.volume` are recorded by the engine

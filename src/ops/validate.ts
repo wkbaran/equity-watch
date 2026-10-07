@@ -414,6 +414,8 @@ export interface StopInput {
 
 const LOT_KEYS = ["symbol", "count", "basisPerShare", "purchaseDate", "account", "stopPrice", "stopCount"];
 const LOT_EDIT_KEYS = ["count", "basisPerShare", "purchaseDate", "account"];
+const LOT_SALE_KEYS = ["count", "price", "soldOn"];
+const POSITION_SALE_KEYS = [...LOT_SALE_KEYS, "account"];
 const STOP_KEYS = ["symbol", "stopPrice", "count"];
 const STOP_EDIT_KEYS = ["stopPrice", "count"];
 
@@ -452,13 +454,13 @@ function symbolValue(raw: unknown): string {
 }
 
 /** A calendar date as typed, not a market date, so a UTC round-trip is the right check here. */
-function dateValue(raw: unknown): string {
+function dateValue(raw: unknown, label = "Purchase date"): string {
   if (typeof raw !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    fail("Purchase date must be YYYY-MM-DD.");
+    fail(`${label} must be YYYY-MM-DD.`);
   }
   const d = new Date(`${raw}T00:00:00Z`);
   if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== raw) {
-    fail("Purchase date must be a real date.");
+    fail(`${label} must be a real date.`);
   }
   return raw;
 }
@@ -533,5 +535,38 @@ export function parseStopEdit(params: unknown): Parsed<{ stopPrice: number; coun
       stopPrice: positiveValue("Stop price", f.stopPrice),
       ...("count" in f ? { count: present(f.count) ? positiveValue("Shares covered", f.count) : null } : {}),
     };
+  });
+}
+
+/**
+ * A removal's params: `lot.remove` and `position.remove` (account only on the
+ * latter). Empty params are the original removal, which records no sale. A
+ * price makes it a sale; without `count` the sale is of everything targeted.
+ * A count or a date with no price is refused rather than read as a removal,
+ * because "sell some" with nothing to record it at is not something the store
+ * can say.
+ */
+export interface SaleParams {
+  count?: number;
+  price?: number;
+  soldOn?: string;
+  account?: string;
+}
+
+export function parseSaleParams(params: unknown, kind: "lot" | "position"): Parsed<SaleParams> {
+  return attempt(() => {
+    const f = objectFields(params ?? {}, kind === "lot" ? LOT_SALE_KEYS : POSITION_SALE_KEYS);
+    const out: SaleParams = {};
+    if (present(f.count)) out.count = positiveValue("Shares", f.count);
+    if (present(f.price)) out.price = positiveValue("Price", f.price);
+    if (present(f.soldOn)) out.soldOn = dateValue(f.soldOn, "Sale date");
+    if (f.account !== undefined && f.account !== null) {
+      if (typeof f.account !== "string" || f.account.trim().length > 40) fail("Account must be text of at most 40 characters.");
+      out.account = f.account.trim();
+    }
+    if (out.price === undefined && (out.count !== undefined || out.soldOn !== undefined || out.account !== undefined)) {
+      fail("A sale needs a price.");
+    }
+    return out;
   });
 }

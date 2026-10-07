@@ -226,30 +226,92 @@ test("edits a lot, sending only what changed and the lot as shown", async ({ pag
   });
 });
 
-test("removals take a second click", async ({ page }) => {
+test("removals without a sale take a second click", async ({ page }) => {
   await storeToken(page);
   await openHoldings(page);
   await expand(page, "AA");
 
-  const lotRemove = detail(page).locator("table.lots > tbody > tr:not(.lot-edit)").nth(1).getByRole("button", { name: "Remove" });
-  await lotRemove.click();
+  // A lot entered by mistake: open the band on that lot, then remove with no sale.
+  await detail(page).locator("table.lots > tbody > tr:not(.lot-edit)").nth(1).getByRole("button", { name: "Sell" }).click();
+  await detail(page).getByRole("button", { name: "Remove without a sale" }).click();
   await expect(detail(page).getByRole("button", { name: "Click again to confirm" })).toHaveCount(1);
   expect(await queuedOps(page)).toEqual([]);
   await detail(page).getByRole("button", { name: "Click again to confirm" }).click();
   await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+  await expect(detail(page).locator("form.sell-band")).toBeHidden();
 
   await detail(page).locator(".stop-tag").getByRole("button", { name: "Remove" }).click();
   await detail(page).locator(".stop-tag").getByRole("button", { name: "Click again to confirm" }).click();
   await expect.poll(async () => (await queuedOps(page)).length).toBe(2);
 
-  await detail(page).getByRole("button", { name: "Remove the AA position" }).click();
+  await detail(page).getByRole("button", { name: "Sell from position" }).click();
+  await detail(page).getByRole("button", { name: "Remove without a sale" }).click();
   await detail(page).getByRole("button", { name: "Click again to confirm" }).click();
   await expect.poll(async () => (await queuedOps(page)).length).toBe(3);
 
   const [lot, stop, position] = await queuedOps(page);
-  expect(lot).toMatchObject({ type: "lot.remove", target: { lotId: "lot00002" }, expect: { count: 5, basisPerShare: 44, purchaseDate: "2026-09-08", account: "margin" } });
+  expect(lot).toMatchObject({ type: "lot.remove", target: { lotId: "lot00002" }, expect: { count: 5, basisPerShare: 44, purchaseDate: "2026-09-08", account: "margin" }, params: {} });
   expect(stop).toMatchObject({ type: "stop.remove", target: { stopId: "stop0001" }, expect: { stopPrice: 38 } });
-  expect(position).toMatchObject({ type: "position.remove", target: { symbol: "AA" }, expect: { lotIds: ["lot00001", "lot00002"] } });
+  expect(position).toMatchObject({ type: "position.remove", target: { symbol: "AA" }, expect: { lotIds: ["lot00001", "lot00002"] }, params: {} });
+});
+
+test("sells part of a position oldest lot first, at the page's price when none is typed", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  await expand(page, "AA");
+  const band = detail(page).locator("form.sell-band");
+  await expect(band).toBeHidden();
+  await expect(detail(page).locator("th.lot-take")).toBeHidden();
+
+  await detail(page).getByRole("button", { name: "Sell from position" }).click();
+  await expect(band).toBeVisible();
+  await expect(band.getByLabel("Shares to sell")).toHaveValue("15");
+  await band.getByLabel("Shares to sell").fill("12");
+
+  // The lots table is the preview: all of the older lot, two of the newer.
+  const takes = detail(page).locator("table.lots > tbody > tr:not(.lot-edit) td.lot-take");
+  await expect(takes).toHaveText(["all 10", "2 of 5"]);
+  // 12 at 46.34 against 10 x 40 + 2 x 44 = 488 of basis.
+  await expect(band.locator(".sale-result")).toHaveText("+$68.08 (+14.0%) on $488.00 of basis. Leaves 3 shares.");
+
+  await band.getByLabel("Shares to sell").fill("16");
+  await expect(band.locator(".sale-result")).toHaveText("The position holds 15.");
+  await band.getByLabel("Shares to sell").fill("12");
+
+  await band.getByRole("button", { name: "Queue sale" }).click();
+  await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+  await expect(band).toBeHidden();
+  const [op] = await queuedOps(page);
+  expect(op).toMatchObject({
+    type: "position.remove",
+    target: { symbol: "AA" },
+    expect: { lotIds: ["lot00001", "lot00002"], shares: 15 },
+    params: { count: 12, price: 46.34 },
+  });
+  expect(op.params.soldOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+});
+
+test("a lot's Sell sells from that lot, at a typed price and date", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  await expand(page, "AA");
+  await detail(page).locator("table.lots > tbody > tr:not(.lot-edit)").nth(1).getByRole("button", { name: "Sell" }).click();
+  const band = detail(page).locator("form.sell-band");
+  await expect(band.getByLabel("Take from")).toHaveValue("lot:lot00002");
+  await expect(band.getByLabel("Shares to sell")).toHaveValue("5");
+  await band.getByLabel("Shares to sell").fill("3");
+  await band.getByLabel("Price").fill("41");
+  await band.getByLabel("Sold on").fill("2026-10-01");
+  await expect(band.locator(".sale-result strong")).toHaveText("−$9.00");
+  await band.getByRole("button", { name: "Queue sale" }).click();
+  await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+  const [op] = await queuedOps(page);
+  expect(op).toMatchObject({
+    type: "lot.remove",
+    target: { lotId: "lot00002" },
+    expect: { count: 5, basisPerShare: 44, purchaseDate: "2026-09-08", account: "margin" },
+    params: { count: 3, price: 41, soldOn: "2026-10-01" },
+  });
 });
 
 test("adds a stop", async ({ page }) => {

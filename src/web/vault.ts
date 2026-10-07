@@ -29,7 +29,8 @@ const TAG_BYTES = 16;
 export interface VaultContents {
   /** The dashboard's position rows, with live prices. */
   holdings: HoldingRow[];
-  lots: Pick<Lot, "id" | "symbol" | "count" | "basisPerShare" | "purchaseDate" | "account">[];
+  /** createdAt breaks a same-day tie in the order a sale takes lots (saleOrder), which the page previews. */
+  lots: Pick<Lot, "id" | "symbol" | "count" | "basisPerShare" | "purchaseDate" | "createdAt" | "account">[];
   stops: Pick<Stop, "id" | "symbol" | "count" | "stopPrice">[];
   /**
    * Stories tell when you bought and sold, so they travel here and never in
@@ -55,12 +56,13 @@ export function vaultKey(token: string): Buffer {
 export function vaultContents(dashboard: Pick<Dashboard, "holdings" | "stories">, store: HoldingsStore): VaultContents {
   return {
     holdings: dashboard.holdings,
-    lots: store.lots.map(({ id, symbol, count, basisPerShare, purchaseDate, account }) => ({
+    lots: store.lots.map(({ id, symbol, count, basisPerShare, purchaseDate, createdAt, account }) => ({
       id,
       symbol,
       count,
       basisPerShare,
       purchaseDate,
+      createdAt,
       ...(account !== undefined ? { account } : {}),
     })),
     stops: store.stops.map(({ id, symbol, count, stopPrice }) => ({ id, symbol, count, stopPrice })),

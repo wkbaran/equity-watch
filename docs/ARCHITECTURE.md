@@ -53,7 +53,7 @@ op is queued. Opening the vault **is** the token check.
 Unlocking turns on two things at once: holdings become visible (they are otherwise
 absent, not hidden), and the editing controls appear — add, edit and remove alerts
 of any kind; suggest a new level for a queue entry, apply it, or dismiss the entry;
-add, edit and remove lots; remove a position; add, edit and remove stops; and give
+add and edit lots; sell all or part of a position, or remove one without a sale; add, edit and remove stops; and give
 an uncovered position a starting alert. **Lock editing** drops the token and the
 decrypted holdings from memory.
 
@@ -102,6 +102,14 @@ The op types are `alert.add`, `alert.edit`, `alert.remove`, `revisit.relevel`,
 Adding another means updating the Lambda's inline `TARGET_KEY` and redeploying the
 stack, or the page gets "Unknown op type"; `tests/lambdaContract.test.ts` asserts the
 template and `OP_TYPES` agree.
+
+A sale is not an op type of its own. It is a `lot.remove` or `position.remove`
+whose params name a `price` (plus an optional `count`, `soldOn`, and, on a
+position, `account`). Empty params are the original removal, which records no
+sale. That keeps the Lambda unchanged, and a page from before sales still sends
+the ops it always did. A partial sale's `position.remove` also sends
+`expect.shares`, the total the page showed, because a lot edit can change the
+sizes without changing which lots there are.
 
 Three of them are the atomic unit of a command that is otherwise a whole-store
 batch pass, so a decision can be made one row at a time from the page:

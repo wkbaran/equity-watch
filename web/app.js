@@ -1690,7 +1690,7 @@
 
   const lotExpect = (lot) => ({ count: lot.count, basisPerShare: lot.basisPerShare, purchaseDate: lot.purchaseDate, account: lot.account ?? null });
 
-  function lotRows(lot) {
+  function lotRows(lot, sell) {
     const count = numberInput(lot.count);
     const basis = numberInput(lot.basisPerShare);
     const date = h("input", { type: "date", value: lot.purchaseDate });
@@ -1741,11 +1741,12 @@
       h("button", { type: "submit", text: "Queue edit" }),
       error
     );
-    const formRow = h("tr", { class: "lot-edit", hidden: true }, h("td", { colspan: "5" }, form));
+    const formRow = h("tr", { class: "lot-edit", hidden: true }, h("td", { colspan: "6" }, form));
     const row = h(
       "tr",
-      {},
-      h("td", { text: lot.count }),
+      { "data-lot-id": lot.id },
+      h("td", { class: "lot-shares" }, h("span", { text: lot.count })),
+      h("td", { class: "lot-take" }),
       h("td", { text: money(lot.basisPerShare) }),
       h("td", { text: lot.purchaseDate }),
       h("td", { text: lot.account ?? "–" }),
@@ -1763,12 +1764,14 @@
               formRow.hidden = !formRow.hidden;
             },
           }),
-          confirmButton("Remove", () =>
-            submitOp(
-              { type: "lot.remove", target: { lotId: lot.id }, expect: lotExpect(lot), params: {} },
-              { symbol: lot.symbol, summary: `remove a ${lot.symbol} lot (${lot.count} @ ${lot.basisPerShare})` }
-            )
-          )
+          h("button", {
+            type: "button",
+            text: "Sell",
+            onclick: (e) => {
+              e.stopPropagation();
+              sell.open(`lot:${lot.id}`);
+            },
+          })
         )
       )
     );
@@ -1989,6 +1992,8 @@
     ]);
     const cached = detailCache.get(symbol);
     if (cached?.sig === sig) return cached.el;
+    const sellToggle = h("button", { type: "button", text: "Sell from position", "aria-expanded": "false", onclick: () => sell.toggle() });
+    const sell = sellBand(symbol, lots, sellToggle);
     const el = h(
       "div",
       { class: "position-detail" },
@@ -1998,11 +2003,15 @@
         h(
           "table",
           { class: "lots" },
-          h("thead", {}, h("tr", {}, ...["Shares", "Basis / share", "Purchased", "Account", ""].map((t) => h("th", { text: t })))),
-          h("tbody", {}, ...lots.flatMap(lotRows))
+          h(
+            "thead",
+            {},
+            h("tr", {}, ...["Shares", "Selling", "Basis / share", "Purchased", "Account", ""].map((t, i) => h("th", { class: i === 1 ? "lot-take" : null, text: t })))
+          ),
+          h("tbody", {}, ...lots.flatMap((lot) => lotRows(lot, sell)))
         )
       ),
-      h("div", { class: "detail-cols" }, stopsBlock(symbol, stops), alertColumn(symbol)),
+      h("div", { class: "detail-cols" }, sell.el, stopsBlock(symbol, stops), alertColumn(symbol)),
       h(
         "div",
         { class: "actions" },
@@ -2013,16 +2022,241 @@
             prefillLotAdd(symbol, soleAccount(symbol));
           },
         }),
-        confirmButton(`Remove the ${symbol} position`, () =>
-          submitOp(
-            { type: "position.remove", target: { symbol }, expect: { lotIds: lots.map((l) => l.id) }, params: {} },
-            { symbol, summary: `remove the ${symbol} position` }
-          )
-        )
+        sellToggle
       )
     );
+    sell.attach(el);
     detailCache.set(symbol, { sig, el });
     return el;
+  }
+
+  /**
+   * The order a sale takes lots in: oldest purchase first (FIFO, the brokers'
+   * default), then entry time, then id. A copy of saleOrder in
+   * src/holdings/engine.ts, which the worker applies; tests/holdings.test.ts
+   * checks both agree, because the preview here has to name the lots the
+   * worker will actually take.
+   */
+  function saleOrder(lots) {
+    return [...lots].sort(
+      (a, b) => a.purchaseDate.localeCompare(b.purchaseDate) || (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.id.localeCompare(b.id)
+    );
+  }
+
+  /**
+   * How many shares of each lot a sale of `count` takes, in sale order, and
+   * what it realizes against their basis. Pure, so the preview and the
+   * submit read the same numbers.
+   */
+  function planSale(lots, count, price) {
+    const takes = [];
+    let left = count;
+    for (const lot of saleOrder(lots)) {
+      if (left <= 1e-9) break;
+      const take = Math.min(lot.count, left);
+      takes.push({ lot, take });
+      left -= take;
+    }
+    const cost = takes.reduce((sum, t) => sum + t.take * t.lot.basisPerShare, 0);
+    const proceeds = price === null ? null : count * price;
+    return { takes, short: left > 1e-9, cost, proceeds, gain: proceeds === null ? null : proceeds - cost };
+  }
+
+  /**
+   * The Sell band of an expanded position: how many shares, at what price, on
+   * what day, and from which lots. Opened by the position's Sell button (all of
+   * it) or a lot row's Sell (that lot).
+   *
+   * While it is open the lots table above is the preview: a Selling column
+   * names what each lot gives up, the shares cell fills by the fraction taken,
+   * and lots the sale doesn't reach dim. So the answer to "which shares?" is on
+   * the lots themselves rather than in a sentence about them.
+   *
+   * An empty price is the price on the page, which is the user's rule
+   * (2026-10-07). It is read at submit time, not when the band opened, and the
+   * note says how old it is, since a quiet run can leave it half an hour stale.
+   * The op always carries a number: the worker has no quote to default from.
+   */
+  function sellBand(symbol, lots, toggle) {
+    let detail = null;
+    const accounts = [...new Set(lots.map((l) => l.account ?? ""))];
+    const scopes = [{ value: "all", text: lots.length > 1 ? "Oldest lots first" : "This lot", lots }];
+    if (accounts.length > 1) {
+      for (const a of accounts.sort()) {
+        scopes.push({ value: `account:${a}`, text: `Oldest in ${a || "no account"} first`, lots: lots.filter((l) => (l.account ?? "") === a), account: a });
+      }
+    }
+    if (lots.length > 1) {
+      for (const lot of saleOrder(lots)) {
+        scopes.push({ value: `lot:${lot.id}`, text: `The ${lot.count}-share lot bought ${lot.purchaseDate}`, lots: [lot], lot });
+      }
+    }
+    const scopeOf = (value) => scopes.find((sc) => sc.value === value) ?? scopes[0];
+    const available = (sc) => sc.lots.reduce((sum, l) => sum + l.count, 0);
+
+    const from = h("select", {}, ...scopes.map((sc) => h("option", { value: sc.value, text: sc.text })));
+    const count = numberInput(null, { placeholder: "shares" });
+    const all = h("button", { type: "button", class: "link-button", onclick: () => ((count.value = String(available(scopeOf(from.value)))), update()) });
+    const price = numberInput(null);
+    const date = h("input", { type: "date", value: localToday(), max: localToday() });
+    const result = h("p", { class: "sale-result", "aria-live": "polite" });
+    const error = h("span", { class: "form-error" });
+    const submit = h("button", { type: "submit", text: "Queue sale" });
+    const cancel = h("button", { type: "button", class: "link-button", text: "Cancel", onclick: () => close() });
+    // The old Remove: for a lot entered by mistake, which was never sold.
+    const removeOnly = confirmButton("Remove without a sale", () => {
+      const sc = scopeOf(from.value);
+      return sc.lot
+        ? submitOp(
+            { type: "lot.remove", target: { lotId: sc.lot.id }, expect: lotExpect(sc.lot), params: {} },
+            { symbol, summary: `remove a ${symbol} lot (${sc.lot.count} @ ${sc.lot.basisPerShare})` }
+          ).then((queued) => queued && close())
+        : submitOp(
+            { type: "position.remove", target: { symbol }, expect: { lotIds: lots.map((l) => l.id) }, params: {} },
+            { symbol, summary: `remove the ${symbol} position` }
+          ).then((queued) => queued && close());
+    });
+    removeOnly.classList.add("link-button");
+
+    const quoted = () => holdingFor(symbol)?.price ?? null;
+    const fromField = field("Take from", from);
+    fromField.hidden = scopes.length === 1;
+
+    function update() {
+      const sc = scopeOf(from.value);
+      const have = available(sc);
+      all.textContent = `of ${have}`;
+      all.setAttribute("aria-label", `Sell all ${have}`);
+      const q = quoted();
+      price.placeholder = q === null ? "per share" : money(q).replace(/,/g, "");
+      const n = positive(count.value);
+      const p = price.value.trim() === "" ? q : positive(price.value);
+      const plan = n === null ? null : planSale(sc.lots, n, p);
+      // Account and whole-position removals have no "without a sale" here: a
+      // removal with no price is all of a lot or all of the position.
+      removeOnly.hidden = !(sc.lot || sc.value === "all");
+
+      const taking = new Map((plan?.takes ?? []).map((t) => [t.lot.id, t.take]));
+      const inScope = new Set(sc.lots.map((l) => l.id));
+      for (const row of detail?.querySelectorAll("tr[data-lot-id]") ?? []) {
+        const id = row.getAttribute("data-lot-id");
+        const lot = lots.find((l) => l.id === id);
+        const take = taking.get(id) ?? 0;
+        row.classList.toggle("sale-untouched", take === 0);
+        row.classList.toggle("sale-outside", !inScope.has(id));
+        row.querySelector(".lot-shares").style.setProperty("--take", String(lot ? Math.min(1, take / lot.count) : 0));
+        row.querySelector(".lot-take").textContent = take === 0 ? "" : take >= lot.count - 1e-9 ? `all ${take}` : `${take} of ${lot.count}`;
+      }
+
+      if (plan === null) {
+        result.replaceChildren();
+        return;
+      }
+      if (plan.short) {
+        result.textContent = `${sc.lot ? "That lot" : sc.account !== undefined ? "That account" : "The position"} holds ${have}.`;
+        return;
+      }
+      const remaining = available({ lots }) - n;
+      const after =
+        remaining <= 1e-9
+          ? `Closes the ${symbol} position${stopsOf(symbol) ? " and removes its stop" : ""}.`
+          : `Leaves ${Math.round(remaining * 1e6) / 1e6} shares.`;
+      if (plan.gain === null) {
+        result.textContent = `${after} Enter a price to see the result.`;
+        return;
+      }
+      const sign = plan.gain > 0 ? "+" : plan.gain < 0 ? "−" : "";
+      const gainPct = plan.cost > 0 ? (plan.gain / plan.cost) * 100 : null;
+      result.replaceChildren(
+        h("strong", { class: plan.gain >= 0 ? "up" : "down", text: `${sign}$${money(Math.abs(plan.gain))}` }),
+        gainPct === null ? "" : ` (${pct(gainPct)})`,
+        ` on $${money(plan.cost)} of basis. ${after}`
+      );
+    }
+
+    const stopsOf = (sym) => (vaultData?.stops ?? []).some((st) => st.symbol === sym);
+    const priceNote = h("p", { class: "note" });
+    function updatePriceNote() {
+      const q = quoted();
+      priceNote.textContent =
+        q === null
+          ? "There is no price for this symbol on the page, so enter the one you sold at."
+          : `Left empty, the sale is recorded at ${money(q)}, the price as of ${current ? ago(current.generatedAt) : "the last update"}. Applied at the next scheduled check.`;
+    }
+
+    const form = h(
+      "form",
+      {
+        class: "ops-form sell-band",
+        hidden: true,
+        onsubmit: async (e) => {
+          e.preventDefault();
+          error.textContent = "";
+          const sc = scopeOf(from.value);
+          const n = positive(count.value);
+          if (n === null) return (error.textContent = "Enter the shares to sell, above 0.");
+          if (n > available(sc) + 1e-9) return (error.textContent = `${sc.lot ? "That lot" : sc.account !== undefined ? "That account" : "The position"} holds ${available(sc)}.`);
+          const typed = price.value.trim() !== "";
+          const p = typed ? positive(price.value) : quoted();
+          if (p === null) return (error.textContent = typed ? "Enter a price above 0." : "Enter the price you sold at.");
+          if (!date.value) return (error.textContent = "Enter the sale date.");
+          const params = { count: n, price: p, soldOn: date.value };
+          const summary = `sell ${n} ${symbol} @ ${p}${date.value === localToday() ? "" : ` on ${date.value}`}`;
+          submit.disabled = true;
+          const queued = sc.lot
+            ? await submitOp({ type: "lot.remove", target: { lotId: sc.lot.id }, expect: lotExpect(sc.lot), params }, { symbol, summary })
+            : await submitOp(
+                {
+                  type: "position.remove",
+                  target: { symbol },
+                  expect: { lotIds: lots.map((l) => l.id), shares: available({ lots }) },
+                  params: sc.account !== undefined ? { ...params, account: sc.account } : params,
+                },
+                { symbol, summary }
+              );
+          submit.disabled = false;
+          if (queued) close();
+        },
+      },
+      h("div", { class: "sale-fields" }, fromField, h("div", { class: "field sale-count" }, h("label", { for: (count.id = `field-${++fieldSeq}`), text: "Shares to sell" }), h("span", { class: "with-suffix" }, count, all)), field("Price", price), field("Sold on", date)),
+      result,
+      h("div", { class: "form-foot" }, submit, cancel, removeOnly, error),
+      priceNote
+    );
+    for (const input of [count, price]) input.addEventListener("input", update);
+    from.addEventListener("change", () => {
+      count.value = String(available(scopeOf(from.value)));
+      update();
+    });
+
+    function open(scope = "all") {
+      from.value = scopeOf(scope).value;
+      count.value = String(available(scopeOf(from.value)));
+      price.value = "";
+      error.textContent = "";
+      form.hidden = false;
+      detail?.classList.add("selling");
+      toggle.setAttribute("aria-expanded", "true");
+      updatePriceNote();
+      update();
+      count.focus({ preventScroll: true });
+      count.select();
+    }
+    function close() {
+      form.hidden = true;
+      detail?.classList.remove("selling");
+      toggle.setAttribute("aria-expanded", "false");
+      for (const row of detail?.querySelectorAll("tr[data-lot-id]") ?? []) {
+        row.classList.remove("sale-untouched", "sale-outside");
+        row.querySelector(".lot-shares").style.removeProperty("--take");
+      }
+    }
+    return {
+      el: form,
+      open,
+      toggle: () => (form.hidden ? open() : close()),
+      attach: (el) => (detail = el),
+    };
   }
 
   // ---- state ----------------------------------------------------------------

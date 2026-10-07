@@ -11,11 +11,11 @@ import { describeAlertCondition } from "../alerts/describe.js";
 import { addAlert, type MarketData } from "../alerts/engine.js";
 import { loadAlerts } from "../alerts/store.js";
 import { coverCandidates, coverLevel } from "../holdings/cover.js";
-import { addLot, addStop, editLot, removeLot, removePosition, replaceStop } from "../holdings/engine.js";
+import { addLot, addStop, editLot, removeLot, removePosition, replaceStop, sellShares, type SaleResult } from "../holdings/engine.js";
 import { computeBasis, type Lot } from "../holdings/models.js";
 import { loadHoldingsStore, removeStop } from "../holdings/store.js";
 import type { Op, Outcome } from "./apply.js";
-import { parseLotEdit, parseLotInput, parseStopEdit, parseStopInput, stringField } from "./validate.js";
+import { parseLotEdit, parseLotInput, parseSaleParams, parseStopEdit, parseStopInput, stringField } from "./validate.js";
 
 const ok = (symbol: string, message: string): Outcome => ({ symbol, alertId: null, ok: true, message });
 const reject = (symbol: string | null, message: string): Outcome => ({ symbol, alertId: null, ok: false, message });
@@ -32,6 +32,23 @@ function lotMatches(lot: Lot, expect: unknown): boolean {
     field(expect, "purchaseDate") === lot.purchaseDate &&
     (field(expect, "account") ?? null) === (lot.account ?? null)
   );
+}
+
+/** Says what a sale did without a share count or price: this message is public. */
+function saleOutcome(symbol: string, sold: SaleResult, from: "a lot" | "the position" | "the account's shares"): Outcome {
+  if (!sold.ok) {
+    return reject(
+      symbol,
+      sold.reason === "no-lots"
+        ? `Not sold: no ${symbol} lots in that account.`
+        : `Not sold: that is more ${symbol} shares than ${from === "a lot" ? "the lot" : from === "the position" ? "the position" : "the account"} holds.`
+    );
+  }
+  if (sold.closedPosition) {
+    return ok(symbol, `Sold the last of ${symbol}, so the position and its stops are gone.`);
+  }
+  const whole = sold.sale.lots.every((l) => l.emptied);
+  return ok(symbol, from === "a lot" ? `Sold ${whole ? "a" : "part of a"} lot of ${symbol}.` : `Sold part of the ${symbol} position.`);
 }
 
 export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
@@ -68,6 +85,15 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
         return reject(lot.symbol, `Not changed: that ${lot.symbol} lot changed since the page loaded.`);
       }
       if (op.type === "lot.remove") {
+        const sale = parseSaleParams(op.params, "lot");
+        if (!sale.ok) {
+          return reject(lot.symbol, sale.error);
+        }
+        const { price, count, soldOn } = sale.value;
+        if (price !== undefined) {
+          const sold = sellShares(holdingsFile, { symbol: lot.symbol, count: count ?? lot.count, price, soldOn, lotId });
+          return saleOutcome(lot.symbol, sold, "a lot");
+        }
         const removed = removeLot(holdingsFile, lotId)!;
         return ok(
           lot.symbol,
@@ -87,10 +113,8 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       if (!symbol) {
         return reject(null, "A position removal needs target.symbol.");
       }
-      const lotIds = loadHoldingsStore(holdingsFile)
-        .lots.filter((l) => l.symbol === symbol)
-        .map((l) => l.id)
-        .sort();
+      const lots = loadHoldingsStore(holdingsFile).lots.filter((l) => l.symbol === symbol);
+      const lotIds = lots.map((l) => l.id).sort();
       if (lotIds.length === 0) {
         return reject(symbol, `No ${symbol} position to remove.`);
       }
@@ -99,8 +123,28 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       const expected = field(op.expect, "lotIds");
       const same =
         Array.isArray(expected) && expected.every((id) => typeof id === "string") && [...expected].sort().join(",") === lotIds.join(",");
-      if (!same) {
+      // A sale of part of it also depends on the sizes, which an edit can change
+      // without adding or removing a lot. Optional: older pages send only ids.
+      const shares = field(op.expect, "shares");
+      const total = lots.reduce((sum, l) => sum + l.count, 0);
+      if (!same || (shares !== undefined && shares !== total)) {
         return reject(symbol, `Not removed: the ${symbol} position changed since the page loaded.`);
+      }
+      const sale = parseSaleParams(op.params, "position");
+      if (!sale.ok) {
+        return reject(symbol, sale.error);
+      }
+      const { price, count, soldOn, account } = sale.value;
+      if (price !== undefined) {
+        const inAccount = account === undefined ? lots : lots.filter((l) => (l.account ?? "") === account);
+        const sold = sellShares(holdingsFile, {
+          symbol,
+          count: count ?? inAccount.reduce((sum, l) => sum + l.count, 0),
+          price,
+          soldOn,
+          account,
+        });
+        return saleOutcome(symbol, sold, account === undefined ? "the position" : "the account's shares");
       }
       removePosition(holdingsFile, symbol);
       return ok(symbol, `Removed the ${symbol} position and its stops.`);

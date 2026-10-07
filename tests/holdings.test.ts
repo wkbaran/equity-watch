@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ABOVE_BASIS_THRESHOLD_PCT, checkHoldings, STAGNANT_MAX_PROFIT_PCT, STAGNANT_MIN_DAYS, STOP_ATR_BAND, STOP_ATR_MULTIPLE } from "../src/holdings/engine.js";
+import { ABOVE_BASIS_THRESHOLD_PCT, checkHoldings, saleOrder, STAGNANT_MAX_PROFIT_PCT, STAGNANT_MIN_DAYS, STOP_ATR_BAND, STOP_ATR_MULTIPLE } from "../src/holdings/engine.js";
 import { computeBasis, emptyHoldingsStore, type HoldingsStore, type Lot } from "../src/holdings/models.js";
 import type { Quote } from "../src/providers/schwab.js";
 
@@ -291,5 +291,26 @@ describe("web/app.js mirrors the holdings thresholds", () => {
       expect(stopKinds({ price: null, pctFromBasis: null, stops: [99] })).toEqual([]);
       expect(stopKinds({ price: null, pctFromBasis: null })).toEqual(["no-stop"]);
     });
+  });
+});
+
+describe("web/app.js takes lots for a sale in the worker's order", () => {
+  const appJs = readFileSync(new URL("../web/app.js", import.meta.url), "utf-8");
+  const start = appJs.indexOf("  function saleOrder(lots) {");
+  const end = appJs.indexOf("\n  }\n", start);
+  const copy = new Function(`${appJs.slice(start, end)}\n  }\nreturn saleOrder;`)() as typeof saleOrder;
+
+  it("finds the copy", () => expect(start).toBeGreaterThan(-1));
+
+  it("sorts by purchase date, then entry time, then id", () => {
+    const lot = (id: string, purchaseDate: string, createdAt: string) => ({ id, purchaseDate, createdAt });
+    const lots = [
+      lot("b", "2026-09-02", "2026-09-02T15:00:00.000Z"),
+      lot("c", "2026-09-01", "2026-09-03T15:00:00.000Z"),
+      lot("a", "2026-09-01", "2026-09-03T15:00:00.000Z"),
+      lot("d", "2026-09-01", "2026-09-01T15:00:00.000Z"),
+    ];
+    expect(copy(lots).map((l) => l.id)).toEqual(["d", "a", "c", "b"]);
+    expect(copy(lots)).toEqual(saleOrder(lots));
   });
 });

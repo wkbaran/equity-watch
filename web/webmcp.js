@@ -871,7 +871,7 @@
       group: "holdings",
       ops: ["lot.remove"],
       description:
-        "Queue deleting one lot, by id. Rejected at apply time if the lot has changed since this call read it. The person is asked to approve.",
+        "Queue deleting one lot, by id, with no sale recorded: for a lot entered by mistake. To record selling it, use sell_shares. Rejected at apply time if the lot has changed since this call read it. The person is asked to approve.",
       inputSchema: object({ lotId: lotIdProp }, ["lotId"]),
       run(api, args, signal) {
         const lot = api.vault().lots.find((l) => l.id === args.lotId);
@@ -888,7 +888,7 @@
       group: "holdings",
       ops: ["position.remove"],
       description:
-        "Queue deleting a whole position: every lot and stop for the symbol. Rejected at apply time if a lot has been added or removed since this call read them. The person is asked to approve.",
+        "Queue deleting a whole position, every lot and stop for the symbol, with no sale recorded. To record selling it, use sell_shares. Rejected at apply time if a lot has been added or removed since this call read them. The person is asked to approve.",
       inputSchema: object({ symbol: symbolProp }, ["symbol"]),
       run(api, args, signal) {
         const symbol = String(args.symbol ?? "").trim().toUpperCase();
@@ -898,6 +898,53 @@
           op: { type: "position.remove", target: { symbol }, expect: { lotIds: lots.map((l) => l.id) }, params: {} },
           symbol,
           summary: `remove the ${symbol} position`,
+        });
+      },
+    },
+    {
+      name: "sell_shares",
+      group: "holdings",
+      ops: ["lot.remove", "position.remove"],
+      description:
+        "Queue a sale: shares of a position at a price, recorded with the date. Takes whole lots oldest first and trims the last one reached, or only from lotId, or only from one account's lots. Without count it sells everything in that scope; without price it records the price the dashboard shows for the position. Selling the last share closes the position and drops its stops. Rejected at apply time if the lots have changed since this call read them. The person is asked to approve. To delete a lot entered by mistake, with no sale, use remove_lot.",
+      inputSchema: object(
+        {
+          symbol: symbolProp,
+          count: { type: "number", description: "Shares sold. Above 0. Omit for all of them." },
+          price: { type: "number", description: "Price per share sold at. Omit for the dashboard's current price." },
+          soldOn: { type: "string", description: "YYYY-MM-DD. Defaults to today." },
+          lotId: { ...lotIdProp, description: "Sell only from this lot, from get_position." },
+          account: { type: "string", description: "Sell only from lots in this account, oldest first. An empty string is lots with no account." },
+        },
+        ["symbol"]
+      ),
+      run(api, args, signal) {
+        const symbol = String(args.symbol ?? "").trim().toUpperCase();
+        const lots = api.vault().lots.filter((l) => l.symbol.toUpperCase() === symbol);
+        if (lots.length === 0) return refuse(`${symbol || "That symbol"} isn't a position.`);
+        const lot = given(args.lotId) ? lots.find((l) => l.id === args.lotId) : null;
+        if (lot === undefined) return refuse(`No ${symbol} lot has that id.`);
+        if (lot && given(args.account)) return refuse("Give lotId or account, not both.");
+        const scope = lot ? [lot] : given(args.account) || args.account === "" ? lots.filter((l) => (l.account ?? "") === args.account) : lots;
+        if (scope.length === 0) return refuse(`No ${symbol} lots are in that account.`);
+        const held = scope.reduce((sum, l) => sum + l.count, 0);
+        const count = given(args.count) ? args.count : held;
+        if (count > held) return refuse(`That is more shares than ${lot ? "the lot" : "the position"} holds (${held}).`);
+        const price = given(args.price) ? args.price : (api.vault().holdings.find((r) => r.symbol === symbol)?.price ?? null);
+        if (price === null) return refuse(`The dashboard has no price for ${symbol}; give the price sold at.`);
+        const params = { count, price, ...(given(args.soldOn) ? { soldOn: args.soldOn } : {}) };
+        const summary = `sell ${count} ${symbol} @ ${price}${given(args.soldOn) ? ` on ${args.soldOn}` : ""}`;
+        return queue(api, "holdings", signal, {
+          op: lot
+            ? { type: "lot.remove", target: { lotId: lot.id }, expect: lotExpect(lot), params }
+            : {
+                type: "position.remove",
+                target: { symbol },
+                expect: { lotIds: lots.map((l) => l.id), shares: lots.reduce((sum, l) => sum + l.count, 0) },
+                params: scope === lots ? params : { ...params, account: args.account },
+              },
+          symbol,
+          summary,
         });
       },
     },

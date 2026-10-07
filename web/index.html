@@ -496,17 +496,19 @@
   }
   .position-detail::before { content: "Lots"; grid-column: 1; grid-row: 1; padding-top: 0.3rem; }
   .position-detail > .table-wrap { grid-column: 2; grid-row: 1; }
-  .position-detail > .detail-cols, .position-detail > .actions { display: contents; }
-  .position-detail > .actions > :first-child { grid-column: 3; grid-row: 1; align-self: start; }
-  .position-detail > .actions > :last-child { grid-column: 2 / -1; grid-row: 4; justify-self: end; margin-top: 0.9rem; }
+  .position-detail > .detail-cols { display: contents; }
+  /* Add to position and Sell, stacked beside the lots they change. */
+  .position-detail > .actions { grid-column: 3; grid-row: 1; align-self: start; margin-top: 0; flex-direction: column; align-items: stretch; gap: 0.4rem; }
   .position-detail > .detail-cols > * {
     position: relative; grid-column: 2 / -1; margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px solid var(--line);
   }
-  .position-detail > .detail-cols > .stops { grid-row: 2; }
-  .position-detail > .detail-cols > .alert-col { grid-row: 3; }
+  .position-detail > .detail-cols > .sell-band { grid-row: 2; }
+  .position-detail > .detail-cols > .stops { grid-row: 3; }
+  .position-detail > .detail-cols > .alert-col { grid-row: 4; }
   .position-detail > .detail-cols > *::before {
     position: absolute; top: calc(0.9rem + 0.3rem); left: calc(-1 * (var(--label-w) + var(--col-gap)));
   }
+  .position-detail > .detail-cols > .sell-band::before { content: "Sell"; color: var(--signal); }
   .position-detail > .detail-cols > .stops::before { content: "Stop"; }
   .position-detail > .detail-cols > .alert-col::before { content: "Alert"; }
   /* The border runs under the labels too, so each band reads as one row. */
@@ -517,6 +519,38 @@
   table.lots th { cursor: default; background: transparent; position: static; }
   table.lots th, table.lots td { padding: 5px 10px; }
   tr.lot-edit > td { text-align: left; white-space: normal; }
+  /*
+   * Selling: the lots table is the preview. The Selling column only exists
+   * while the band is open; each lot's shares cell fills along its foot by the
+   * fraction the sale takes (--take, set by sellBand), and lots it doesn't
+   * reach step back.
+   */
+  table.lots .lot-take { display: none; }
+  .position-detail.selling table.lots .lot-take { display: table-cell; color: var(--signal); font-weight: 600; white-space: nowrap; }
+  .position-detail.selling table.lots .lot-shares {
+    background: linear-gradient(var(--signal), var(--signal)) no-repeat left 10px bottom 2px / calc(var(--take, 0) * (100% - 20px)) 3px;
+    transition: background-size 0.25s ease-out;
+  }
+  .position-detail.selling table.lots tr.sale-untouched > td { color: var(--muted); }
+  .position-detail.selling table.lots tr.sale-outside > td:not(:last-child) { opacity: 0.5; }
+  /* A column that must not wrap: the band label's flex-basis: 100% (phone width) would otherwise read as a height. */
+  .sell-band:not([hidden]) { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 0.7rem; }
+  .position-detail > .detail-cols > .sell-band::before { flex-basis: auto; }
+  .sell-band > .note { flex-basis: auto; }
+  .sale-fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.6rem 0.8rem; }
+  .sale-fields select { max-width: 17rem; }
+  .with-suffix { display: inline-flex; align-items: center; gap: 0.5rem; }
+  .sell-band .field input[type="number"] { width: 7rem; }
+  .sale-result { margin: 0; color: var(--sub); font-size: 0.88rem; min-height: 1.6rem; }
+  .sale-result strong { font-size: 1.3rem; font-weight: 700; font-stretch: 85%; font-variant-numeric: tabular-nums; margin-right: 0.15rem; }
+  .sale-result strong.up { color: var(--signal); }
+  .sale-result strong.down { color: var(--ink); }
+  .sell-band .form-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+  .sell-band .form-foot > .link-button:last-of-type { margin-left: auto; }
+  button.link-button { background: none; border: none; padding: 0.2rem 0; color: var(--sub); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+  button.link-button:hover { background: none; color: var(--ink); text-decoration-color: var(--signal); }
+  button.link-button.danger { color: var(--signal); }
+  @media (prefers-reduced-motion: reduce) { .position-detail.selling table.lots .lot-shares { transition: none; } }
   .position-detail .ops-form { margin: 0; padding: 0; }
   /* Stop band: the stops you have, then the form to add one, on one line. */
   .stops { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.6rem 1.25rem; }
@@ -591,14 +625,14 @@
        visible width so it never scrolls sideways with the table. */
     .position-detail { grid-template-columns: minmax(0, 1fr) auto; padding: 0.9rem 1rem 1rem; position: sticky; left: 0; width: calc(100vw - 2rem); }
     .position-detail::before { grid-column: 1; grid-row: 1; }
-    .position-detail > .actions > :first-child { grid-column: 2; grid-row: 1; }
+    .position-detail > .actions { grid-column: 2; grid-row: 1; flex-direction: row; justify-self: end; }
     .position-detail > .table-wrap { grid-column: 1 / -1; grid-row: 2; margin-top: 0.4rem; }
     .position-detail > .detail-cols > * { grid-column: 1 / -1; }
-    .position-detail > .detail-cols > .stops { grid-row: 3; }
-    .position-detail > .detail-cols > .alert-col { grid-row: 4; }
+    .position-detail > .detail-cols > .sell-band { grid-row: 3; }
+    .position-detail > .detail-cols > .stops { grid-row: 4; }
+    .position-detail > .detail-cols > .alert-col { grid-row: 5; }
     .position-detail > .detail-cols > *::before { position: static; flex-basis: 100%; }
     .position-detail > .detail-cols > *::after { display: none; }
-    .position-detail > .actions > :last-child { grid-column: 1 / -1; grid-row: 5; }
     dl.kv-list { grid-template-columns: 1fr; gap: 0.1rem; }
     dl.kv-list dd { margin-bottom: 0.5rem; }
   }

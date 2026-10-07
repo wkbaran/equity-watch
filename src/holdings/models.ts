@@ -36,7 +36,8 @@ export interface HoldingAlertState {
   lastNotifiedAppreciationBand: number;
 }
 
-/**
+
+/**
  * A lot that has left the store, kept so a ticker's story can still say when
  * it was bought and when you got out. Lots are deleted outright, so without
  * this a closed position leaves no trace to set against the alert history.
@@ -53,12 +54,44 @@ export interface RemovedLot {
   removedAt: string;
 }
 
+/**
+ * Shares sold at a price, recorded when a removal from the page names one
+ * (since 2026-10-07). Before that, and still for a removal that names no
+ * price, lots simply leave the store and nothing says whether they were sold.
+ *
+ * Lives only in holdings.json, which never leaves the machine: it carries size
+ * and value. A story is told from it without either (holdingLines).
+ */
+export interface Sale {
+  id: string;
+  symbol: string;
+  count: number;
+  price: number;
+  /** The trade's calendar date, as entered; today when it wasn't. */
+  soldOn: string;
+  /** When it was recorded, which places a same-day sale among that day's fires. */
+  recordedAt: string;
+  /** What each lot gave up, in the order taken: the basis a realized result is measured against. */
+  lots: SaleLot[];
+}
+
+export interface SaleLot {
+  lotId: string;
+  count: number;
+  basisPerShare: number;
+  purchaseDate: string;
+  /** The lot had nothing left and was removed (and recorded in removedLots). */
+  emptied: boolean;
+}
+
 export interface HoldingsStore {
   lots: Lot[];
   stops: Stop[];
   alertState: HoldingAlertState[];
   /** Absent in stores written before 2026-09-25, which recorded no removals. */
   removedLots?: RemovedLot[];
+  /** Absent in stores written before 2026-10-07, which recorded no sales. */
+  sales?: Sale[];
 }
 
 export function emptyHoldingsStore(): HoldingsStore {
@@ -87,20 +120,39 @@ export function lotStoryTime(lot: Pick<Lot, "purchaseDate" | "createdAt">): stri
   return localDateString(new Date(lot.createdAt)) === lot.purchaseDate ? lot.createdAt : `${lot.purchaseDate}T12:00:00.000Z`;
 }
 
-/** One beat of a position's history: a lot bought, or a lot removed. */
+/** Where a sale sits in time, placed the way lotStoryTime places a purchase. */
+export function saleStoryTime(sale: Pick<Sale, "soldOn" | "recordedAt">): string {
+  return localDateString(new Date(sale.recordedAt)) === sale.soldOn ? sale.recordedAt : `${sale.soldOn}T12:00:00.000Z`;
+}
+
+/** One beat of a position's history: a lot bought, or shares of a lot removed. */
 export interface HoldingEvent {
   type: "lot.add" | "lot.remove";
   at: string;
   symbol: string;
   lotId: string;
+  /** Some of the lot's shares left and the rest are still held. */
+  partial?: boolean;
+  /** The shares were sold at a recorded price, not just removed. */
+  sold?: boolean;
 }
 
-/** Every lot bought and removed, oldest first, from current lots plus the removal record. */
+/** Every lot bought and removed, oldest first, from current lots plus the removal and sale records. */
 export function holdingHistory(store: HoldingsStore): HoldingEvent[] {
   const events: HoldingEvent[] = store.lots.map((l) => ({ type: "lot.add", at: lotStoryTime(l), symbol: l.symbol, lotId: l.id }));
+  const soldLots = new Set<string>();
+  for (const sale of store.sales ?? []) {
+    for (const part of sale.lots) {
+      if (part.emptied) {
+        soldLots.add(part.lotId);
+      } else {
+        events.push({ type: "lot.remove", at: saleStoryTime(sale), symbol: sale.symbol, lotId: part.lotId, partial: true, sold: true });
+      }
+    }
+  }
   for (const r of store.removedLots ?? []) {
     events.push({ type: "lot.add", at: lotStoryTime(r), symbol: r.symbol, lotId: r.lotId });
-    events.push({ type: "lot.remove", at: r.removedAt, symbol: r.symbol, lotId: r.lotId });
+    events.push({ type: "lot.remove", at: r.removedAt, symbol: r.symbol, lotId: r.lotId, ...(soldLots.has(r.lotId) ? { sold: true } : {}) });
   }
   // An add sorts ahead of a removal at the same instant.
   const rank = (e: HoldingEvent) => (e.type === "lot.add" ? 0 : 1);

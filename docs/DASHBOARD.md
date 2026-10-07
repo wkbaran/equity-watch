@@ -173,8 +173,9 @@ number as the rail and the overview tile.
 **Editing.** With the ops stack deployed, everything the CLI does to a *single*
 alert, queue entry, lot or stop can be done from the page: add, edit and remove
 alerts of all four kinds; suggest a level for a queue entry, apply it, or dismiss
-the entry; add, edit and remove lots and stops; remove a position; and cover an
-uncovered position. Each change is queued and applied by the next scheduled
+the entry; add and edit lots, sell shares (all or part of a position, at a
+price, see [HOLDINGS.md](HOLDINGS.md#selling)); add, edit and remove stops; and
+cover an uncovered position. Each change is queued and applied by the next scheduled
 `ops pull` — see
 [ARCHITECTURE.md](ARCHITECTURE.md#queueing-a-change-lambda--sqs--ops-pull).
 
@@ -280,7 +281,7 @@ and shows no extra control.
 |---|---|---|
 | `get_overview`, `list_revisit_queue`, `list_alerts`, `get_alert`, `get_chart_url`, `get_pending_changes` | always | Read `dashboard.json` and `alerts.json`. Public data only. |
 | `add_alert`, `edit_alert`, `remove_alert`, `dismiss_revisit`, `relevel_revisit`, `apply_revisit` | editing is unlocked | Queue the matching op. |
-| `list_positions`, `get_position`, `get_stories`, `add_lot`, `edit_lot`, `remove_lot`, `remove_position`, `add_stop`, `edit_stop`, `remove_stop`, `cover_position` | editing is unlocked, the vault is open **and** "Agents may see holdings" is ticked | Read the decrypted vault; queue holdings ops. |
+| `list_positions`, `get_position`, `get_stories`, `add_lot`, `edit_lot`, `sell_shares`, `remove_lot`, `remove_position`, `add_stop`, `edit_stop`, `remove_stop`, `cover_position` | editing is unlocked, the vault is open **and** "Agents may see holdings" is ticked | Read the decrypted vault; queue holdings ops. |
 
 Tools come and go with the page's state: locking editing, or unticking the box,
 unregisters them at once. A tool also re-checks its own permission when called, for
@@ -401,10 +402,14 @@ trades read side by side:
   Sep 22: Holding WAT crossed above 428.5, then fell back below it the same day.
 ```
 
-The wording is "you bought", "you added to your … position", "you trimmed your …
-position", "you closed your … position", and "you bought … again". It never carries
-a share count, basis or value. Stories are only published encrypted now, but a
-story is a narrative of what you did, and the numbers belong on the Holdings view. A removed lot is not called a sale, since nothing records whether it was one.
+The wording is "you bought", "you added to your … position", "you sold part of
+your … position", "you sold your … position", and "you bought … again". It never
+carries a share count, price, basis or value. Stories are only published encrypted
+now, but a story is a narrative of what you did, and the numbers belong on the
+Holdings view. A removal is called a sale only when one was recorded (from
+2026-10-07). A removal with no price, including older ones, still reads "you
+trimmed your … position" or "you closed your … position", since nothing says
+whether it was a sale.
 "Holding X" on a fire means held *when it fired*, not held now. Removals are
 recorded from 2026-09-25 (`removedLots` in `holdings.json`); a position removed
 before then left no trace. A `holdings import --replace` is a reset, not a sale,

@@ -160,9 +160,44 @@ Each row also shows two volatility figures and flags its stop:
 ## In the browser
 
 With editing unlocked, `#/holdings` shows the same positions, lots and stops, and
-can change them: add, edit and remove lots, add, edit and remove stops, remove a
-whole position, and cover one that has no alert. Everything here is queued and
-applied by the next scheduled `ops pull`, exactly like an alert edit.
+can change them: add and edit lots, sell shares, add, edit and remove stops, and
+cover a position that has no alert. Everything here is queued and applied by the
+next scheduled `ops pull`, exactly like an alert edit.
+
+### Selling
+
+**Sell from position** (beside *Add to position*) or a lot's own **Sell** opens a
+*Sell* band under the lots. It asks for:
+
+- **Shares to sell.** Prefilled with everything in scope, so a full exit is
+  one click. Any amount works, including part of a lot.
+- **Price.** Left empty, the sale is recorded at the price the page shows for
+  the position. The note under the band says how old that price is, because a
+  quiet run can leave it half an hour stale. With no price on the page you have
+  to type one.
+- **Sold on.** Today unless you change it. A backdated sale is placed on its
+  date in the story.
+- **Take from** (only when there is more than one lot). *Oldest lots first* is
+  the brokers' default (FIFO). The other choices are oldest first within one
+  account (offered when the lots span accounts) or one specific lot. A sale
+  happens in one account, so pick the account when you are selling part of a
+  position held in two.
+
+While the band is open, the lots table shows the result before you queue anything.
+A *Selling* column says what each lot gives up ("all 10", "2 of 5"), a bar under
+each lot's share count fills by the fraction taken, and lots the sale doesn't
+reach are dimmed. Under the fields is the realized result against those lots'
+basis, and what is left ("Leaves 3 shares", or "Closes the AA position and
+removes its stop").
+
+Whole lots are removed, and a partly sold lot keeps its id, date and basis with
+the shares that remain. Selling the last share closes the position, the same as
+removing its last lot did. The sale (shares, price, date, and which lots at what
+basis) is kept in `holdings.json` under `sales`. Like everything in that file, it
+never leaves the machine except inside the vault.
+
+**Remove without a sale** in the same band deletes the chosen lot, or the whole
+position, with nothing recorded. Use it for a lot entered by mistake.
 
 None of it is in the published document. The site has no login by default, so
 `dashboard.json` carries no share count, basis, market value or stop; the page reads

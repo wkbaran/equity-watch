@@ -333,9 +333,10 @@ function shortDate(iso: string): string {
 /**
  * The position's beats for one symbol. Lots bought or removed together (an
  * import, a whole position removed) are one beat. Worded from whether the
- * position was empty before or after, never from a size: stories are
- * published, and size and value are not (CLAUDE.md). A removed lot is not
- * called a sale, because nothing records whether it was one.
+ * position was empty before or after, never from a size or a price: size and
+ * value stay out of stories (CLAUDE.md). A removal is called a sale only when a
+ * sale was recorded (Sale, since 2026-10-07); before that, and for a removal
+ * that named no price, nothing says whether it was one.
  */
 /** Whether any lot of the symbol was held at `at`, from the events up to and including it. */
 function heldAt(symbol: string, at: string, events: HoldingEvent[]): boolean {
@@ -344,7 +345,7 @@ function heldAt(symbol: string, at: string, events: HoldingEvent[]): boolean {
     if (e.at > at) break;
     if (e.symbol.toUpperCase() !== symbol.toUpperCase()) continue;
     if (e.type === "lot.add") lots.add(e.lotId);
-    else lots.delete(e.lotId);
+    else if (!e.partial) lots.delete(e.lotId);
   }
   return lots.size > 0;
 }
@@ -357,9 +358,11 @@ function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
   for (let i = 0; i < own.length; ) {
     const { type, at } = own[i];
     const wasEmpty = lots.size === 0;
+    let sold = false;
     for (; i < own.length && own[i].type === type && own[i].at === at; i++) {
+      sold ||= own[i].sold === true;
       if (type === "lot.add") lots.add(own[i].lotId);
-      else lots.delete(own[i].lotId);
+      else if (!own[i].partial) lots.delete(own[i].lotId);
     }
     const text =
       type === "lot.add"
@@ -367,8 +370,12 @@ function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
           ? `you bought ${symbol}${everHeld ? " again" : ""}`
           : `you added to your ${symbol} position`
         : lots.size === 0
-          ? `you closed your ${symbol} position`
-          : `you trimmed your ${symbol} position`;
+          ? sold
+            ? `you sold your ${symbol} position`
+            : `you closed your ${symbol} position`
+          : sold
+            ? `you sold part of your ${symbol} position`
+            : `you trimmed your ${symbol} position`;
     everHeld = true;
     lines.push({ at, text: `${shortDate(at)}: ${text}.` });
   }

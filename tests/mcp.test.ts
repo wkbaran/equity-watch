@@ -300,6 +300,7 @@ describe("every write tool, through the server", () => {
     { tool: "edit_lot", args: { lotId: "lot00001", count: 12, account: "" }, op: { type: "lot.edit", target: { lotId: "lot00001" }, expect: { count: 10, basisPerShare: 40, purchaseDate: "2026-09-01", account: "roth" }, params: { count: 12, account: "" } } },
     { tool: "remove_lot", args: { lotId: "lot00002" }, op: { type: "lot.remove", target: { lotId: "lot00002" }, expect: { count: 5, basisPerShare: 44, purchaseDate: "2026-09-08", account: "margin" } } },
     { tool: "remove_position", args: { symbol: "AA" }, op: { type: "position.remove", target: { symbol: "AA" }, expect: { lotIds: ["lot00001", "lot00002"] } } },
+    { tool: "sell_shares", args: { symbol: "aa", count: 12, price: 50 }, op: { type: "position.remove", target: { symbol: "AA" }, expect: { lotIds: ["lot00001", "lot00002"], shares: 15 }, params: { count: 12, price: 50 } } },
     { tool: "add_stop", args: { symbol: "TSLA", stopPrice: 230 }, op: { type: "stop.add", params: { symbol: "TSLA", stopPrice: 230 } } },
     { tool: "edit_stop", args: { stopId: "stop0001", stopPrice: 36, count: 5 }, op: { type: "stop.edit", target: { stopId: "stop0001" }, expect: { stopPrice: 38 }, params: { stopPrice: 36, count: 5 } } },
     { tool: "remove_stop", args: { stopId: "stop0001" }, op: { type: "stop.remove", target: { stopId: "stop0001" }, expect: { stopPrice: 38 } } },
