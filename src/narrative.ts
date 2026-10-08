@@ -27,7 +27,7 @@
 import type { CrossDirection } from "./alerts/models.js";
 import { endedOnFiredSide, entryDirection, otherSide, reversalOf, sideOf, tradingDaysAfter } from "./alerts/reversion.js";
 import type { RevisitEntry } from "./alerts/revisit.js";
-import type { HoldingEvent } from "./holdings/models.js";
+import type { HoldingEvent, SaleSummary } from "./holdings/models.js";
 import { maLabel } from "./indicators/movingAverage.js";
 import { describeSession, type Session } from "./marketHours.js";
 
@@ -333,8 +333,11 @@ function shortDate(iso: string): string {
 /**
  * The position's beats for one symbol. Lots bought or removed together (an
  * import, a whole position removed) are one beat. Worded from whether the
- * position was empty before or after, never from a size or a price: size and
- * value stay out of stories (CLAUDE.md). A removal is called a sale only when a
+ * position was empty before or after. A buy states no size or price. A sale
+ * does (the user's call, 2026-10-07: sales are kept for analysis and for the
+ * story): shares, price, and the result against what those shares cost. That
+ * is safe only because stories travel in the vault and nowhere else in the
+ * clear (siteDocument empties them). A removal is called a sale only when a
  * sale was recorded (Sale, since 2026-10-07); before that, and for a removal
  * that named no price, nothing says whether it was one.
  */
@@ -350,6 +353,22 @@ function heldAt(symbol: string, at: string, events: HoldingEvent[]): boolean {
   return lots.size > 0;
 }
 
+/**
+ * "12 shares at 46.34, up 14.0% on what they cost". Two sales recorded at the
+ * same instant are one beat, told at their average price.
+ */
+function saleText(sales: SaleSummary[]): string {
+  const count = sales.reduce((sum, s) => sum + s.count, 0);
+  const proceeds = sales.reduce((sum, s) => sum + s.count * s.price, 0);
+  const cost = sales.reduce((sum, s) => sum + s.cost, 0);
+  const shares = `${Math.round(count * 1e6) / 1e6} share${count === 1 ? "" : "s"}`;
+  const price = (proceeds / count).toFixed(2);
+  if (cost <= 0) return `${shares} at ${price}`;
+  const pct = ((proceeds - cost) / cost) * 100;
+  const result = Math.abs(pct) < 0.05 ? "even with what they cost" : `${pct > 0 ? "up" : "down"} ${Math.abs(pct).toFixed(1)}% on what they cost`;
+  return `${shares} at ${price}, ${result}`;
+}
+
 function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
   const own = events.filter((e) => e.symbol.toUpperCase() === symbol.toUpperCase());
   const lots = new Set<string>();
@@ -358,9 +377,10 @@ function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
   for (let i = 0; i < own.length; ) {
     const { type, at } = own[i];
     const wasEmpty = lots.size === 0;
-    let sold = false;
+    const sales = new Map<string, SaleSummary>();
     for (; i < own.length && own[i].type === type && own[i].at === at; i++) {
-      sold ||= own[i].sold === true;
+      const sale = own[i].sale;
+      if (sale !== undefined) sales.set(sale.id, sale);
       if (type === "lot.add") lots.add(own[i].lotId);
       else if (!own[i].partial) lots.delete(own[i].lotId);
     }
@@ -370,11 +390,11 @@ function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
           ? `you bought ${symbol}${everHeld ? " again" : ""}`
           : `you added to your ${symbol} position`
         : lots.size === 0
-          ? sold
-            ? `you sold your ${symbol} position`
+          ? sales.size > 0
+            ? `you sold your ${symbol} position: ${saleText([...sales.values()])}`
             : `you closed your ${symbol} position`
-          : sold
-            ? `you sold part of your ${symbol} position`
+          : sales.size > 0
+            ? `you sold part of your ${symbol} position: ${saleText([...sales.values()])}`
             : `you trimmed your ${symbol} position`;
     everHeld = true;
     lines.push({ at, text: `${shortDate(at)}: ${text}.` });

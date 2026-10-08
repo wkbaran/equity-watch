@@ -519,6 +519,23 @@ describe("vault", () => {
       expect(opened.stories.find((s) => s.symbol === "AAPL")?.lines.map((l) => l.text)).toContain("Sep 1: you bought AAPL.");
     });
 
+    // A sale's line carries shares and price, so it is the strictest case of the rule above.
+    it("tells a sale's size and price in the vault's story, and nowhere in dashboard.json", () => {
+      sellShares(holdingsFile, { symbol: "AAPL", count: 12, price: 181.5, soldOn: "2026-09-12" }, new Date("2026-09-12T18:00:00.000Z"));
+      const sold = loadHoldingsStore(holdingsFile);
+      const d = buildDashboard({ alerts: [], revisits, holdings: sold, quotes, now: NOW });
+      const site = join(dir, "site");
+      writeSite(site, d, { holdings: true, vault: true }, [], NO_OPS, sealVault(vaultContents(d, sold), TOKEN));
+      const published = readFileSync(join(site, "dashboard.json"), "utf-8");
+      expect(published).not.toContain("you sold");
+      expect(published).not.toContain("181.5");
+      const opened = openVault(JSON.parse(readFileSync(join(site, VAULT_FILE), "utf-8")) as VaultDocument, TOKEN);
+      // 10 at 150 and 2 at 170 cost 1,840; 12 at 181.50 is 2,178.
+      expect(opened.stories.find((s) => s.symbol === "AAPL")?.lines.map((l) => l.text)).toContain(
+        "Sep 12: you sold part of your AAPL position: 12 shares at 181.50, up 18.4% on what they cost."
+      );
+    });
+
     it("moves the fingerprint when a story changes, through the vault", () => {
       const removed = store();
       removed.removedLots = [{ lotId: "gone", symbol: "AAPL", purchaseDate: "2026-07-01", createdAt: "2026-07-01T15:00:00.000Z", removedAt: "2026-07-02T15:00:00.000Z" }];

@@ -193,8 +193,10 @@ removes its stop").
 Whole lots are removed, and a partly sold lot keeps its id, date and basis with
 the shares that remain. Selling the last share closes the position, the same as
 removing its last lot did. The sale (shares, price, date, and which lots at what
-basis) is kept in `holdings.json` under `sales`. Like everything in that file, it
-never leaves the machine except inside the vault.
+basis) is kept in `holdings.json` under `sales`, for later analysis. Like
+everything in that file, it never leaves the machine except inside the vault,
+where the symbol's story tells it: shares, price, and the result against what
+they cost. The page doesn't list past sales.
 
 **Remove without a sale** in the same band deletes the chosen lot, or the whole
 position, with nothing recorded. Use it for a lot entered by mistake.

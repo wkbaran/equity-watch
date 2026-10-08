@@ -402,14 +402,21 @@ trades read side by side:
   Sep 22: Holding WAT crossed above 428.5, then fell back below it the same day.
 ```
 
-The wording is "you bought", "you added to your … position", "you sold part of
-your … position", "you sold your … position", and "you bought … again". It never
-carries a share count, price, basis or value. Stories are only published encrypted
-now, but a story is a narrative of what you did, and the numbers belong on the
-Holdings view. A removal is called a sale only when one was recorded (from
-2026-10-07). A removal with no price, including older ones, still reads "you
-trimmed your … position" or "you closed your … position", since nothing says
-whether it was a sale.
+The wording is "you bought", "you added to your … position", "you bought …
+again", and for a sale "you sold part of your … position" or "you sold your …
+position", followed by what was sold:
+
+```
+  Oct 7: you sold part of your AA position: 12 shares at 46.34, up 14.0% on what they cost.
+```
+
+A buy carries no numbers. A sale carries its shares, price, and result against
+the basis of the lots it came out of. That is safe only because stories are
+published inside the encrypted vault and nowhere else (`dashboard.json` always has
+an empty `stories`), and a test checks a sale's line never reaches it. A removal is
+called a sale only when one was recorded (from 2026-10-07). A removal with no
+price, including older ones, still reads "you trimmed your … position" or "you
+closed your … position", since nothing says whether it was a sale.
 "Holding X" on a fire means held *when it fired*, not held now. Removals are
 recorded from 2026-09-25 (`removedLots` in `holdings.json`); a position removed
 before then left no trace. A `holdings import --replace` is a reset, not a sale,

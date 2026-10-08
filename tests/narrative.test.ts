@@ -616,18 +616,43 @@ describe("holdings in the story", () => {
     expect(buildStories([entry({ symbol: "MKS" })], ctx)).toEqual([]);
   });
 
-  it("calls a removal a sale only when one was recorded, and a partial one keeps the lot", () => {
-    const sold = (lotId: string, at: string, partial = false): HoldingEvent => ({ type: "lot.remove", at, symbol: "TGT", lotId, sold: true, ...(partial ? { partial } : {}) });
+  it("calls a removal a sale only when one was recorded, and tells its size, price and result", () => {
+    const sale = (id: string, count: number, price: number, cost: number) => ({ id, count, price, cost });
+    const sold = (lotId: string, at: string, s: ReturnType<typeof sale>, partial = false): HoldingEvent => ({
+      type: "lot.remove",
+      at,
+      symbol: "TGT",
+      lotId,
+      sale: s,
+      ...(partial ? { partial } : {}),
+    });
     expect(
       texts([
         add("l1", "2026-09-11T15:00:00.000Z"),
-        sold("l1", "2026-09-16T15:00:00.000Z", true),
-        sold("l1", "2026-09-18T15:00:00.000Z"),
+        sold("l1", "2026-09-16T15:00:00.000Z", sale("s1", 12, 46.34, 488), true),
+        sold("l1", "2026-09-18T15:00:00.000Z", sale("s2", 1, 40, 44)),
       ])
-    ).toEqual(["Sep 10: TGT crossed above 110.", "Sep 11: you bought TGT.", "Sep 16: you sold part of your TGT position.", "Sep 18: you sold your TGT position."]);
+    ).toEqual([
+      "Sep 10: TGT crossed above 110.",
+      "Sep 11: you bought TGT.",
+      "Sep 16: you sold part of your TGT position: 12 shares at 46.34, up 14.0% on what they cost.",
+      "Sep 18: you sold your TGT position: 1 share at 40.00, down 9.1% on what they cost.",
+    ]);
   });
 
-  it("never states a size", () => {
+  it("tells one sale that emptied a lot and trimmed another as one beat", () => {
+    const s = { id: "s1", count: 12, price: 46.34, cost: 488 };
+    const at = "2026-09-16T15:00:00.000Z";
+    const lines = texts([
+      add("l0", "2026-09-10T15:00:00.000Z"),
+      add("l1", "2026-09-11T15:00:00.000Z"),
+      { type: "lot.remove", at, symbol: "TGT", lotId: "l1", partial: true, sale: s },
+      { type: "lot.remove", at, symbol: "TGT", lotId: "l0", sale: s },
+    ]);
+    expect(lines.filter((l) => l.includes("sold"))).toEqual(["Sep 16: you sold part of your TGT position: 12 shares at 46.34, up 14.0% on what they cost."]);
+  });
+
+  it("never states a size for a buy or a removal with no sale", () => {
     const lines = texts([add("l1", "2026-09-11T15:00:00.000Z"), add("l2", "2026-09-14T15:00:00.000Z"), remove("l1", "2026-09-16T15:00:00.000Z")]);
     for (const line of lines.slice(1)) expect(line.replace(/^Sep \d+: /, "")).not.toMatch(/\d/);
   });
@@ -678,8 +703,8 @@ describe("holdingHistory", () => {
       ],
     });
     expect(events.filter((e) => e.type === "lot.remove")).toEqual([
-      { type: "lot.remove", at: "2026-09-02T12:00:00.000Z", symbol: "TGT", lotId: "l1", partial: true, sold: true },
-      { type: "lot.remove", at: "2026-09-02T12:00:00.000Z", symbol: "TGT", lotId: "l0", sold: true },
+      { type: "lot.remove", at: "2026-09-02T12:00:00.000Z", symbol: "TGT", lotId: "l1", partial: true, sale: { id: "s1", count: 7, price: 120, cost: 650 } },
+      { type: "lot.remove", at: "2026-09-02T12:00:00.000Z", symbol: "TGT", lotId: "l0", sale: { id: "s1", count: 7, price: 120, cost: 650 } },
     ]);
   });
 });

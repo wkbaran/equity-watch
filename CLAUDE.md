@@ -1027,9 +1027,14 @@ Since 2026-10-07 the page's position panel sells shares instead of removing lots
   `removedLots`. The story learns about the trim from `sales` (`holdingHistory`
   emits a `partial` removal), so `heldAt` and `holdingLines` must not drop a lot
   on a partial event.
-- **`sales` holds size and price, so it stays in `holdings.json`.** It isn't in
-  the vault yet. The story says "you sold part of your X position" with no
-  numbers, like every other holdings line.
+- **`sales` holds size and price, so it stays in `holdings.json`.** The page
+  doesn't list past sales (the user's call: they are for later analysis and the
+  story). The story line is the one place they travel, and it states the shares,
+  price and result: "you sold part of your X position: 12 shares at 46.34, up
+  14.0% on what they cost". Buys still state nothing. That line is safe only
+  because stories leave the machine solely inside the vault; if stories ever go
+  back into `dashboard.json`, the sale text has to come out first. A test in
+  `tests/holdingsOps.test.ts` checks the published document for it.
 
 ## Trigger details before 2026-09-13 are incomplete, and can't be backfilled
 

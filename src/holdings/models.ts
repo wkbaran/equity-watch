@@ -133,26 +133,45 @@ export interface HoldingEvent {
   lotId: string;
   /** Some of the lot's shares left and the rest are still held. */
   partial?: boolean;
-  /** The shares were sold at a recorded price, not just removed. */
-  sold?: boolean;
+  /** Set when the shares were sold at a recorded price, not just removed. */
+  sale?: SaleSummary;
+}
+
+/**
+ * What a story says about a sale: how many shares, at what price, and what they
+ * had cost. Carries size and value, so a story holding one may only travel in
+ * the vault (stories already do: siteDocument empties them).
+ */
+export interface SaleSummary {
+  id: string;
+  count: number;
+  price: number;
+  /** What the shares sold had cost, from the lots they came out of. */
+  cost: number;
+}
+
+export function saleSummary(sale: Sale): SaleSummary {
+  return { id: sale.id, count: sale.count, price: sale.price, cost: sale.lots.reduce((sum, l) => sum + l.count * l.basisPerShare, 0) };
 }
 
 /** Every lot bought and removed, oldest first, from current lots plus the removal and sale records. */
 export function holdingHistory(store: HoldingsStore): HoldingEvent[] {
   const events: HoldingEvent[] = store.lots.map((l) => ({ type: "lot.add", at: lotStoryTime(l), symbol: l.symbol, lotId: l.id }));
-  const soldLots = new Set<string>();
+  // An emptied lot's removal is told from removedLots; this says which sale it was.
+  const soldLots = new Map<string, SaleSummary>();
   for (const sale of store.sales ?? []) {
+    const summary = saleSummary(sale);
     for (const part of sale.lots) {
       if (part.emptied) {
-        soldLots.add(part.lotId);
+        soldLots.set(part.lotId, summary);
       } else {
-        events.push({ type: "lot.remove", at: saleStoryTime(sale), symbol: sale.symbol, lotId: part.lotId, partial: true, sold: true });
+        events.push({ type: "lot.remove", at: saleStoryTime(sale), symbol: sale.symbol, lotId: part.lotId, partial: true, sale: summary });
       }
     }
   }
   for (const r of store.removedLots ?? []) {
     events.push({ type: "lot.add", at: lotStoryTime(r), symbol: r.symbol, lotId: r.lotId });
-    events.push({ type: "lot.remove", at: r.removedAt, symbol: r.symbol, lotId: r.lotId, ...(soldLots.has(r.lotId) ? { sold: true } : {}) });
+    events.push({ type: "lot.remove", at: r.removedAt, symbol: r.symbol, lotId: r.lotId, ...(soldLots.has(r.lotId) ? { sale: soldLots.get(r.lotId) } : {}) });
   }
   // An add sorts ahead of a removal at the same instant.
   const rank = (e: HoldingEvent) => (e.type === "lot.add" ? 0 : 1);
