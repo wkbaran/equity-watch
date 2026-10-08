@@ -184,6 +184,7 @@ next scheduled `ops pull`, exactly like an alert edit.
   position held in two.
 
 While the band is open, the lots table shows the result before you queue anything.
+The table lists the newest purchase first, so an oldest-first sale fills from the bottom up.
 A *Selling* column says what each lot gives up ("all 10", "2 of 5"), a bar under
 each lot's share count fills by the fraction taken, and lots the sale doesn't
 reach are dimmed. Under the fields is the realized result against those lots'

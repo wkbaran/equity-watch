@@ -2011,7 +2011,9 @@
             {},
             h("tr", {}, ...["Shares", "Selling", "Basis / share", "Purchased", "Account", ""].map((t, i) => h("th", { class: i === 1 ? "lot-take" : null, text: t })))
           ),
-          h("tbody", {}, ...lots.flatMap((lot) => lotRows(lot, sell)))
+          // Newest purchase first: the exact reverse of the order a sale takes
+          // them in, so the sale preview fills from the bottom up.
+          h("tbody", {}, ...saleOrder(lots).reverse().flatMap((lot) => lotRows(lot, sell)))
         )
       ),
       h("div", { class: "detail-cols" }, sell.el, stopsBlock(symbol, stops), alertColumn(symbol), storyColumn(symbol)),

@@ -76,8 +76,9 @@ test("unlocking shows positions, and a position expands to its lots and stops", 
   await expand(page, "AA");
   const lots = detail(page).locator("table.lots > tbody > tr:not(.lot-edit)");
   await expect(lots).toHaveCount(2);
-  await expect(lots.nth(0)).toContainText("roth");
-  await expect(lots.nth(1)).toContainText("margin");
+  // Newest purchase first.
+  await expect(lots.nth(0)).toContainText("margin");
+  await expect(lots.nth(1)).toContainText("roth");
   await expect(detail(page).locator(".stop-list")).toContainText("38.00 · all shares");
 
   await positionRow(page, "AA").locator("td").nth(2).click();
@@ -204,8 +205,9 @@ test("edits a lot, sending only what changed and the lot as shown", async ({ pag
   await storeToken(page);
   await openHoldings(page);
   await expand(page, "AA");
-  await detail(page).getByRole("button", { name: "Edit" }).first().click();
-  const form = detail(page).locator("tr.lot-edit form").first();
+  // The older lot, listed second.
+  await detail(page).getByRole("button", { name: "Edit" }).nth(1).click();
+  const form = detail(page).locator("tr.lot-edit form").nth(1);
   await expect(form).toBeVisible();
   await expect(form.locator("input[type=number]").nth(0)).toHaveValue("10");
 
@@ -232,7 +234,7 @@ test("removals without a sale take a second click", async ({ page }) => {
   await expand(page, "AA");
 
   // A lot entered by mistake: open the band on that lot, then remove with no sale.
-  await detail(page).locator("table.lots > tbody > tr:not(.lot-edit)").nth(1).getByRole("button", { name: "Sell" }).click();
+  await detail(page).locator("table.lots > tbody > tr:not(.lot-edit)").first().getByRole("button", { name: "Sell" }).click();
   await detail(page).getByRole("button", { name: "Remove without a sale" }).click();
   await expect(detail(page).getByRole("button", { name: "Click again to confirm" })).toHaveCount(1);
   expect(await queuedOps(page)).toEqual([]);
@@ -268,9 +270,9 @@ test("sells part of a position oldest lot first, at the page's price when none i
   await expect(band.getByLabel("Shares to sell")).toHaveValue("15");
   await band.getByLabel("Shares to sell").fill("12");
 
-  // The lots table is the preview: all of the older lot, two of the newer.
+  // The lots table is the preview, newest first: two of the newer lot, all of the older.
   const takes = detail(page).locator("table.lots > tbody > tr:not(.lot-edit) td.lot-take");
-  await expect(takes).toHaveText(["all 10", "2 of 5"]);
+  await expect(takes).toHaveText(["2 of 5", "all 10"]);
   // 12 at 46.34 against 10 x 40 + 2 x 44 = 488 of basis.
   await expect(band.locator(".sale-result")).toHaveText("+$68.08 (+14.0%) on $488.00 of basis. Leaves 3 shares.");
 
@@ -295,7 +297,7 @@ test("a lot's Sell sells from that lot, at a typed price and date", async ({ pag
   await storeToken(page);
   await openHoldings(page);
   await expand(page, "AA");
-  await detail(page).locator("table.lots > tbody > tr:not(.lot-edit)").nth(1).getByRole("button", { name: "Sell" }).click();
+  await detail(page).locator("table.lots > tbody > tr:not(.lot-edit)").first().getByRole("button", { name: "Sell" }).click();
   const band = detail(page).locator("form.sell-band");
   await expect(band.getByLabel("Take from")).toHaveValue("lot:lot00002");
   await expect(band.getByLabel("Shares to sell")).toHaveValue("5");
