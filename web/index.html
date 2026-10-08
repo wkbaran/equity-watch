@@ -340,6 +340,18 @@
   .bar span.up { left: 50%; background: var(--signal); border-radius: 0 3px 3px 0; }
   .bar span.down { right: 50%; background: var(--down); border-radius: 3px 0 0 3px; }
 
+  /*
+   * The Alerts table may run past the page column to the window's edge: the
+   * 68rem cap is for reading, and a table clipped by it scrolled sideways in a
+   * window wide enough to show every column. The column lifts for this view
+   * only; the toolbar and forms keep the old width, and the table sizes to its
+   * content but never narrower than they are.
+   */
+  main:has(> #view-alerts:not([hidden])) { max-width: none; }
+  #view-alerts > :not(.indexed) { max-width: 63rem; }
+  .indexed { width: fit-content; min-width: min(100%, 63rem); max-width: 100%; }
+  /* The header copy is set to the table's px width; it must not hold the card at that width once the table narrows. */
+  .indexed .table-head { width: 0; min-width: 100%; }
   .indexed { display: flex; align-items: flex-start; gap: 0.5rem; }
   .indexed > .pinned-table { flex: 1 1 auto; min-width: 0; }
   .alpha-rail { position: sticky; top: calc(var(--tape-h) + 0.75rem); flex: 0 0 auto; display: flex; flex-direction: column; gap: 1px; }
