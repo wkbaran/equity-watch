@@ -225,28 +225,35 @@ test("a locked drawer still says held, but tells no story and carries no numbers
   expect(await page.locator("#drawer-body").innerText()).not.toContain("15 shares");
 });
 
-test("a locked page has no Stories view, and #/stories lands on the overview", async ({ page }) => {
-  await page.goto("/#/stories");
-  await expect(page.locator("#view-overview")).toBeVisible();
-  await expect(page).toHaveURL(/#\/$/);
-  await expect(page.locator("#view-stories")).toBeHidden();
-  await expect(page.locator("#nav-stories")).toBeHidden();
-  // Not merely hidden: the stories are only in the vault.
+test("there is no Stories view: #/stories lands on the overview, locked or not", async ({ page }) => {
+  for (const unlocked of [false, true]) {
+    if (unlocked) await storeToken(page);
+    await page.goto("/#/stories");
+    await page.reload();
+    await expect(page.locator("#view-overview")).toBeVisible();
+    await expect(page.locator("#view-stories")).toHaveCount(0);
+    await expect(page.locator('[data-nav="stories"]')).toHaveCount(0);
+  }
+  // Stories are only in the vault, never in the public document.
   const doc = (await (await page.request.get("/dashboard.json")).json()) as { stories: unknown[] };
   expect(doc.stories).toEqual([]);
 });
 
-test("an unlocked page keeps Stories, including a direct #/stories load", async ({ page }) => {
+test("a fire's drawer has Add lot too, opening Holdings with the symbol filled in", async ({ page }) => {
   await storeToken(page);
-  await page.goto("/#/stories");
-  await expect(page.locator("#view-stories")).toBeVisible();
-  await expect(page.locator("#nav-stories")).toBeVisible();
-  await expect(page.locator("#stories .story").first()).toBeVisible();
+  // MSFT is not held, and opened from a fire rather than its alert.
+  await page.goto("/#/trigger/rv0000m1");
+  const button = page.locator("#drawer-body").getByRole("button", { name: "Add lot" });
+  const [holdingsTab] = await Promise.all([page.waitForEvent("popup"), button.click()]);
+  await holdingsTab.waitForLoadState();
+  expect(holdingsTab.url()).toMatch(/#\/holdings\/MSFT\/add-lot$/);
+  await expect(holdingsTab.locator("#lot-add").getByLabel("Symbol")).toHaveValue("MSFT");
+});
 
-  // Locking takes it away without a reload.
-  await page.locator("#ops-btn").click();
-  await expect(page.locator("#nav-stories")).toBeHidden();
-  await expect(page.locator("#view-overview")).toBeVisible();
+test("a locked fire drawer offers no Add lot", async ({ page }) => {
+  await page.goto("/#/trigger/rv0000m1");
+  await expect(page.locator("#drawer-body .drawer-title")).toBeVisible();
+  await expect(page.locator("#drawer-body").getByRole("button", { name: "Add lot" })).toHaveCount(0);
 });
 
 test("the alert drawer carries the same held tag, position and story", async ({ page }) => {

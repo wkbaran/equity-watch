@@ -201,6 +201,9 @@ they cost. The page doesn't list past sales.
 **Remove without a sale** in the same band deletes the chosen lot, or the whole
 position, with nothing recorded. Use it for a lot entered by mistake.
 
+An expanded position ends with its **Story** band: the alerts on that symbol
+woven together with your buys and sales, once it has one.
+
 None of it is in the published document. The site has no login by default, so
 `dashboard.json` carries no share count, basis, market value or stop; the page reads
 them from `vault.json`, which is AES-256-GCM sealed under the ops token and

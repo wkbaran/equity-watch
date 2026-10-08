@@ -314,6 +314,22 @@ test("a lot's Sell sells from that lot, at a typed price and date", async ({ pag
   });
 });
 
+test("an expanded position ends with its story, and one with no story has no band", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  await expand(page, "AA");
+  const band = detail(page).locator(".story-col");
+  await expect(band).toBeVisible();
+  await expect(band.locator("li").first()).toBeVisible();
+  await expect(band).toContainText("you bought AA");
+
+  // TSLA has never fired, so it has no story yet.
+  await positionRow(page, "AA").locator("td").nth(2).click();
+  await expect(detail(page)).toHaveCount(0);
+  await expand(page, "TSLA");
+  await expect(detail(page).locator(".story-col")).toHaveCount(0);
+});
+
 test("adds a stop", async ({ page }) => {
   await storeToken(page);
   await openHoldings(page);

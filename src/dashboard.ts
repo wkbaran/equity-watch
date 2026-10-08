@@ -205,6 +205,8 @@ export interface HoldingDailyStats {
   highClose: number | null;
 }
 
+const TERMINAL_STORIES = 5;
+
 export interface HoldingRow {
   symbol: string;
   shares: number;
@@ -307,7 +309,10 @@ export interface DashboardInputs {
   limit?: number;
   /** Only list alerts within this percent of firing. */
   approachingWithinPct?: number;
-  /** Cap on ticker stories. */
+  /**
+   * Cap on ticker stories. None by default since 2026-10-07: a drawer tells
+   * whichever symbol it is about, so a capped list left most of them blank.
+   */
   storyLimit?: number;
   /**
    * Include the "approaching" list. Off by default: on a 500-alert book a
@@ -622,7 +627,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
   const stories = buildStories(
     revisits.filter((e) => !isIgnored(e.symbol)),
     narrativeCtx,
-    { limit: inputs.storyLimit ?? 5 }
+    { limit: inputs.storyLimit }
   );
 
   const tradingViewPrefixes: Record<string, string> = {};
@@ -715,10 +720,12 @@ export function renderDashboard(d: Dashboard): string {
   }
 
   if (d.stories.length > 0) {
+    // Every symbol has its story now; the terminal tells the latest few.
+    const told = d.stories.slice(0, TERMINAL_STORIES);
     lines.push("");
-    lines.push(`STORIES (${d.stories.length})`);
+    lines.push(`STORIES (${told.length < d.stories.length ? `latest ${told.length} of ${d.stories.length}` : d.stories.length})`);
     lines.push("-".repeat(72));
-    for (const s of d.stories) {
+    for (const s of told) {
       lines.push(`  ${s.summary}`);
       for (const line of s.lines) {
         lines.push(`    ${line.text}`);

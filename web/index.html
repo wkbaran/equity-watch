@@ -505,12 +505,15 @@
   .position-detail > .detail-cols > .sell-band { grid-row: 2; }
   .position-detail > .detail-cols > .stops { grid-row: 3; }
   .position-detail > .detail-cols > .alert-col { grid-row: 4; }
+  .position-detail > .detail-cols > .story-col { grid-row: 5; padding-left: 0; padding-right: 0; padding-bottom: 0; }
+  .position-detail > .detail-cols > .story-col > ol { margin-top: 0; }
   .position-detail > .detail-cols > *::before {
     position: absolute; top: calc(0.9rem + 0.3rem); left: calc(-1 * (var(--label-w) + var(--col-gap)));
   }
   .position-detail > .detail-cols > .sell-band::before { content: "Sell"; color: var(--signal); }
   .position-detail > .detail-cols > .stops::before { content: "Stop"; }
   .position-detail > .detail-cols > .alert-col::before { content: "Alert"; }
+  .position-detail > .detail-cols > .story-col::before { content: "Story"; }
   /* The border runs under the labels too, so each band reads as one row. */
   .position-detail > .detail-cols > *::after {
     content: ""; position: absolute; top: -1px; height: 1px; left: calc(-1 * (var(--label-w) + var(--col-gap))); width: calc(var(--label-w) + var(--col-gap));
@@ -631,6 +634,7 @@
     .position-detail > .detail-cols > .sell-band { grid-row: 3; }
     .position-detail > .detail-cols > .stops { grid-row: 4; }
     .position-detail > .detail-cols > .alert-col { grid-row: 5; }
+    .position-detail > .detail-cols > .story-col { grid-row: 6; }
     .position-detail > .detail-cols > *::before { position: static; flex-basis: 100%; }
     .position-detail > .detail-cols > *::after { display: none; }
     dl.kv-list { grid-template-columns: 1fr; gap: 0.1rem; }
@@ -648,7 +652,6 @@
   <nav class="site-nav" aria-label="Views">
     <a href="#/" data-nav="overview"><span>Overview</span></a>
     <a href="#/queue" data-nav="queue"><span>Revisit queue</span> <span id="nav-queue-count" class="nav-count"></span></a>
-    <a href="#/stories" data-nav="stories" id="nav-stories" hidden><span>Stories</span> <span id="nav-stories-count" class="nav-count"></span></a>
     <a href="#/alerts" data-nav="alerts"><span>Alerts</span> <span id="nav-alerts-count" class="nav-count"></span></a>
     <a href="#/holdings" data-nav="holdings" id="nav-holdings" hidden><span>Holdings</span> <span id="nav-holdings-count" class="nav-count"></span></a>
   </nav>
@@ -705,10 +708,6 @@
     <div id="queue" class="card"></div>
   </section>
 
-  <section id="view-stories" hidden>
-    <div class="section-header"><h2 class="section-title">Stories</h2><span id="stories-count" class="section-count"></span></div>
-    <div id="stories" class="card"></div>
-  </section>
 
   <section id="view-holdings" hidden>
     <div class="section-header"><h2 class="section-title">Holdings</h2><span id="holdings-count" class="section-count"></span></div>

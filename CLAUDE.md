@@ -851,7 +851,7 @@ failing, so re-run the script after changing any of those and look at what comes
 out. Two things that cost time the first time:
 
 - **`addInitScript` never runs on a hash-only `goto`.** Unlocking editing by
-  seeding `localStorage` and then navigating `#/stories` → `#/alert/<id>` leaves
+  seeding `localStorage` and then navigating `#/queue` → `#/alert/<id>` leaves
   the page unlocked-but-never-reloaded, and the edit form simply isn't in the
   DOM. The script does an explicit `page.reload()` for that reason.
 - **The element you want is usually not the one you named.** `#ops-pending`
@@ -998,12 +998,17 @@ the vault's plaintext. With no ops token there is no vault and no stories on the
 site; the terminal `dashboard` and its local report still have them.
 
 The page shows stories only when the vault is available and editing is unlocked
-(`storiesVisible` in `web/app.js`: the rail link, the view, and the drawers' Story
-section), and reads them from `vaultData.stories`. That check
-must wait for the document (`syncStoriesAccess` returns early until `current` is
-set): `canEdit()` reads `current.site.ops`, so before the first poll everyone looks
-locked, and gating in `parseRoute` bounced an unlocked `#/stories` load to the
-overview.
+(`storiesVisible`/`storyFor` in `web/app.js`), and reads them from
+`vaultData.stories`.
+
+**There is no Stories view, and the story list is not capped** (both 2026-10-07).
+The view showed `storyLimit ?? 5` stories sorted by length, so the same five long
+held histories sat there for weeks, and every drawer looked its story up *in those
+five*: 113 of 118 symbols with a story showed none. Now `buildDashboard` keeps
+every story and `buildStories` sorts held first, then by latest line. A story is
+told where it's about: both drawers' Story section and the expanded position's
+Story band. Don't reintroduce a cap on the document to shorten a list; the
+terminal `dashboard` slices its own five (`TERMINAL_STORIES`).
 
 ## Sales ride on the removal ops, and the page previews the worker's lot order
 

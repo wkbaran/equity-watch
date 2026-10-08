@@ -17,6 +17,8 @@ const OUT = fileURLToPath(new URL("../docs/images", import.meta.url));
 async function shot(page: Page, selector: string, name: string, padding = 12) {
   const el = page.locator(selector).first();
   await el.waitFor({ state: "visible" });
+  // A drawer scrolls on its own, and a clip can't reach what sits below its fold.
+  await el.scrollIntoViewIfNeeded();
   const box = await el.boundingBox();
   if (!box) throw new Error(`no box for ${selector}`);
   await page.screenshot({
@@ -60,9 +62,9 @@ async function main() {
   await page.goto(`${BASE}/#/trigger/rv0000a2`);
   await shot(page, "#drawer-body .kv-list", "trigger-details");
 
-  // 3. The story for AA: two fires with the re-level between them.
-  await page.goto(`${BASE}/#/stories`);
-  await shot(page, "#stories .story", "story");
+  // 3. The story for AA, as that same drawer tells it: two fires with the
+  // re-level between them. (There is no Stories view since 2026-10-07.)
+  await shot(page, "#drawer-body .story", "story");
 
   // 4. The alert's edit form.
   await page.goto(`${BASE}/#/alert/${STATIC.id}`);

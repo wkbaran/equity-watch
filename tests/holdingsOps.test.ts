@@ -519,6 +519,14 @@ describe("vault", () => {
       expect(opened.stories.find((s) => s.symbol === "AAPL")?.lines.map((l) => l.text)).toContain("Sep 1: you bought AAPL.");
     });
 
+    // Every drawer reads its symbol's story out of the vault, so a cap left most drawers without one.
+    it("tells every symbol's story, not the top five", () => {
+      const symbols = ["A1", "B2", "C3", "D4", "E5", "F6", "G7"];
+      const many = symbols.flatMap((symbol, i) => revisits.map((r) => ({ ...r, id: `${r.id}-${i}`, symbol })));
+      const d = buildDashboard({ alerts: [], revisits: many, holdings: store(), quotes, now: NOW });
+      expect(d.stories.map((st) => st.symbol).sort()).toEqual(symbols);
+    });
+
     // A sale's line carries shares and price, so it is the strictest case of the rule above.
     it("tells a sale's size and price in the vault's story, and nowhere in dashboard.json", () => {
       sellShares(holdingsFile, { symbol: "AAPL", count: 12, price: 181.5, soldOn: "2026-09-12" }, new Date("2026-09-12T18:00:00.000Z"));

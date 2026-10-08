@@ -4,7 +4,6 @@
 // whichever one is open:
 //   #/              overview        (dashboard.json, polled every minute)
 //   #/queue         the revisit queue (dashboard.json)
-//   #/stories       multi-trigger stories (dashboard.json)
 //   #/alerts        every live alert (alerts.json, fetched while viewed)
 //   #/holdings      positions, lots, and stops (vault.json, decrypted once editing is unlocked)
 //   #/trigger/<id>  one trigger's details, in a drawer over the current view
@@ -351,26 +350,22 @@
   /**
    * Stories are for whoever holds the token. They tell your buys and sales
    * alongside the alerts, so they are published only inside vault.json
-   * (dashboard.json carries none), and a locked page shows neither the Stories
-   * view nor a drawer's Story section; `#/stories` falls back to the overview.
+   * (dashboard.json carries none), and a locked page shows no Story section.
+   *
+   * There is no Stories view (removed 2026-10-07, the user's call). It showed
+   * the five busiest held names forever, and every drawer read its story out
+   * of those five, so 113 of 118 symbols with a story showed none. Every story
+   * is in the vault now, told where it is about: both drawers and an expanded
+   * position. `#/stories` is an unknown view, so it lands on the overview.
    */
   const storiesVisible = () => canEdit() && current?.site?.vault === true;
   /** Null until the vault is open; a vault sealed before stories moved there has none. */
   const vaultStories = () => (vaultData ? (vaultData.stories ?? []) : null);
-
-  // Only once the document is in: opsEnabled() reads it, so before the first
-  // poll every visitor looks locked and an unlocked #/stories would be bounced.
-  function syncStoriesAccess() {
-    if (!current) return;
-    $("nav-stories").hidden = !storiesVisible();
-    if (!storiesVisible() && baseView === "stories") location.hash = "#/";
-  }
+  const storyFor = (symbol) => (storiesVisible() ? ((vaultStories() ?? []).find((st) => st.symbol === symbol) ?? null) : null);
 
   function rerenderOps() {
     renderOpsControls();
     syncAgentTools();
-    syncStoriesAccess();
-    renderStories();
     if (current) {
       renderTiles(current.summary, holdingRows() !== null);
       // The queue rows carry an "edit pending" tag of their own.
@@ -1973,6 +1968,13 @@
     return h("div", { class: "alert-col" }, h("strong", { class: "form-title", text: "Alert" }), ...body);
   }
 
+  /** The position's story as the panel's last band, or nothing when it has none yet (one fire and no trade). */
+  function storyColumn(symbol) {
+    const story = storyFor(symbol);
+    if (!story) return null;
+    return h("div", { class: "story-col story" }, h("ol", {}, ...story.lines.map((l) => h("li", { text: l.text }))));
+  }
+
   function positionDetail(symbol) {
     const lots = vaultData.lots.filter((l) => l.symbol === symbol);
     const stops = vaultData.stops.filter((s) => s.symbol === symbol);
@@ -1989,6 +1991,7 @@
       coverPending(symbol),
       alerts.map((a) => [a.id, a.condition, a.primed?.at ?? null]),
       alerts.flatMap((a) => pendingFor(a.id).map((p) => p.id)),
+      storyFor(symbol)?.lines ?? null,
     ]);
     const cached = detailCache.get(symbol);
     if (cached?.sig === sig) return cached.el;
@@ -2011,7 +2014,7 @@
           h("tbody", {}, ...lots.flatMap((lot) => lotRows(lot, sell)))
         )
       ),
-      h("div", { class: "detail-cols" }, sell.el, stopsBlock(symbol, stops), alertColumn(symbol)),
+      h("div", { class: "detail-cols" }, sell.el, stopsBlock(symbol, stops), alertColumn(symbol), storyColumn(symbol)),
       h(
         "div",
         { class: "actions" },
@@ -2615,25 +2618,6 @@
     $("triggers").replaceChildren(...list, ...(toggle ? [toggle] : []));
   }
 
-  function renderStories() {
-    const stories = vaultStories();
-    $("nav-stories-count").textContent = stories === null ? "" : String(stories.length);
-    $("stories-count").textContent = stories?.length ? String(stories.length) : "";
-    if (stories === null) {
-      $("stories").replaceChildren(h("div", { class: "empty", text: vaultError ?? "Opening stories…" }));
-      return;
-    }
-    if (stories.length === 0) {
-      $("stories").replaceChildren(h("div", { class: "empty", text: "No symbol has fired more than once yet." }));
-      return;
-    }
-    $("stories").replaceChildren(
-      ...stories.map((s) =>
-        h("div", { class: "story" }, h("div", { class: "headline" }, ...linkLeadingSymbol(s.summary, s.symbol)), h("ol", {}, ...s.lines.map((l) => h("li", { text: l.text }))))
-      )
-    );
-  }
-
   const HOLDING_COLS = [
     { key: "symbol", label: "Symbol" },
     { key: "accounts", label: "Account" },
@@ -3103,7 +3087,6 @@
     $("nav-alerts-count").textContent = String(d.summary.liveAlerts);
     // Every open entry, the same number as the overview tile.
     $("nav-queue-count").textContent = String(d.summary.openRevisits);
-    syncStoriesAccess();
     // Holdings come from the decrypted vault when unlocked, or from the document
     // when the publisher includes them in the clear (web.holdings). Otherwise
     // they're absent from dashboard.json entirely, not merely hidden here.
@@ -3111,7 +3094,6 @@
     renderStrip(d);
     renderQueue(d.revisitQueue);
     renderTriggers(d.recentTriggers ?? [], d.summary.windowDays);
-    renderStories();
     renderApproaching(d.approaching ?? [], d.approachingTotal ?? 0);
     renderQuiet(d.quietWatches, d.quietTotal);
     renderOpsControls();
@@ -3436,8 +3418,7 @@
    * unlocked page has it.
    */
   function storyBlock(symbol) {
-    if (!storiesVisible()) return null;
-    const story = (vaultStories() ?? []).find((s) => s.symbol === symbol);
+    const story = storyFor(symbol);
     if (!story) return null;
     return [
       h("h3", { class: "drawer-sub", text: "Story" }),
@@ -3591,6 +3572,8 @@
         "div",
         { class: "actions", style: "margin-top:1.25rem" },
         h("a", { href: t.chartUrl, target: CHART_TARGET, text: "Chart" }),
+        // In every drawer, not just the alert's: Overview and the queue open this one.
+        addLotLink(t.symbol),
         // Suggest and Apply, but no Dismiss: dismissing lives on the queue row,
         // where what it removes is the row you are looking at (the user's rule,
         // 2026-09-18). The condition comes from the alert book, which this
@@ -3702,6 +3685,8 @@
   /**
    * Opens Holdings in its reused tab with the Add a lot form filled in for this
    * symbol. Only where that form exists: an unlocked page with the vault open.
+   * Both drawers carry it (the user found it missing from the fire drawer,
+   * which is what Overview and the queue open, 2026-10-07).
    */
   function addLotLink(symbol) {
     if (!canEditHoldings()) return null;
@@ -3829,7 +3814,7 @@
   // ---- routing --------------------------------------------------------------
 
   // Views with their own hash; anything unrecognized is the overview.
-  const BASE_VIEWS = ["queue", "stories", "alerts", "holdings"];
+  const BASE_VIEWS = ["queue", "alerts", "holdings"];
 
   function parseRoute() {
     const [view, id, action] = location.hash.replace(/^#\/?/, "").split("/");
@@ -3856,7 +3841,6 @@
       }
       if (route.addLot) lotPrefillSymbol = route.addLot;
     }
-    syncStoriesAccess();
     for (const view of ["overview", ...BASE_VIEWS]) $(`view-${view}`).hidden = baseView !== view;
     syncTableHeads();
     for (const link of document.querySelectorAll("[data-nav]")) {

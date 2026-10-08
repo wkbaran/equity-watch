@@ -542,7 +542,13 @@ export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: N
   return { symbol, held, lines, summary };
 }
 
-/** The stories worth telling: tickers with the most going on, most active first. */
+/**
+ * The stories worth telling: held positions first, then the most recently
+ * active. It sorted by length until 2026-10-07, which under a cap of five kept
+ * the same five long histories on top no matter what happened elsewhere.
+ */
+const lastAt = (story: TickerStory): string => story.lines.reduce((latest, l) => (l.at > latest ? l.at : latest), "");
+
 export function buildStories(
   entries: RevisitEntry[],
   ctx: NarrativeContext,
@@ -569,11 +575,11 @@ export function buildStories(
   }
 
   stories.sort((a, b) => {
-    // Positions first, then the busiest threads.
+    // Positions first, then whatever happened most recently.
     if (a.held !== b.held) {
       return a.held ? -1 : 1;
     }
-    return b.lines.length - a.lines.length;
+    return lastAt(b).localeCompare(lastAt(a)) || a.symbol.localeCompare(b.symbol);
   });
   return opts.limit ? stories.slice(0, opts.limit) : stories;
 }

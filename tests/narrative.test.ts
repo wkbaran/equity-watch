@@ -461,6 +461,11 @@ describe("buildStories", () => {
     expect(stories[0].held).toBe(true);
   });
 
+  // By length, the longest histories sat on top for good: CTVA has more lines, MKS happened later.
+  it("orders by latest activity, not by length", () => {
+    expect(buildStories(many, NONE).map((s) => s.symbol)).toEqual(["MKS", "CTVA"]);
+  });
+
   it("honours the limit", () => {
     expect(buildStories(many, NONE, { limit: 1 })).toHaveLength(1);
   });

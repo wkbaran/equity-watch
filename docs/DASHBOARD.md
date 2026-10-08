@@ -26,7 +26,8 @@ Six sections, in the order they print:
    unless `--limit` caps it: the site only publishes every 15 minutes or so, so a
    capped queue made anyone clearing it in one sitting stop and wait for the rest.
 3. **Stories** — tickers that have fired more than once, or once around a buy or
-   sale, threaded into a narrative (below).
+   sale, threaded into a narrative (below). Every such ticker has one; the
+   terminal prints the latest five, and the page shows each in its drawers.
 4. **Approaching** — *off by default*; pass `--approaching`. Live alerts within
    `--within-pct` (default 5%) of firing, sorted by distance, capped at `--limit`
    (default 25) with the true total reported. The arrow carries the side, so a downside alert
@@ -71,8 +72,7 @@ priority-sorted and capped, so it can't tell you what's *new*. Open entries olde
 than the window are included too, so every queue row has details to open.
 
 **Views.** The left rail (a top bar on a phone) switches between **Overview**, **Revisit queue** (`#/queue`),
-**Alerts** (`#/alerts`), and — once editing is unlocked — **Stories** (`#/stories`)
-and **Holdings** (`#/holdings`). All are routes in the same page, so polling and
+**Alerts** (`#/alerts`), and — once editing is unlocked — **Holdings** (`#/holdings`). All are routes in the same page, so polling and
 notifications keep running on any of them. Each view's count sits beside it in
 the rail, so the rail doubles as the day's scoreboard.
 
@@ -119,11 +119,14 @@ number as the rail and the overview tile.
   Only one of the three is offered at a time: while a change to an entry is queued
   the row shows its pending tag and no buttons, because a second decision would be
   made against a state that is about to change.
-- **Stories** — each multi-trigger thread as a narrative, with your buys and sales
-  in it. Unlocked only: stories are published inside the encrypted `vault.json`,
-  never in `dashboard.json`, so a locked page has no Stories link, `#/stories`
-  lands on the overview, and the drawers leave out their Story section. A site
-  with no ops token configured publishes no vault, and so shows no stories.
+- **Stories** have no view of their own (removed 2026-10-07). A symbol's story
+  is told where it's about: the **Story** section of a fire's drawer and an
+  alert's drawer, and the last band of an expanded position on Holdings. Every
+  symbol with a story has one there; a story starts with a symbol's second fire,
+  or its first fire once you've bought or sold it. Unlocked only: stories are
+  published inside the encrypted `vault.json`, never in `dashboard.json`, so a
+  locked page shows no Story section. A site with no ops token configured
+  publishes no vault, and so shows no stories.
 - **Alerts** — every live alert, from its own `alerts.json`, fetched only while that
   view is open so the every-minute poll of `dashboard.json` stays small. Each row
   shows the condition in words, its level, the current price and distance, how often
