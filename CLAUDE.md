@@ -1461,8 +1461,13 @@ container: two schedulers on two copies of `alerts.json` re-fire each other's al
 - **Shipping code is now**: push, then `docker compose -f docker/docker-compose.yaml up -d --build`
   with `DOCKER_HOST` set. The image builds `dist/` itself, so the "nothing
   rebuilds `dist/`" trap above does not apply to it. A `web/`-only change still
-  waits for the next publish (`docker compose ... exec -u node equity-watch
-  /app/scripts/check-and-publish.sh` forces one; a run inside the max-stale window won't).
+  waits for the next publish. **`check-and-publish.sh` does not force one**: it
+  runs `--skip-unchanged`, which hashes the documents and not `web/`, so inside
+  the max-stale window it reports "Skipped publish: unchanged" (found 2026-10-08).
+  Force it with `docker compose -f docker/docker-compose.yaml exec -u node
+  equity-watch sh -c 'cd "${EQUITY_WATCH_STATE_DIR:-/data}" && node /app/dist/cli.js
+  dashboard --site site --publish --quiet'`. The `cd` matters: from `/app` the
+  `site` directory can't be created (EACCES).
 - **`STATE_DIR` (in gitignored `docker/.env`) is required and has no default.**
   Starting the container against an empty directory publishes an empty dashboard
   over the live one. Put state there first.
