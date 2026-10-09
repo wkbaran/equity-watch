@@ -928,15 +928,27 @@
     // What "normal" means depends on the window, because the worker measures
     // it differently for each (src/alerts/volumeBaseline.ts). Keep in step.
     const normalNote = h("p", { class: "volume-note" });
+    const clockBefore = (endMinutes, count, unit) => {
+      const back = unit === "h" ? count * 60 : unit === "m" ? count : count / 60;
+      const start = endMinutes - back;
+      const hh = Math.floor(start / 60);
+      const mm = Math.floor(start % 60);
+      return `${hh}:${String(mm).padStart(2, "0")}`;
+    };
     const normalText = () => {
       const win = windowSelect.value;
       if (win === "" || win === "today") {
         return "Normal is this stock's average full-day volume over the last 20 trading days. Today's volume builds up through the session, so a high multiple is rarely reached before midday.";
       }
-      if (/[smh]$/.test(win)) {
-        return "Normal is this stock's average volume for the same time of day over the last 10 trading days, so the open is compared with past opens and lunchtime with past lunchtimes.";
+      const count = Number(win.slice(0, -1));
+      const unit = win.slice(-1);
+      if (unit === "d") {
+        const span = count === 1 ? "day" : `${count}-day stretch`;
+        return `Normal is the volume this stock usually trades in a ${span}: the average over rolling ${count === 1 ? "one-day" : `${count}-day`} windows of recent trading history.`;
       }
-      return "Normal is this stock's average volume over a window of the same length, taken across recent trading history.";
+      const names = { s: "second", m: "minute", h: "hour" };
+      const span = count === 1 ? names[unit] : `${count} ${names[unit]}s`;
+      return `Normal is the volume this stock usually trades in the ${span} up to the time of each check: the average of that same stretch of the clock over the last 10 trading days. At 10:45 it is compared with what traded from ${clockBefore(10 * 60 + 45, count, unit)} to 10:45 in past sessions.`;
     };
     const sync = () => {
       amount.placeholder = PLACEHOLDER[kind.value];

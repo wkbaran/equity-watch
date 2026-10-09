@@ -210,9 +210,13 @@ test.describe("add", () => {
     await kind.selectOption("ratio");
     await expect(tip).toContainText("last 20 trading days");
     await form.getByLabel("Over").selectOption("30m");
-    await expect(tip).toContainText("same time of day over the last 10 trading days");
+    await expect(tip).toContainText("trades in the 30 minutes up to the time of each check");
+    await expect(tip).toContainText("from 10:15 to 10:45");
+    await form.getByLabel("Over").selectOption("2h");
+    await expect(tip).toContainText("the 2 hours up to the time of each check");
+    await expect(tip).toContainText("from 8:45 to 10:45");
     await form.getByLabel("Over").selectOption("5d");
-    await expect(tip).toContainText("window of the same length");
+    await expect(tip).toContainText("in a 5-day stretch");
     await kind.selectOption("shares");
     await expect(tip).toBeHidden();
   });
