@@ -196,6 +196,30 @@ describe("selling shares", () => {
     expect(s.stops.map((x) => x.id)).toEqual(["stopaapl", "stopmsft"]);
   });
 
+  it("copies the symbol's stops onto a stop-triggered sale, before a closing sale deletes them", () => {
+    sellShares(holdingsFile, { symbol: "MSFT", count: 3, price: 380, stopHit: { atr: 9.5 } }, NOW);
+    const s = loadHoldingsStore(holdingsFile);
+    expect(s.stops.map((x) => x.id)).toEqual(["stopaapl"]);
+    const stop = store().stops.find((x) => x.id === "stopmsft")!;
+    expect(s.sales?.[0].stopHit).toEqual({ atr: 9.5, stops: [{ stopPrice: stop.stopPrice, count: stop.count, createdAt: stop.createdAt }] });
+  });
+
+  it("records no stopHit on an ordinary sale", () => {
+    sellShares(holdingsFile, { symbol: "AAPL", count: 1, price: 180 }, NOW);
+    expect(loadHoldingsStore(holdingsFile).sales?.[0]).not.toHaveProperty("stopHit");
+  });
+
+  it.each([
+    [{ price: 5, stopHit: true }, { ok: true, value: { price: 5, stopHit: { atr: null } } }],
+    [{ price: 5, stopHit: true, atr: 1.25 }, { ok: true, value: { price: 5, stopHit: { atr: 1.25 } } }],
+    [{ price: 5, stopHit: false }, { ok: true, value: { price: 5 } }],
+    [{ price: 5, atr: 1.25 }, { ok: false, error: "An ATR goes with stopHit." }],
+    [{ price: 5, stopHit: "yes" }, { ok: false, error: "stopHit must be true or false." }],
+    [{ stopHit: true }, { ok: false, error: "A sale needs a price." }],
+  ])("parses stop-hit sale params %j", (params, expected) => {
+    expect(parseSaleParams(params, "position")).toEqual(expected);
+  });
+
   it("dates a backdated sale's removals at the sale, not when it was entered", () => {
     sellShares(holdingsFile, { symbol: "MSFT", count: 3, price: 420, soldOn: "2026-10-01" }, NOW);
     expect(loadHoldingsStore(holdingsFile).removedLots?.[0].removedAt).toBe("2026-10-01T12:00:00.000Z");

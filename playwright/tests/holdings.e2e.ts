@@ -293,6 +293,25 @@ test("sells part of a position oldest lot first, at the page's price when none i
   expect(op.params.soldOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 });
 
+test("a sale ticked as stop-triggered carries stopHit and the page's ATR, and the box resets", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  await expand(page, "AA");
+  const band = detail(page).locator("form.sell-band");
+  await detail(page).getByRole("button", { name: "Sell from position" }).click();
+  const box = band.getByLabel("A stop triggered this sale");
+  await expect(box).not.toBeChecked();
+  await box.check();
+  await band.getByRole("button", { name: "Queue sale" }).click();
+  await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+  const [op] = await queuedOps(page);
+  expect(op.params).toMatchObject({ stopHit: true });
+  expect(typeof op.params.atr === "number" || op.params.atr === undefined).toBe(true);
+
+  await detail(page).getByRole("button", { name: "Sell from position" }).click();
+  await expect(box).not.toBeChecked();
+});
+
 test("a lot's Sell sells from that lot, at a typed price and date", async ({ page }) => {
   await storeToken(page);
   await openHoldings(page);

@@ -913,6 +913,8 @@
           count: { type: "number", description: "Shares sold. Above 0. Omit for all of them." },
           price: { type: "number", description: "Price per share sold at. Omit for the dashboard's current price." },
           soldOn: { type: "string", description: "YYYY-MM-DD. Defaults to today." },
+          stopHit: { type: "boolean", description: "True when a stop triggered this sale. Records the symbol's stops and ATR with it, for judging the stop strategy over time." },
+          atr: { type: "number", description: "The ATR(14) at the time, in dollars. Only with stopHit; omit to use the dashboard's." },
           lotId: { ...lotIdProp, description: "Sell only from this lot, from get_position." },
           account: { type: "string", description: "Sell only from lots in this account, oldest first. An empty string is lots with no account." },
         },
@@ -932,8 +934,15 @@
         if (count > held) return refuse(`That is more shares than ${lot ? "the lot" : "the position"} holds (${held}).`);
         const price = given(args.price) ? args.price : (api.vault().holdings.find((r) => r.symbol === symbol)?.price ?? null);
         if (price === null) return refuse(`The dashboard has no price for ${symbol}; give the price sold at.`);
-        const params = { count, price, ...(given(args.soldOn) ? { soldOn: args.soldOn } : {}) };
-        const summary = `sell ${count} ${symbol} @ ${price}${given(args.soldOn) ? ` on ${args.soldOn}` : ""}`;
+        if (!given(args.stopHit) && given(args.atr)) return refuse("Give atr only with stopHit.");
+        const atr = given(args.atr) ? args.atr : (api.vault().holdings.find((r) => r.symbol === symbol)?.atr ?? null);
+        const params = {
+          count,
+          price,
+          ...(given(args.soldOn) ? { soldOn: args.soldOn } : {}),
+          ...(given(args.stopHit) ? { stopHit: true, ...(atr === null ? {} : { atr }) } : {}),
+        };
+        const summary = `sell ${count} ${symbol} @ ${price}${given(args.soldOn) ? ` on ${args.soldOn}` : ""}${given(args.stopHit) ? " (stop triggered)" : ""}`;
         return queue(api, "holdings", signal, {
           op: lot
             ? { type: "lot.remove", target: { lotId: lot.id }, expect: lotExpect(lot), params }

@@ -216,6 +216,8 @@ export interface SaleInput {
   lotId?: string;
   /** Take only from lots in this account, oldest first. Ignored with lotId. */
   account?: string;
+  /** Marks the sale as stop-triggered; the symbol's stops are copied onto it before a closing sale deletes them. */
+  stopHit?: { atr: number | null };
 }
 
 /**
@@ -264,6 +266,14 @@ export function sellShares(path: string, input: SaleInput, now: Date = new Date(
     soldOn: input.soldOn ?? localDateString(now),
     recordedAt: now.toISOString(),
     lots: [],
+    ...(input.stopHit
+      ? {
+          stopHit: {
+            atr: input.stopHit.atr,
+            stops: stopsForSymbol(store, input.symbol).map((s) => ({ stopPrice: s.stopPrice, count: s.count, createdAt: s.createdAt })),
+          },
+        }
+      : {}),
   };
   const emptied: Lot[] = [];
   let left = input.count;

@@ -73,6 +73,8 @@ const SAMPLE: Record<string, unknown> = {
   volumePeriod: "5d",
   clearLevel: true,
   clearVolume: true,
+  stopHit: true,
+  atr: 1.5,
 };
 
 /** Fails the test if the validator names the field unknown; any other complaint about a lone field is fine. */

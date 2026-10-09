@@ -414,7 +414,7 @@ export interface StopInput {
 
 const LOT_KEYS = ["symbol", "count", "basisPerShare", "purchaseDate", "account", "stopPrice", "stopCount"];
 const LOT_EDIT_KEYS = ["count", "basisPerShare", "purchaseDate", "account"];
-const LOT_SALE_KEYS = ["count", "price", "soldOn"];
+const LOT_SALE_KEYS = ["count", "price", "soldOn", "stopHit", "atr"];
 const POSITION_SALE_KEYS = [...LOT_SALE_KEYS, "account"];
 const STOP_KEYS = ["symbol", "stopPrice", "count"];
 const STOP_EDIT_KEYS = ["stopPrice", "count"];
@@ -551,6 +551,8 @@ export interface SaleParams {
   price?: number;
   soldOn?: string;
   account?: string;
+  /** The person marked the sale as triggered by a stop; `atr` is the page's ATR(14), if it had one. */
+  stopHit?: { atr: number | null };
 }
 
 export function parseSaleParams(params: unknown, kind: "lot" | "position"): Parsed<SaleParams> {
@@ -564,7 +566,13 @@ export function parseSaleParams(params: unknown, kind: "lot" | "position"): Pars
       if (typeof f.account !== "string" || f.account.trim().length > 40) fail("Account must be text of at most 40 characters.");
       out.account = f.account.trim();
     }
-    if (out.price === undefined && (out.count !== undefined || out.soldOn !== undefined || out.account !== undefined)) {
+    if (f.stopHit !== undefined && f.stopHit !== null && f.stopHit !== false) {
+      if (f.stopHit !== true) fail("stopHit must be true or false.");
+      out.stopHit = { atr: present(f.atr) ? positiveValue("ATR", f.atr) : null };
+    } else if (present(f.atr)) {
+      fail("An ATR goes with stopHit.");
+    }
+    if (out.price === undefined && (out.count !== undefined || out.soldOn !== undefined || out.account !== undefined || out.stopHit !== undefined)) {
       fail("A sale needs a price.");
     }
     return out;

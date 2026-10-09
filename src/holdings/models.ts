@@ -73,6 +73,22 @@ export interface Sale {
   recordedAt: string;
   /** What each lot gave up, in the order taken: the basis a realized result is measured against. */
   lots: SaleLot[];
+  /** Present when the person said a stop triggered this sale. Absent means "not marked as one", not "known not to be". */
+  stopHit?: StopHit;
+}
+
+/**
+ * The stop context of a sale marked as stop-triggered, for judging the stop
+ * strategy (2 x ATR) over time. Closing a position deletes its stops, so the
+ * worker copies them here at sale time; the ATR is the page's, since the
+ * worker has no market data. Size and value, like the rest of `Sale`: it never
+ * leaves holdings.json.
+ */
+export interface StopHit {
+  /** ATR(14) in dollars as the page showed it when the sale was queued; null when it had none. */
+  atr: number | null;
+  /** Every stop the symbol had when it sold. Usually one; `count` null covers whatever was held. */
+  stops: { stopPrice: number; count: number | null; createdAt: string }[];
 }
 
 export interface SaleLot {

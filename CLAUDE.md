@@ -776,6 +776,17 @@ Things that look simplifiable and aren't:
 reads and queued edits as tools for an in-browser agent. Things that look
 simplifiable and aren't:
 
+- **Every change to what the page can do must be mirrored in the tools, in the
+  same commit** (2026-10-08). The page, the WebMCP tools and `equity-watch mcp`
+  are three doors to the same ops, and only the first is one you will be looking
+  at. A new op type, a new param on an existing op (`stopHit` on a sale), a new
+  read field, or a new guard each needs: the tool's schema and `run` in
+  `web/webmcp.js` (which serves both the page and the MCP server), its key in
+  `tests/webmcp.test.ts`'s `SAMPLE` (the schema/validator test fails without it),
+  and a case in `tests/mcp.test.ts`. An edit that touches only `web/app.js` and
+  `src/ops/` leaves agents unable to do what the page does, with no test failing.
+  The reverse also holds: a rule enforced in the page's form (the sell band's
+  price default) has to be enforced in the tool as well.
 - **Every write tool ends in `queue()`, which asks the person first.** The spec has
   no consent mechanism yet (issue #165), so the confirm dialog is the only thing
   between an agent and the ops queue. A new write tool must go through `queue()`,

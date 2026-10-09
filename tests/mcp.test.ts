@@ -307,6 +307,16 @@ describe("every write tool, through the server", () => {
     { tool: "cover_position", args: { symbol: "TSLA" }, op: { type: "holdings.cover", target: { symbol: "TSLA" } } },
   ];
 
+  it("sell_shares marks a stop-triggered sale, with the ATR given or the vault's", async () => {
+    const { call } = await connect({ allowHoldings: true }, { action: "accept", content: { confirm: true } });
+    const r = await call("sell_shares", { symbol: "aa", count: 12, price: 50, stopHit: true, atr: 1.5 });
+    expect(r.isError, r.text).toBe(false);
+    expect((await queued())[0]).toMatchObject({ type: "position.remove", params: { count: 12, price: 50, stopHit: true, atr: 1.5 } });
+    const bare = await call("sell_shares", { symbol: "aa", atr: 1.5 });
+    expect(bare.isError).toBe(true);
+    expect(bare.text).toMatch(/only with stopHit/);
+  });
+
   it("has a case for every write tool the server offers, and covers every op type", async () => {
     const box = await loadToolbox();
     const writes = box.TOOLS.filter((t) => t.ops !== undefined).map((t) => t.name).sort();

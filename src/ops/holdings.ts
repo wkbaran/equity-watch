@@ -89,9 +89,9 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
         if (!sale.ok) {
           return reject(lot.symbol, sale.error);
         }
-        const { price, count, soldOn } = sale.value;
+        const { price, count, soldOn, stopHit } = sale.value;
         if (price !== undefined) {
-          const sold = sellShares(holdingsFile, { symbol: lot.symbol, count: count ?? lot.count, price, soldOn, lotId });
+          const sold = sellShares(holdingsFile, { symbol: lot.symbol, count: count ?? lot.count, price, soldOn, lotId, stopHit });
           return saleOutcome(lot.symbol, sold, "a lot");
         }
         const removed = removeLot(holdingsFile, lotId)!;
@@ -134,7 +134,7 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       if (!sale.ok) {
         return reject(symbol, sale.error);
       }
-      const { price, count, soldOn, account } = sale.value;
+      const { price, count, soldOn, account, stopHit } = sale.value;
       if (price !== undefined) {
         const inAccount = account === undefined ? lots : lots.filter((l) => (l.account ?? "") === account);
         const sold = sellShares(holdingsFile, {
@@ -143,6 +143,7 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
           price,
           soldOn,
           account,
+          stopHit,
         });
         return saleOutcome(symbol, sold, account === undefined ? "the position" : "the account's shares");
       }

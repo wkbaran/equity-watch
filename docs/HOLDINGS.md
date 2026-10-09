@@ -177,6 +177,8 @@ next scheduled `ops pull`, exactly like an alert edit.
   to type one.
 - **Sold on.** Today unless you change it. A backdated sale is placed on its
   date in the story.
+- **A stop triggered this sale** (unticked by default). Tick it when the broker
+  sold you out at a stop, so the stop strategy can be judged later (below).
 - **Take from** (only when there is more than one lot). *Oldest lots first* is
   the brokers' default (FIFO). The other choices are oldest first within one
   account (offered when the lots span accounts) or one specific lot. A sale
@@ -198,6 +200,19 @@ basis) is kept in `holdings.json` under `sales`, for later analysis. Like
 everything in that file, it never leaves the machine except inside the vault,
 where the symbol's story tells it: shares, price, and the result against what
 they cost. The page doesn't list past sales.
+
+**Stop-triggered sales.** A ticked sale carries `stopHit` in `holdings.json`:
+
+```json
+"stopHit": { "atr": 3.1, "stops": [{ "stopPrice": 46, "count": null, "createdAt": "..." }] }
+```
+
+`stops` is every stop the symbol had when it sold, copied by the worker because
+selling the last share deletes them. `atr` is the ATR(14) the page showed when
+the sale was queued (`null` if it had none). Together with the sale's price and
+lots that is enough to compute the stop's distance in ATRs, the slippage past
+the stop, and the result against basis. A sale without `stopHit` is *not marked*,
+not known to be a discretionary exit; sales before 2026-10-08 can't be told.
 
 **Remove without a sale** in the same band deletes the chosen lot, or the whole
 position, with nothing recorded. Use it for a lot entered by mistake.

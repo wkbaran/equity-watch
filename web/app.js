@@ -2104,6 +2104,8 @@
     const all = h("button", { type: "button", class: "link-button", onclick: () => ((count.value = String(available(scopeOf(from.value)))), update()) });
     const price = numberInput(null);
     const date = h("input", { type: "date", value: localToday(), max: localToday() });
+    const stopHit = h("input", { type: "checkbox" });
+    const stopHitField = h("label", { class: "check sale-stop" }, stopHit, " A stop triggered this sale");
     const result = h("p", { class: "sale-result", "aria-live": "polite" });
     const error = h("span", { class: "form-error" });
     const submit = h("button", { type: "submit", text: "Queue sale" });
@@ -2205,8 +2207,10 @@
           const p = typed ? positive(price.value) : quoted();
           if (p === null) return (error.textContent = typed ? "Enter a price above 0." : "Enter the price you sold at.");
           if (!date.value) return (error.textContent = "Enter the sale date.");
-          const params = { count: n, price: p, soldOn: date.value };
-          const summary = `sell ${n} ${symbol} @ ${p}${date.value === localToday() ? "" : ` on ${date.value}`}`;
+          // The ATR is the page's, read now: the worker has no market data to ask.
+          const atr = holdingFor(symbol)?.atr ?? null;
+          const params = { count: n, price: p, soldOn: date.value, ...(stopHit.checked ? { stopHit: true, ...(atr === null ? {} : { atr }) } : {}) };
+          const summary = `sell ${n} ${symbol} @ ${p}${date.value === localToday() ? "" : ` on ${date.value}`}${stopHit.checked ? " (stop triggered)" : ""}`;
           submit.disabled = true;
           const queued = sc.lot
             ? await submitOp({ type: "lot.remove", target: { lotId: sc.lot.id }, expect: lotExpect(sc.lot), params }, { symbol, summary })
@@ -2224,6 +2228,7 @@
         },
       },
       h("div", { class: "sale-fields" }, fromField, h("div", { class: "field sale-count" }, h("label", { for: (count.id = `field-${++fieldSeq}`), text: "Shares to sell" }), h("span", { class: "with-suffix" }, count, all)), field("Price", price), field("Sold on", date)),
+      stopHitField,
       result,
       h("div", { class: "form-foot" }, submit, cancel, removeOnly, error),
       priceNote
@@ -2238,6 +2243,7 @@
       from.value = scopeOf(scope).value;
       count.value = String(available(scopeOf(from.value)));
       price.value = "";
+      stopHit.checked = false;
       error.textContent = "";
       form.hidden = false;
       detail?.classList.add("selling");
