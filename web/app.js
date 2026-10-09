@@ -925,12 +925,28 @@
     }
     windowSelect.value = current;
     const PLACEHOLDER = { ratio: "e.g. 1.5", shares: "e.g. 2.5M", none: "" };
+    // What "normal" means depends on the window, because the worker measures
+    // it differently for each (src/alerts/volumeBaseline.ts). Keep in step.
+    const normalNote = h("p", { class: "volume-note" });
+    const normalText = () => {
+      const win = windowSelect.value;
+      if (win === "" || win === "today") {
+        return "Normal is this stock's average full-day volume over the last 20 trading days. Today's volume builds up through the session, so a high multiple is rarely reached before midday.";
+      }
+      if (/[smh]$/.test(win)) {
+        return "Normal is this stock's average volume for the same time of day over the last 10 trading days, so the open is compared with past opens and lunchtime with past lunchtimes.";
+      }
+      return "Normal is this stock's average volume over a window of the same length, taken across recent trading history.";
+    };
     const sync = () => {
       amount.placeholder = PLACEHOLDER[kind.value];
       amount.disabled = kind.value === "none";
       windowSelect.disabled = kind.value === "none";
+      normalNote.textContent = normalText();
+      normalNote.classList.toggle("off", kind.value !== "ratio");
     };
     kind.addEventListener("change", sync);
+    windowSelect.addEventListener("change", sync);
     sync();
 
     const read = () => {
@@ -961,7 +977,7 @@
       sync();
     };
 
-    return { fields: [field("Volume", kind), field("Volume at least", amount), field("Over", windowSelect)], read, reset };
+    return { fields: [field("Volume", kind), field("Volume at least", amount), field("Over", windowSelect), normalNote], read, reset };
   }
 
   // Kept in step with MA_TIMEFRAMES in src/indicators/movingAverage.ts; the

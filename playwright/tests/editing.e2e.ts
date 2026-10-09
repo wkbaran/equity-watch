@@ -198,6 +198,25 @@ test.describe("add", () => {
     expect(op.params).toEqual({ symbol: "GMED", level: 80.5, direction: "up", volumeAtLeast: 2_500_000, volumePeriod: "30m" });
   });
 
+  // "x normal volume" is meaningless without saying what normal is, and the
+  // worker measures it differently per window.
+  test("explains what normal volume means, only for a ratio, and per window", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    const form = page.locator("#alert-add form");
+    const kind = form.getByRole("combobox", { name: /^Volume/ });
+    const tip = form.locator(".volume-note");
+    await expect(tip).toBeHidden();
+    await kind.selectOption("ratio");
+    await expect(tip).toContainText("last 20 trading days");
+    await form.getByLabel("Over").selectOption("30m");
+    await expect(tip).toContainText("same time of day over the last 10 trading days");
+    await form.getByLabel("Over").selectOption("5d");
+    await expect(tip).toContainText("window of the same length");
+    await kind.selectOption("shares");
+    await expect(tip).toBeHidden();
+  });
+
   // The window used to be a free-text spec whose only documentation was a
   // placeholder, so what it accepted was guesswork.
   test("offers the windows as a list, defaulting to today", async ({ page }) => {
