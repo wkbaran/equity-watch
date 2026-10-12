@@ -70,6 +70,11 @@ them up on its next run. **Repeat this weekly**: Schwab refresh tokens last 7
 days. When one lapses the container keeps running, publishes "login expired" to
 the dashboard, and (if `HEALTHCHECK_URL` is set) pings `<url>/fail`.
 
+If another program reads betas from you, run `docker compose -f docker/docker-compose.yaml
+run --rm cli beta --symbols-file /data/<list> --out /data/betas.json` right after
+the weekly login, and again on whatever cadence it tolerates (it exits 3 while
+the login is lapsed and leaves the old file alone). See [`docs/BETA.md`](../docs/BETA.md).
+
 ## Bringing your existing state over
 
 **Stop the old scheduler first** (disable the Windows task, or the cron entry).

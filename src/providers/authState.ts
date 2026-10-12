@@ -17,6 +17,14 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+/**
+ * Exit code for "the Schwab login expired, re-authorize". Distinct from 1 so
+ * scripts/check-and-publish.ps1 can keep going and publish the news instead of
+ * treating it as an ordinary failure (see the top-level handler at the bottom
+ * of cli.ts).
+ */
+export const EXIT_SCHWAB_LOGIN_EXPIRED = 3;
+
 export interface AuthState {
   /**
    * When a refresh was first refused for an expired/revoked refresh token, or

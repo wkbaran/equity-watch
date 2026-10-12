@@ -1154,6 +1154,21 @@ simplifiable and aren't:
 - **One bar fetch per symbol per check, shared** with volume windows and moving
   averages through `sharedIntradayBars`.
 
+## `.cache/beta/` never expires, and the `beta` command must not touch it
+
+`buildBetaFetcher` caches each symbol's beta in `.cache/beta/<symbol>.json` and
+never re-reads Schwab once the file exists. That suits the analysis tolerance and
+the holdings page, where a beta moving slowly is fine. It is wrong for
+`equity-watch beta`, whose output another program sizes positions by: through the
+cache it would serve the first value fetched, for ever, with a fresh
+`generatedAt` on top. So that command calls `SchwabProvider.getBetaStrict`
+directly and neither reads nor writes the cache. Don't "reuse the fetcher" for it.
+Two related traps: `getBeta` returns null for **any** non-OK response (a 429 reads
+as "no beta"), which is why the command uses the strict variant and fails the run
+rather than writing a null; and the expired-login exit code now lives in
+`providers/authState.ts` (`EXIT_SCHWAB_LOGIN_EXPIRED`) so `src/beta.ts` can return
+it without importing `cli.ts`. See docs/BETA.md.
+
 ## A zero volume baseline must mean "cannot evaluate", never "no threshold"
 
 `requiredVolume` returns `null` for a ratio condition with a zero or missing

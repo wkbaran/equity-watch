@@ -245,8 +245,11 @@ interface QuoteResponse {
 }
 
 interface InstrumentsResponse {
-  instruments?: { fundamental?: { beta?: number } }[];
+  instruments?: { symbol?: string; fundamental?: { symbol?: string; beta?: number } }[];
 }
+
+/** Letters and digits only, so BRK.B, BRK/B and BRK-B compare equal. */
+const symbolKey = (symbol: string): string => symbol.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 export interface Quote {
   lastPrice: number;
@@ -397,6 +400,25 @@ export class SchwabProvider implements PriceDataProvider {
    * since a missing beta just means "don't scale" to callers.
    */
   async getBeta(symbol: string): Promise<number | null> {
+    return (await this.lookupBeta(symbol)).beta;
+  }
+
+  /**
+   * Like `getBeta`, but a response that says nothing about the symbol's beta
+   * (401, 403, 429, 5xx) throws instead of reading as "no beta". For callers
+   * that write the answer down: a transient error recorded as null would be
+   * indistinguishable from an ETF that simply has none. Other non-OK statuses
+   * (404 and the like) still mean the instrument has no data, so they stay null.
+   */
+  async getBetaStrict(symbol: string): Promise<number | null> {
+    const { beta, status } = await this.lookupBeta(symbol);
+    if (status === 401 || status === 403 || status === 429 || status >= 500) {
+      throw new Error(`Schwab beta request for ${symbol} failed (${status})`);
+    }
+    return beta;
+  }
+
+  private async lookupBeta(symbol: string): Promise<{ beta: number | null; status: number }> {
     await this.rateLimiter.acquire();
     const accessToken = await this.auth.getAccessToken();
     const params = new URLSearchParams({ symbol, projection: "fundamental" });
@@ -404,11 +426,20 @@ export class SchwabProvider implements PriceDataProvider {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!response.ok) {
-      return null;
+      return { beta: null, status: response.status };
     }
     const payload = (await response.json()) as InstrumentsResponse;
-    const beta = payload.instruments?.[0]?.fundamental?.beta;
-    return typeof beta === "number" ? beta : null;
+    // Only an instrument that says it is this symbol counts. Taking [0] blindly
+    // would file another stock's beta under this key if Schwab ever answered a
+    // lookup with something else first. One that names no symbol can't be told
+    // apart, so it is accepted rather than discarded.
+    const wanted = symbolKey(symbol);
+    const instrument = payload.instruments?.find((candidate) => {
+      const named = candidate.symbol ?? candidate.fundamental?.symbol;
+      return named === undefined || symbolKey(named) === wanted;
+    });
+    const beta = instrument?.fundamental?.beta;
+    return { beta: typeof beta === "number" && Number.isFinite(beta) ? beta : null, status: response.status };
   }
 
   /**

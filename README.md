@@ -113,6 +113,7 @@ On a Docker host, `docker/` runs the same loop in one container; see
 | **Agents** | |
 | `mcp` | Serve the dashboard's agent tools over MCP: stdio, or Streamable HTTP with `--http` |
 | **Reference data** | |
+| `beta [symbols...]` | Write Schwab's beta per symbol as JSON for another program ([details](docs/BETA.md)) |
 | `profile fetch` / `list` / `show` | Sector/industry/exchange cache from Financial Modeling Prep |
 
 Flags that recur across groups: `--alerts-file`, `--revisits-file`, `--holdings-file`,
@@ -417,6 +418,7 @@ Whichever way it arrives:
 | [`docs/HOLDINGS.md`](docs/HOLDINGS.md) | Lots and stops, `holdings cover`, the Webull import, basis-relative alerts |
 | [`docs/DASHBOARD.md`](docs/DASHBOARD.md) | Terminal and browser dashboard, views, notifications, headlines and stories, the WebMCP tools |
 | [`docs/MCP.md`](docs/MCP.md) | The MCP server: access flags, approval, running it for Claude Code and Open WebUI |
+| [`docs/BETA.md`](docs/BETA.md) | `beta`: the betas file for another program, its guarantees and exit codes |
 | [`docs/ANALYSIS.md`](docs/ANALYSIS.md) | `analyze` breakout confirmation, `analysis.config.json` tuning, the FMP profile cache |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The Lambda/SQS edit round trip, the encrypted holdings vault, the Schwab login expiry, encryption and threat model |
 

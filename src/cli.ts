@@ -58,6 +58,7 @@ import {
 import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
 import { buildDashboard, renderDashboard, type HoldingDailyStats } from "./dashboard.js";
 import { errorText } from "./errorText.js";
+import { normalizeSymbols, parseSymbolsFile, runBeta } from "./beta.js";
 import { localDateString, MARKET_TIME_ZONE, pad2, zonedTimeToUtc } from "./timezone.js";
 import { averageTrueRange } from "./indicators/atr.js";
 import { round } from "./round.js";
@@ -88,7 +89,7 @@ import { parseAlerts } from "./parse.js";
 import { CachingProvider } from "./providers/cache.js";
 import { FMP_FREE_DAILY_LIMIT, FmpProvider } from "./providers/fmp.js";
 import { DEFAULT_MAX_REQUESTS_PER_MINUTE, SchwabAuth, SchwabAuthError, SchwabProvider, type Quote } from "./providers/schwab.js";
-import { readAuthState } from "./providers/authState.js";
+import { EXIT_SCHWAB_LOGIN_EXPIRED, readAuthState } from "./providers/authState.js";
 import type { PriceDataProvider } from "./providers/types.js";
 import { DailyBudget } from "./profiles/budget.js";
 import { companyInfoFromProfiles, loadCachedProfile, listCachedProfiles, profileNeedsFetch, saveCachedProfile } from "./profiles/store.js";
@@ -422,6 +423,44 @@ async function cmdSchwabLogin(opts: CommonOpts): Promise<void> {
   const auth = schwabAuth(opts);
   await auth.authorizeInteractive();
   console.log(`Saved Schwab tokens to ${opts.tokenPath}`);
+}
+
+interface BetaCmdOpts extends CommonOpts {
+  symbolsFile?: string;
+  out?: string;
+}
+
+/**
+ * stdout carries the JSON and nothing else (the consumer may pipe it), so every
+ * message here goes through stderr. Built on `getBetaStrict` and not
+ * `buildBetaFetcher`: that one caches forever, which would serve a stale beta
+ * for as long as the file exists. See docs/BETA.md.
+ */
+async function cmdBeta(symbols: string[], opts: BetaCmdOpts): Promise<void> {
+  let requested = symbols;
+  if (opts.symbolsFile !== undefined) {
+    try {
+      requested = [...symbols, ...parseSymbolsFile(readFileSync(opts.symbolsFile, "utf-8"))];
+    } catch (err) {
+      console.error(`Could not read ${opts.symbolsFile} (${errorText(err)}).`);
+      process.exit(1);
+    }
+  }
+  // Built on first use, so asking for no symbols gets the usage message and
+  // not a complaint about credentials.
+  let provider: SchwabProvider | null = null;
+  const code = await runBeta(
+    { symbols: normalizeSymbols(requested), out: opts.out },
+    {
+      getBeta: (symbol) => (provider ??= schwabProvider(opts)).getBetaStrict(symbol),
+      now: () => new Date(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (line) => console.error(line),
+    }
+  );
+  if (code !== 0) {
+    process.exit(code);
+  }
 }
 
 interface AnalyzeOpts extends CommonOpts {
@@ -1746,14 +1785,6 @@ interface DashboardOpts extends AlertCommonOpts {
   nextCheck?: string;
 }
 
-/**
- * Exit code for "the Schwab login expired, re-authorize". Distinct from 1 so
- * scripts/check-and-publish.ps1 can keep going and publish the news instead of
- * treating it as an ordinary failure (see the top-level handler at the bottom
- * of this file).
- */
-const EXIT_SCHWAB_LOGIN_EXPIRED = 3;
-
 const PUBLISH_STATE_PATH = join(".cache", "web_publish.json");
 const OPS_PULL_STATE_PATH = join(".cache", "ops_pull.json");
 
@@ -2209,6 +2240,15 @@ function buildProgram(): Command {
   withCommon(program.command("schwab-login"))
     .description("One-time interactive Schwab OAuth login")
     .action((opts: CommonOpts) => cmdSchwabLogin(opts));
+
+  withCommon(program.command("beta [symbols...]"))
+    .description(
+      "Write Schwab's beta for each symbol as JSON (equity-watch/betas@1) for another program to read; " +
+        "fetched fresh every run, never from .cache/beta"
+    )
+    .option("--symbols-file <path>", "Plain text, one symbol per line; blank lines and # comments ignored")
+    .option("--out <path>", "Write the JSON here (atomically) instead of stdout")
+    .action((symbols: string[], opts: BetaCmdOpts) => cmdBeta(symbols, opts));
 
   withCommon(program.command("analyze"))
     .description("Confirm breakouts for either a TradingView alerts CSV export or this engine's own revisit queue")
