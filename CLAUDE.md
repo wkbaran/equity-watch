@@ -645,6 +645,14 @@ Things that look simplifiable and aren't:
   - `opsIntervalMinutes` and `opsNextCheckAt` are in `VOLATILE_KEYS` alongside
     `opsProcessedThrough`: all three advance with the clock every run, so
     fingerprinting any of them would publish every run.
+- **The pending list is shared by every tab through `localStorage`** (2026-10-12).
+  `pendingOps` is only a tab's copy: it is re-read (`syncPending`) before each
+  change, and the `storage` event re-renders when another tab changes it. Before
+  that it was read once at load, so an open tab never showed what another
+  queued, and its next save wrote its stale list over the other's entries (the
+  change still applied, but its tag and result toast were lost). Any new code that
+  changes `pendingOps` must `syncPending()` first, especially after an `await`.
+  The ops token and the MCP server's pending file are not synced this way.
 - **Dismiss is on the queue row, never the trigger panel.** The "Copy dismiss"
   buttons went on 2026-09-16; a queued `revisit.dismiss` op replaced them on
   2026-09-18. The user asked for it on the revisit queue specifically, so it

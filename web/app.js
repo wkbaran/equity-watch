@@ -327,14 +327,27 @@
 
   let opsToken = storageGet(OPS_TOKEN_KEY);
   // { id, type, symbol, alertId, revisitId?, summary, queuedAt }, kept so a reload doesn't lose what's waiting.
-  let pendingOps = (() => {
+  //
+  // localStorage is the one list; `pendingOps` is this tab's copy of it. Tabs
+  // are routine (the queue strip and the held tag each open one), so a copy
+  // that is only read at load goes stale, and saving it back erases whatever
+  // another tab queued meanwhile. Hence: re-read before every change
+  // (syncPending), and follow the `storage` event so an open tab shows what
+  // another one queued, forgot or settled.
+  const parsePending = (text) => {
     try {
-      const v = JSON.parse(storageGet(PENDING_KEY) ?? "[]");
+      const v = JSON.parse(text ?? "[]");
       return Array.isArray(v) ? v : [];
     } catch {
       return [];
     }
-  })();
+  };
+  let pendingOps = parsePending(storageGet(PENDING_KEY));
+  /** Takes the stored list as this tab's own; with storage unreadable, the tab's copy stands. */
+  function syncPending() {
+    const stored = storageGet(PENDING_KEY);
+    if (stored !== null) pendingOps = parsePending(stored);
+  }
   const savePending = () => storageSet(PENDING_KEY, JSON.stringify(pendingOps));
   const opsEnabled = () => current?.site?.ops === true;
   const canEdit = () => opsEnabled() && Boolean(opsToken);
@@ -392,6 +405,14 @@
     // Opening the vault is also the first check that the token is right.
     if (token !== null) refreshVault();
   }
+
+  // Another tab changed the pending list: show it here too. `key` is null when
+  // storage was cleared outright.
+  window.addEventListener("storage", (e) => {
+    if (e.key !== PENDING_KEY && e.key !== null) return;
+    syncPending();
+    rerenderOps();
+  });
 
   function renderOpsControls() {
     const btn = $("ops-btn");
@@ -522,6 +543,7 @@
       notice(`Couldn't queue ${summary}: ${reason}.`, false);
       return false;
     }
+    syncPending(); // another tab may have queued something while the request was out
     pendingOps.push({ id: body.id, type: body.type, symbol, alertId, revisitId, summary, queuedAt: body.createdAt });
     savePending();
     notice(`Queued: ${summary}. It applies at the next scheduled check.`, true);
@@ -530,6 +552,7 @@
   }
 
   function resolvePending(results, processedThrough) {
+    syncPending();
     if (pendingOps.length === 0) return;
     // A drain applies everything queued before it started, so anything older
     // than the watermark is done even when its result is no longer published
@@ -650,6 +673,7 @@
       text: "Forget",
       title: "Stop waiting for this result here. The change stays queued.",
       onclick: () => {
+        syncPending();
         pendingOps = pendingOps.filter((x) => x.id !== p.id);
         savePending();
         rerenderOps();

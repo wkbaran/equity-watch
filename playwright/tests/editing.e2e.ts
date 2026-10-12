@@ -1358,3 +1358,43 @@ test.describe("the rail's pending drawer", () => {
     await expect(drawer(page)).toBeHidden();
   });
 });
+
+// Tabs are routine (the queue strip and the held tag open one each), and the
+// pending list lives in localStorage, which they share. Each tab must follow
+// the others' changes without a reload, and must not save over them.
+test.describe("several tabs", () => {
+  test("see each other's pending changes live, and none overwrites another's", async ({ page, context }) => {
+    await context.addInitScript((token) => localStorage.setItem("equity-watch.opsToken", token), OPS_TOKEN);
+    await openAlerts(page);
+    await expect(page.locator("#rail-pending")).toBeHidden();
+
+    // A second tab queues an alert edit while the first sits open.
+    const other = await context.newPage();
+    other.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+    await other.goto(`/#/alert/${STATIC.id}`);
+    const form = other.locator("#drawer-body form");
+    await form.getByLabel("Level").fill("56");
+    await form.locator("button[type=submit]").click();
+    await expect(other.locator("#drawer-body")).toContainText("edit AA level 55 → 56");
+
+    // No reload here: the storage event is what brings it in.
+    await expect(page.locator("#alerts-table tr", { hasText: "AA" }).locator(".tag.pending")).toHaveText("edit pending");
+    await expect(page.locator("#rail-pending-summary")).toHaveText("1 pending change");
+
+    // The first tab queues its own change. Saving its list must keep the other's.
+    await page.goto(`/#/alert/${TRAILING.id}`);
+    const trail = page.locator("#drawer-body form");
+    await trail.getByLabel("Trail by").selectOption("amount");
+    await trail.getByLabel("Distance").fill("7.5");
+    await trail.locator("button[type=submit]").click();
+    await expect(page.locator("#rail-pending-summary")).toHaveText("2 pending changes");
+    await expect(other.locator("#rail-pending-summary")).toHaveText("2 pending changes");
+
+    // Forgetting in one tab is forgotten in both.
+    await openAlerts(page);
+    await page.locator("#ops-pending").getByRole("button", { name: "Forget" }).first().click();
+    await expect(page.locator("#rail-pending-summary")).toHaveText("1 pending change");
+    await expect(other.locator("#rail-pending-summary")).toHaveText("1 pending change");
+    expect((await queuedOps(page)).length).toBe(2);
+  });
+});
