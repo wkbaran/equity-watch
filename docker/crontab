@@ -1,11 +1,19 @@
-# The container's schedule, run by supercronic (see Dockerfile). Edit the
-# expression, rebuild, and the healthcheck's three-missed-runs allowance
-# (healthcheck.sh) is the one other place that assumes 15 minutes.
+# The container's schedule, run by supercronic (see Dockerfile). Two jobs. Edit an
+# expression and rebuild. The 15-minute line is also assumed by the healthcheck's
+# three-missed-runs allowance (healthcheck.sh); the betas line is not.
 #
-# There is no market-hours window here. `alert check` exits without fetching a
+# There is no market-hours window on the check. `alert check` exits without fetching a
 # quote outside a session and `dashboard --skip-unchanged` fingerprints before it
 # fetches, so an overnight run costs nothing, and `ops pull` should drain queued
 # dashboard edits whether or not the market is open (see docs/SCHEDULING.md).
 #
-# Times are in TZ (default America/Denver); every 15 minutes doesn't care.
+# The betas job (run-beta.sh) refreshes /shared/betas.json for another container. The
+# options-spread report publishes at 07:45 and 13:25 Denver, so these run about 20
+# and 40 minutes after each publish: a symbol added to underlyings.txt has a beta
+# within a day, and none in the first report that lists it. It is off the check's
+# heartbeat and ping on purpose (see run-beta.sh).
+#
+# Times are in TZ (default America/Denver). The 15-minute line doesn't care; the betas
+# line does.
 */15 * * * * /app/docker/run-check.sh
+5 8,14 * * 1-5  /app/docker/run-beta.sh

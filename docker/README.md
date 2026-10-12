@@ -3,7 +3,8 @@
 One container runs `scripts/check-and-publish.sh` every 15 minutes: apply queued
 dashboard edits, check alerts, publish the dashboard. It is the same job the
 Windows task runs (`docs/SCHEDULING.md`), minus the daily window: outside a
-session `alert check` fetches no quotes, so an overnight run costs nothing.
+session `alert check` fetches no quotes, so an overnight run costs nothing. A second,
+weekday job refreshes the betas file another container reads ([below](#sharing-betas-with-another-container)).
 
 The scheduler is [supercronic](https://github.com/aptible/supercronic) reading
 `docker/crontab`. Each tick runs `docker/run-check.sh`, which wraps the check with
@@ -70,10 +71,62 @@ them up on its next run. **Repeat this weekly**: Schwab refresh tokens last 7
 days. When one lapses the container keeps running, publishes "login expired" to
 the dashboard, and (if `HEALTHCHECK_URL` is set) pings `<url>/fail`.
 
-If another program reads betas from you, run `docker compose -f docker/docker-compose.yaml
-run --rm cli beta --symbols-file /data/<list> --out /data/betas.json` right after
-the weekly login, and again on whatever cadence it tolerates (it exits 3 while
-the login is lapsed and leaves the old file alone). See [`docs/BETA.md`](../docs/BETA.md).
+## Sharing betas with another container
+
+A second job, `docker/run-beta.sh`, writes Schwab's beta for a list of symbols to a
+directory another container reads, so that program needs no Schwab login of its
+own. It is `equity-watch beta` (format and guarantees: [`docs/BETA.md`](../docs/BETA.md)):
+
+```
+/shared/underlyings.txt    input: one symbol per line, # comments allowed (the other program writes it)
+/shared/betas.json         output: equity-watch/betas@1, replaced atomically
+```
+
+**One-time host setup.** Choose an absolute path, set it as `SHARED_DIR` in
+`docker/.env` (required, with no default, like `STATE_DIR`; template in
+`docker/.env.example`), and create it owned by uid 1000, which is the `node` user
+the container runs as:
+
+```sh
+mkdir -p "$SHARED_DIR" && chown 1000:1000 "$SHARED_DIR" && chmod 0755 "$SHARED_DIR"
+```
+
+The other container mounts the same directory. Three details that break it
+quietly:
+
+- **Mount the directory, not `betas.json`.** The write is a temp file made beside
+  the target and renamed over it; a single-file mount has no place to make one.
+- **`:z`, never `:Z`.** `:z` (already in the compose file) labels the directory
+  as shared between containers on an SELinux host. `:Z` labels it for one
+  container and the other is denied.
+- **uid 1000 must be able to write the directory.** The reader may run as root and
+  write anywhere; this container cannot, and the first run would fail with
+  "Could not write /shared/betas.json".
+
+Only the `equity-watch` and `cli` services mount it; `mcp` does not.
+
+**When it runs:** weekdays at 08:05 and 14:05 in the container's `TZ` (Denver by
+default), from `docker/crontab`. The other program publishes at 07:45 and 13:25,
+so each run follows a publish by about 20 and 40 minutes, and a symbol added to
+`underlyings.txt` has a beta within a day. It has none in the first report that
+lists it.
+
+**When it fails, the old file stays.** A 429, a 5xx or a lapsed login writes
+nothing; the next scheduled run tries again, with no retry logic of its own, and
+the reader decides from `generatedAt` when the file is too old to use. A lapsed
+login logs `beta: login expired, keeping the old betas` and exits 3. The job does
+not touch the container's heartbeat or `HEALTHCHECK_URL`: the 15-minute check
+already reports a lapsed login there. It runs at 30 Schwab requests a minute
+(`SCHWAB_MAX_REQUESTS_PER_MINUTE`, for this process only) because the check is a
+separate process with its own limiter, and the two together must stay under 120.
+
+To run it now, or right after the weekly login:
+
+```sh
+docker compose exec -u node equity-watch /app/docker/run-beta.sh
+# or, with nothing scheduled involved:
+docker compose run --rm cli beta --symbols-file /shared/underlyings.txt --out /shared/betas.json
+```
 
 ## Bringing your existing state over
 

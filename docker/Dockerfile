@@ -50,7 +50,7 @@ COPY --from=build /app/dist ./dist
 COPY web ./web
 COPY scripts/check-and-publish.sh ./scripts/
 COPY analysis.config.json ./analysis.config.default.json
-COPY docker/entrypoint.sh docker/run-check.sh docker/healthcheck.sh docker/crontab ./docker/
+COPY docker/entrypoint.sh docker/run-check.sh docker/run-beta.sh docker/healthcheck.sh docker/crontab ./docker/
 # A Windows checkout can hand these over with CRLF endings, which Linux reads as
 # "bad interpreter". .gitattributes prevents it; this makes the build immune anyway.
 RUN sed -i 's/\r$//' scripts/check-and-publish.sh docker/*.sh docker/crontab \

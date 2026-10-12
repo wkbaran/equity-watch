@@ -896,6 +896,17 @@ scheduled task wakes up with no way to fetch a quote. Everything below exists
 because the first failure of this kind (2026-09-19) looked like nothing at all:
 `ops pull` stopped, the page kept saying "pending", and no other signal fired.
 
+- **A new login probably revokes the previous one, so keep one machine logged in.**
+  On 2026-10-12 nuc1 last refreshed at 13:45:01 MDT, the dev machine ran
+  `schwab-login` at 13:47:31 (its token lives in `~/.equity_watch/`, the default
+  `--token-path`, not the working directory), and nuc1's next refresh at 14:15
+  was refused as "invalid, expired or revoked" (exit 3, every run after). Not
+  proven: a 7-day expiry landing in the same half hour would look identical, and
+  the token file records no login time. It was first mis-recorded here as "does
+  not invalidate" because nuc1 kept working for up to 30 minutes on its already
+  fetched access token; a working API call within 30 minutes of a login proves
+  nothing. So: never run `schwab-login` on the dev machine while nuc1 matters.
+  Try things from the container (`docker compose ... run --rm cli ...`) instead.
 - **Exit code 3 means "the login expired", everywhere.** `SchwabAuthError`
   carries an `expired` flag and the CLI's top-level handler maps it to
   `EXIT_SCHWAB_LOGIN_EXPIRED`. A missing token file counts too: same remedy.
@@ -1168,6 +1179,29 @@ as "no beta"), which is why the command uses the strict variant and fails the ru
 rather than writing a null; and the expired-login exit code now lives in
 `providers/authState.ts` (`EXIT_SCHWAB_LOGIN_EXPIRED`) so `src/beta.ts` can return
 it without importing `cli.ts`. See docs/BETA.md.
+
+## The shared directory is mounted as a directory, labelled `:z`, and owned by uid 1000
+
+`SHARED_DIR` (docker/.env) is mounted at `/shared` on the `equity-watch` and `cli`
+services for the betas job, and another container (the options-spread report)
+mounts the same host directory. Three things look like tidying and each breaks it:
+
+- **Mount the directory, never `betas.json`.** `writeFileAtomic` makes a temp file
+  beside the target and renames it over. With only the file mounted, the temp file
+  would be made in the container's own filesystem, and a rename onto a
+  bind-mounted file fails.
+- **`:z`, not `:Z`.** `:Z` gives the directory a label private to one container, so
+  the other is denied on an SELinux host.
+- **The host directory must be owned by uid 1000, mode 0755.** The container runs
+  as `node` (uid 1000) after `entrypoint.sh`, and that entrypoint only chowns
+  `/data`, never `/shared`. The reader runs as root and can write anywhere, which
+  hides the problem from its side.
+
+Also: a service's own `volumes:` **replaces** the one it merges from `x-common`
+(YAML merge is shallow), so `equity-watch` and `cli` list both mounts through the
+`state-volume` and `shared-volume` anchors. Adding `volumes:` to a service without
+them silently drops the state mount. And `run-beta.sh` must not touch
+`/tmp/last-run` or ping `HEALTHCHECK_URL`: those are the 15-minute check's.
 
 ## A zero volume baseline must mean "cannot evaluate", never "no threshold"
 

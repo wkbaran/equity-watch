@@ -6,7 +6,8 @@
 #
 # Two files feed it, and neither is copied into the image:
 #   ../.env       the app's settings (Schwab, AWS/S3, OPS_*), passed to the container.
-#   docker/.env   STATE_DIR, read by compose itself to fill in the volume path below.
+#   docker/.env   STATE_DIR and SHARED_DIR, read by compose itself to fill in the volume
+#                 paths below (template: docker/.env.example).
 # Compose reads both on the machine running it, so with DOCKER_HOST=ssh://user@host
 # they need not exist on the host.
 
@@ -26,13 +27,25 @@ x-common: &common
     # It is required, with no default: a missing one would mount an empty
     # directory, and the first run would publish an empty dashboard over the real one.
     # :z relabels for SELinux hosts (Fedora CoreOS); other hosts ignore it.
-    - ${STATE_DIR:?set STATE_DIR in docker/.env to an absolute path on the Docker host}:/data:z
+    - &state-volume ${STATE_DIR:?set STATE_DIR in docker/.env to an absolute path on the Docker host}:/data:z
   init: true
+
+# Betas for another program (`equity-watch beta`, docker/run-beta.sh), in a
+# directory both containers mount. Only the services that run the CLI get it, and
+# a service's own `volumes:` replaces the merged one, so they list both mounts.
+# Like STATE_DIR it is required with no default, for the same reason: an unset one
+# would let Docker create it root-owned, and the beta job could not write there.
+# :z, not :Z. :Z labels the directory for one container alone and would lock the
+# other program out. It is the directory that is mounted, not betas.json, because
+# the write is a rename of a temp file made beside it. Host setup (once):
+# owned by uid 1000, mode 0755. docker/README.md has the commands.
+x-shared-volume: &shared-volume "${SHARED_DIR:?set SHARED_DIR in docker/.env to an absolute path on the Docker host}:/shared:z"
 
 services:
   equity-watch:
     <<: *common
     restart: unless-stopped
+    volumes: [*state-volume, *shared-volume]
     # A run takes seconds, but `docker stop` waits for the one in flight.
     stop_grace_period: 30s
     logging:
@@ -87,6 +100,7 @@ services:
   cli:
     <<: *common
     profiles: ["tools"]
+    volumes: [*state-volume, *shared-volume]
     entrypoint: ["/app/docker/entrypoint.sh", "equity-watch"]
     command: []
 

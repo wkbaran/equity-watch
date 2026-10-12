@@ -32,7 +32,7 @@ file is written there. Progress and summaries go to stderr either way.
 ```
 
 - Every requested symbol is a key. `null` means Schwab has no beta for it
-  (ETFs often don't); a symbol is never left out.
+  (some instruments don't; ETFs such as IWM and SPY do); a symbol is never left out.
 - `generatedAt` is always present. The consumer decides from it when the file is
   too old to use, so a stale file is the reader's call, not something this
   command guards against.
@@ -76,22 +76,48 @@ that was cached once would be served for ever.
 
 ## Symbol format
 
+Symbols are passed to Schwab unchanged, and the key in the file is the symbol as
+requested. Verified live on 2026-10-12: class shares need the **slash**. `BRK/B`
+returned a beta and `BRK.B` returned null. Ask for `BRK/B`, not `BRK.B`.
+
+An instrument in Schwab's answer counts only if it names this symbol
+(compared ignoring `.`, `/` and `-`, so `BRK.B` matches `BRK/B`); one that names
+none is accepted. Without that check a different instrument returned first would
+have its beta filed under the requested key.
+
+## No cache
+
+Betas are fetched fresh on every run, through the provider's usual rate limiter.
+The command neither reads nor writes `.cache/beta/`: that cache, which the
+analysis and the holdings page use, never expires. It is right for tuning a
+breakout check and wrong for a number a position is sized by, because a beta
+that was cached once would be served for ever.
+
+## Symbol format
+
 Symbols are passed to Schwab unchanged. Whether Schwab wants `BRK.B` or `BRK/B`
 for a class share has **not** been verified against the live endpoint. Check it
 with `equity-watch beta BRK.B BRK/B` once a login is fresh: the one that is `null`
 is the wrong form, and the consumer should ask for that form.
 
-## Still to confirm against a live login
+## Still to confirm
 
-Not verifiable offline: that ETFs such as IWM and SPY return a beta (a null for a
-symbol the consumer needs means it cannot be beta-weighted), which of `BRK.B` and
-`BRK/B` Schwab accepts, and that Schwab's figure really is 5-year monthly. The
-`definition` field repeats that last claim from an old code comment; Schwab's
-documentation was not consulted. One run answers all three:
-`equity-watch beta AAPL IWM SPY BRK.B BRK/B` (JSON to the terminal, nothing written).
+Checked live on 2026-10-12: ETFs do return a beta (IWM 1.14, SPY 1.01), and
+`BRK/B` works where `BRK.B` does not. Not yet confirmed: that Schwab's figure is
+really 5-year monthly. The `definition` field repeats that from an old code
+comment, and Schwab's documentation was not consulted.
 
 ## Running it
 
-Run it after the weekly `schwab-login`, and on whatever cadence the consumer's
-staleness limit needs. In Docker see [`docker/README.md`](../docker/README.md).
-Where the file lands is a deployment choice (a path both containers can see).
+By hand: `equity-watch beta --symbols-file <list> --out <file>`, as in the examples
+at the top. The file's reader, not this command, decides when it is too old.
+
+In Docker it is a scheduled job. `docker/run-beta.sh` reads
+`/shared/underlyings.txt` and writes `/shared/betas.json`, weekdays at 08:05 and
+14:05 (`docker/crontab`), at 30 Schwab requests a minute so it can overlap the
+15-minute check without breaching Schwab's 120. It does not touch the check's
+heartbeat or `HEALTHCHECK_URL`. A failed run leaves the old file and the next
+scheduled run tries again; a lapsed login logs `login expired, keeping the old
+betas` (exit 3) until the weekly `schwab-login` is repeated. The shared
+directory's setup (mounted as a directory, `:z`, owned by uid 1000) is in
+[`docker/README.md`](../docker/README.md#sharing-betas-with-another-container).
