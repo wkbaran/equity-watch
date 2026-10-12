@@ -85,8 +85,10 @@ when nothing is waiting.
 
 **The queue strip** runs across the top of every view: each open revisit as one
 cell (symbol, direction and level, a dot when held, `↩` when reversed), in the
-queue view's order, each linking to its decision. It sticks while you scroll, so
-any decision is one tap away. "N to decide" is `summary.openRevisits`, the same
+queue view's order. A cell opens the Revisit queue view, scrolled to and
+highlighting that entry, in one tab reused across clicks (`equity-watch-queue`, like
+the `held` tag), so the view you are watching isn't navigated away. It sticks while
+you scroll, so any decision is one tap away. "N to decide" is `summary.openRevisits`, the same
 number as the rail and the overview tile.
 
 - **Overview** — the summary tiles, recent triggers, holdings (when published),

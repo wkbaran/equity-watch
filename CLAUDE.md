@@ -395,6 +395,10 @@ default would turn it back into an in-place navigation. `parseRoute` therefore
 returns a `focus` for base views, and only a base route may change it: a drawer
 route has `base: null` and must not clear the highlight it is sitting on.
 
+The queue strip's cells work the same way (2026-10-12): `#/queue/<id>`,
+`target="equity-watch-queue"`, and the queue view highlights and scrolls to that
+entry (`focusedRevisit`). They used to open the trigger drawer over the current view.
+
 Two more things that look wrong and aren't:
 
 - **No CloudFront invalidation.** The congress project's publisher invalidates

@@ -108,6 +108,33 @@ test("clicking the held tag opens Holdings in its own tab rather than the trigge
   await expect(focused).toContainText("AA");
 });
 
+test("a queue strip cell opens the Revisit queue in its own reused tab, on that entry, not the drawer", async ({ page }) => {
+  await page.goto("/#/");
+  const cell = page.locator("#tape a").first();
+  await expect(cell).toHaveAttribute("target", "equity-watch-queue");
+  const href = (await cell.getAttribute("href"))!;
+  expect(href).toMatch(/^#\/queue\/.+/);
+
+  const [queueTab] = await Promise.all([page.waitForEvent("popup"), cell.click()]);
+  await expect(page.locator("#drawer")).toBeHidden();
+  expect(page.url()).toMatch(/#\/$/);
+
+  await queueTab.waitForLoadState();
+  expect(queueTab.url()).toContain(href);
+  await expect(queueTab.locator("#view-queue")).toBeVisible();
+  await expect(queueTab.locator("#drawer")).toBeHidden();
+  const focused = queueTab.locator("#queue .queue-row.focused");
+  await expect(focused).toHaveCount(1);
+  await expect(focused).toBeInViewport();
+
+  // A second cell lands in the same tab (named target) and moves the highlight.
+  const last = page.locator("#tape a").last();
+  const lastHref = (await last.getAttribute("href"))!;
+  await last.click();
+  await expect.poll(() => queueTab.url()).toContain(lastHref);
+  await expect(queueTab.locator("#queue .queue-row.focused")).toHaveCount(1);
+});
+
 test("an alert's Add lot opens Holdings in the held tag's tab with the symbol filled in", async ({ page }) => {
   await storeToken(page);
   // MSFT is not held: Add lot is for starting a position as much as adding to one.

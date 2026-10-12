@@ -4,6 +4,7 @@
 // whichever one is open:
 //   #/              overview        (dashboard.json, polled every minute)
 //   #/queue         the revisit queue (dashboard.json)
+//   #/queue/<id>    the same, scrolled to and highlighting one entry (the strip's link)
 //   #/alerts        every live alert (alerts.json, fetched while viewed)
 //   #/holdings      positions, lots, and stops (vault.json, decrypted once editing is unlocked)
 //   #/trigger/<id>  one trigger's details, in a drawer over the current view
@@ -200,6 +201,10 @@
   // what reuses the tab. stopPropagation only, so a tag inside a clickable row
   // or toast doesn't also open that row's details.
   const HOLDINGS_TARGET = "equity-watch-holdings";
+  // The queue strip's cells open the Revisit queue view the same way: one tab,
+  // reused by name, rather than the trigger drawer over whatever view you were on.
+  const QUEUE_TARGET = "equity-watch-queue";
+  const queueHash = (id) => `#/queue/${encodeURIComponent(id)}`;
   const holdingsHash = (symbol) => `#/holdings/${encodeURIComponent(symbol)}`;
   // The alert drawer's Add lot: the same tab, with the Add a lot form filled in.
   const addLotHash = (symbol) => `${holdingsHash(symbol)}/add-lot`;
@@ -2311,6 +2316,9 @@
   // scrolling into view (once per arrival, not on every poll's re-render).
   let focusedHolding = null;
   let scrollToFocused = false;
+  // Likewise the queue entry #/queue/<id> points at.
+  let focusedRevisit = null;
+  let scrollToRevisit = false;
   // "all", an account label, or UNLABELED_ACCOUNT for positions whose lots name none.
   let holdingsAccount = "all";
   let baseView = "overview";
@@ -2390,7 +2398,9 @@
         h(
           "a",
           {
-            href: triggerHash(r.id),
+            href: queueHash(r.id),
+            target: QUEUE_TARGET,
+            title: `Show ${r.symbol} in the Revisit queue`,
             "aria-label": `${r.symbol} fired ${r.direction === "down" ? "below" : "above"} ${r.levelAtTrigger ?? ""}${r.reversal ? ", reversed" : ""}`,
           },
           h("span", { class: "t-sym", text: r.symbol }),
@@ -2416,10 +2426,11 @@
       return;
     }
     $("queue").replaceChildren(
-      ...rows.map((r) =>
-        h(
+      ...rows.map((r) => {
+        const focused = r.id === focusedRevisit;
+        const row = h(
           "div",
-          { class: "queue-row" },
+          { class: focused ? "queue-row focused" : "queue-row", id: `queue-${r.id}` },
           h("div", { class: `priority${r.priority === null ? " none" : ""}`, text: r.priority === null ? "–" : r.priority.toFixed(0) }),
           h(
             "div",
@@ -2464,8 +2475,14 @@
               ...revisitActions(r, r.alertCondition)
             )
           )
-        )
-      )
+        );
+        if (focused && scrollToRevisit) {
+          scrollToRevisit = false;
+          // After this batch is in the document, not while it is still detached.
+          requestAnimationFrame(() => row.scrollIntoView({ block: "center" }));
+        }
+        return row;
+      })
     );
   }
 
@@ -3876,6 +3893,12 @@
         scrollToFocused = focus !== null;
       }
       if (route.addLot) lotPrefillSymbol = route.addLot;
+      const revisit = route.base === "queue" ? route.focus : null;
+      if (revisit !== focusedRevisit) {
+        focusedRevisit = revisit;
+        scrollToRevisit = revisit !== null;
+        if (current) renderQueue(current.revisitQueue);
+      }
     }
     for (const view of ["overview", ...BASE_VIEWS]) $(`view-${view}`).hidden = baseView !== view;
     syncTableHeads();
