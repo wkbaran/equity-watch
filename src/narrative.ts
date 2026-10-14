@@ -27,7 +27,7 @@
 import type { CrossDirection } from "./alerts/models.js";
 import { endedOnFiredSide, entryDirection, otherSide, reversalOf, sideOf, tradingDaysAfter } from "./alerts/reversion.js";
 import type { RevisitEntry } from "./alerts/revisit.js";
-import type { HoldingEvent, SaleSummary } from "./holdings/models.js";
+import type { BuySummary, HoldingEvent, SaleSummary } from "./holdings/models.js";
 import { maLabel } from "./indicators/movingAverage.js";
 import { describeSession, type Session } from "./marketHours.js";
 
@@ -369,6 +369,13 @@ function saleText(sales: SaleSummary[]): string {
   return `${shares} at ${price}, ${result}`;
 }
 
+/** "5 shares at 100.00", at the average price when several lots are bought at once. */
+function buyText(buys: BuySummary[]): string {
+  const count = buys.reduce((sum, b) => sum + b.count, 0);
+  const cost = buys.reduce((sum, b) => sum + b.count * b.price, 0);
+  return `${Math.round(count * 1e6) / 1e6} share${count === 1 ? "" : "s"} at ${(cost / count).toFixed(2)}`;
+}
+
 function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
   const own = events.filter((e) => e.symbol.toUpperCase() === symbol.toUpperCase());
   const lots = new Set<string>();
@@ -378,17 +385,24 @@ function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
     const { type, at } = own[i];
     const wasEmpty = lots.size === 0;
     const sales = new Map<string, SaleSummary>();
+    const buys: BuySummary[] = [];
+    let beat = 0;
     for (; i < own.length && own[i].type === type && own[i].at === at; i++) {
       const sale = own[i].sale;
       if (sale !== undefined) sales.set(sale.id, sale);
+      beat++;
+      const buy = own[i].buy;
+      if (buy !== undefined) buys.push(buy);
       if (type === "lot.add") lots.add(own[i].lotId);
       else if (!own[i].partial) lots.delete(own[i].lotId);
     }
+    // Said only when every lot in the beat knows its size; a removed lot keeps none.
+    const buyDetail = type === "lot.add" && buys.length === beat ? `: ${buyText(buys)}` : "";
     const text =
       type === "lot.add"
         ? wasEmpty
-          ? `you bought ${symbol}${everHeld ? " again" : ""}`
-          : `you added to your ${symbol} position`
+          ? `you bought ${symbol}${everHeld ? " again" : ""}${buyDetail}`
+          : `you added to your ${symbol} position${buyDetail}`
         : lots.size === 0
           ? sales.size > 0
             ? `you sold your ${symbol} position: ${saleText([...sales.values()])}`

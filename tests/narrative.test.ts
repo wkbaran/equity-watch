@@ -657,9 +657,24 @@ describe("holdings in the story", () => {
     expect(lines.filter((l) => l.includes("sold"))).toEqual(["Sep 16: you sold part of your TGT position: 12 shares at 46.34, up 14.0% on what they cost."]);
   });
 
-  it("never states a size for a buy or a removal with no sale", () => {
+  it("states a buy's shares and price, averaged when lots are bought together", () => {
+    const buy = (lotId: string, at: string, count: number, price: number): HoldingEvent => ({ ...add(lotId, at), buy: { count, price } });
+    const at = "2026-09-14T15:00:00.000Z";
+    expect(texts([buy("l1", "2026-09-11T15:00:00.000Z", 1, 100), buy("l2", at, 2, 90), buy("l3", at, 2, 100)])).toEqual([
+      "Sep 10: TGT crossed above 110.",
+      "Sep 11: you bought TGT: 1 share at 100.00.",
+      "Sep 14: you added to your TGT position: 4 shares at 95.00.",
+    ]);
+  });
+
+  it("leaves a buy bare when a lot in the beat has since been removed and kept no size", () => {
+    const at = "2026-09-11T15:00:00.000Z";
+    expect(texts([{ ...add("l1", at), buy: { count: 3, price: 10 } }, add("l2", at)])).toContain("Sep 11: you bought TGT.");
+  });
+
+  it("never states a size for a removal with no sale", () => {
     const lines = texts([add("l1", "2026-09-11T15:00:00.000Z"), add("l2", "2026-09-14T15:00:00.000Z"), remove("l1", "2026-09-16T15:00:00.000Z")]);
-    for (const line of lines.slice(1)) expect(line.replace(/^Sep \d+: /, "")).not.toMatch(/\d/);
+    expect(lines.at(-1)).toBe("Sep 16: you trimmed your TGT position.");
   });
 });
 
@@ -683,6 +698,33 @@ describe("holdingHistory", () => {
       "lot.remove l0 2026-07-01T12:00:00.000Z",
       "lot.add l1 2026-08-01T12:00:00.000Z",
     ]);
+  });
+
+  it("gives a removed lot's size from its removal record, plus the shares trimmed off it, else from the sale that emptied it", () => {
+    const base = { symbol: "TGT", purchaseDate: "2026-08-01", createdAt: "2026-08-01T15:00:00.000Z" };
+    const part = (lotId: string, count: number, emptied: boolean) => ({ lotId, count, basisPerShare: 50, purchaseDate: "2026-08-01", emptied });
+    const sale = (id: string, soldOn: string, lots: ReturnType<typeof part>[]) => ({ id, symbol: "TGT", count: 0, price: 60, soldOn, recordedAt: `${soldOn}T15:00:00.000Z`, lots });
+    const events = holdingHistory({
+      lots: [],
+      stops: [],
+      alertState: [],
+      removedLots: [
+        { ...base, lotId: "recorded", removedAt: "2026-09-05T12:00:00.000Z", count: 4, basisPerShare: 50 },
+        { ...base, lotId: "trimmed", removedAt: "2026-09-06T12:00:00.000Z", count: 3, basisPerShare: 50 },
+        { ...base, lotId: "bysale", removedAt: "2026-09-03T12:00:00.000Z" },
+        { ...base, lotId: "unknown", removedAt: "2026-09-07T12:00:00.000Z" },
+      ],
+      sales: [sale("s1", "2026-09-02", [part("trimmed", 2, false)]), sale("s2", "2026-09-03", [part("bysale", 6, true)])],
+    });
+    const buys = Object.fromEntries(events.filter((e) => e.type === "lot.add").map((e) => [e.lotId, e.buy]));
+    expect(buys).toEqual({ recorded: { count: 4, price: 50 }, trimmed: { count: 5, price: 50 }, bysale: { count: 6, price: 50 }, unknown: undefined });
+  });
+
+  it("gives a current lot's bought size, adding back shares since sold from it", () => {
+    const lot = { id: "l1", symbol: "TGT", count: 3, basisPerShare: 100, purchaseDate: "2026-08-01", createdAt: "2026-08-01T15:00:00.000Z" };
+    const sale = { id: "s1", symbol: "TGT", count: 2, price: 120, soldOn: "2026-09-02", recordedAt: "2026-09-02T15:00:00.000Z", lots: [{ lotId: "l1", count: 2, basisPerShare: 100, purchaseDate: "2026-08-01", emptied: false }] };
+    const adds = holdingHistory({ lots: [lot], stops: [], alertState: [], sales: [sale] }).filter((e) => e.type === "lot.add");
+    expect(adds.map((e) => e.buy)).toEqual([{ count: 5, price: 100 }]);
   });
 
   it("tells a sale's trimmed lots as partial and its emptied lots as sold, at the sale date", () => {

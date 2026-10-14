@@ -43,8 +43,9 @@ export interface HoldingAlertState {
  * this a closed position leaves no trace to set against the alert history.
  * Current lots need no record: their own purchase date tells the add.
  *
- * No count or basis: stories are published, and size and value never are
- * (CLAUDE.md).
+ * Dates, plus the shares and basis at removal since 2026-10-14. Size and value
+ * live in holdings.json, which never leaves the machine; a story may state them
+ * only because stories travel solely inside the encrypted vault (CLAUDE.md).
  */
 export interface RemovedLot {
   lotId: string;
@@ -52,6 +53,14 @@ export interface RemovedLot {
   purchaseDate: string;
   createdAt: string;
   removedAt: string;
+  /**
+   * The lot's shares and basis at the moment it left (since 2026-10-14), which
+   * is what a buy line in a story states. Absent on older removals. A lot
+   * trimmed by sales first left fewer shares than it was bought with; the
+   * partial sales put those back (holdingHistory).
+   */
+  count?: number;
+  basisPerShare?: number;
 }
 
 /**
@@ -151,6 +160,14 @@ export interface HoldingEvent {
   partial?: boolean;
   /** Set when the shares were sold at a recorded price, not just removed. */
   sale?: SaleSummary;
+  /** On a buy: what the lot was bought as. Absent for a lot since removed, which keeps no size. */
+  buy?: BuySummary;
+}
+
+/** A lot as bought: its shares and its price per share. Size and value, so only a vault-bound story may state it. */
+export interface BuySummary {
+  count: number;
+  price: number;
 }
 
 /**
@@ -172,7 +189,25 @@ export function saleSummary(sale: Sale): SaleSummary {
 
 /** Every lot bought and removed, oldest first, from current lots plus the removal and sale records. */
 export function holdingHistory(store: HoldingsStore): HoldingEvent[] {
-  const events: HoldingEvent[] = store.lots.map((l) => ({ type: "lot.add", at: lotStoryTime(l), symbol: l.symbol, lotId: l.id }));
+  // A lot that was partly sold shrank in place; the shares sold out of it were bought with it.
+  const soldFrom = new Map<string, number>();
+  // Only trims: the sale that emptied a lot is already in the count a removal records.
+  const trimmedFrom = new Map<string, number>();
+  const soldBasis = new Map<string, number>();
+  for (const sale of store.sales ?? []) {
+    for (const part of sale.lots) {
+      soldFrom.set(part.lotId, (soldFrom.get(part.lotId) ?? 0) + part.count);
+      soldBasis.set(part.lotId, part.basisPerShare);
+      if (!part.emptied) trimmedFrom.set(part.lotId, (trimmedFrom.get(part.lotId) ?? 0) + part.count);
+    }
+  }
+  const events: HoldingEvent[] = store.lots.map((l) => ({
+    type: "lot.add",
+    at: lotStoryTime(l),
+    symbol: l.symbol,
+    lotId: l.id,
+    buy: { count: l.count + (soldFrom.get(l.id) ?? 0), price: l.basisPerShare },
+  }));
   // An emptied lot's removal is told from removedLots; this says which sale it was.
   const soldLots = new Map<string, SaleSummary>();
   for (const sale of store.sales ?? []) {
@@ -186,7 +221,15 @@ export function holdingHistory(store: HoldingsStore): HoldingEvent[] {
     }
   }
   for (const r of store.removedLots ?? []) {
-    events.push({ type: "lot.add", at: lotStoryTime(r), symbol: r.symbol, lotId: r.lotId });
+    // Recorded size first; else a lot a sale emptied is fully accounted for by its sale parts (removals before 2026-10-14).
+    const bought =
+      r.count !== undefined && r.basisPerShare !== undefined
+        ? { count: r.count + (trimmedFrom.get(r.lotId) ?? 0), price: r.basisPerShare }
+        : soldLots.has(r.lotId)
+          ? { count: soldFrom.get(r.lotId) ?? 0, price: soldBasis.get(r.lotId) ?? 0 }
+          : null;
+    const buy = bought !== null && bought.count > 0 ? { buy: { count: Math.round(bought.count * 1e6) / 1e6, price: bought.price } } : {};
+    events.push({ type: "lot.add", at: lotStoryTime(r), symbol: r.symbol, lotId: r.lotId, ...buy });
     events.push({ type: "lot.remove", at: r.removedAt, symbol: r.symbol, lotId: r.lotId, ...(soldLots.has(r.lotId) ? { sale: soldLots.get(r.lotId) } : {}) });
   }
   // An add sorts ahead of a removal at the same instant.

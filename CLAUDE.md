@@ -1010,17 +1010,24 @@ not travel in a published document. On the public page `holdingRows()` is null
 and the line is simply absent, leaving the `held` tag — the one holdings fact a
 document may carry. Don't "simplify" it by hanging the numbers on `RevisitRow`.
 
-## A story's buys are derived; only removals are stored
+## A story's buys are derived; only sale-emptied lots are stored
 
 Stories weave in each lot bought and removed (`holdingHistory` in
 `src/holdings/models.ts`, told by `holdingLines` in `src/narrative.ts`). A buy is
 read off the lot itself at its purchase date, so editing a lot's date moves the beat
 and imported lots need nothing recorded. A removal can't be read off anything, since
-the lot is deleted, so `removeLot` and `removePosition` append to
-`HoldingsStore.removedLots`. That record carries dates only, never count or basis.
-Anything that deletes lots without going
-through those two functions (`holdings import --replace` does, on purpose) leaves no
-trace in the story.
+the lot is deleted, so `sellShares` appends each lot a sale empties to
+`HoldingsStore.removedLots` (dates, plus count and basis since 2026-10-14; a story
+states a buy's size, and holdings.json never leaves the machine).
+
+**A removal with no price is not recorded** (the user's call, 2026-10-14): "Remove
+without a sale" is for a lot entered by mistake, so `removeLot` and `removePosition`
+leave nothing and the lot's buy beat vanishes from the story with it. Entries
+recorded before that (2026-09-25 to 2026-10-14) stay, since a plain removal then
+may have been a real exit and can't be told apart. Anything that deletes lots
+without going through `sellShares` (`holdings import --replace` does, on purpose)
+leaves no trace in the story either. One rough edge: a lot trimmed by a sale and
+*then* removed as a mistake keeps its sale line but loses its buy.
 
 Inside a story, "Holding X" means held when that fire happened (`heldAt`), not held
 now. Outside stories (trigger rows, the queue) `heldSymbols` is still current.
@@ -1070,9 +1077,9 @@ Since 2026-10-07 the page's position panel sells shares instead of removing lots
   doesn't list past sales (the user's call: they are for later analysis and the
   story). The story line is the one place they travel, and it states the shares,
   price and result: "you sold part of your X position: 12 shares at 46.34, up
-  14.0% on what they cost". Buys still state nothing. That line is safe only
+  14.0% on what they cost". A buy states its shares and price too (2026-10-14; `HoldingEvent.buy`, a removal records its shares and basis on `RemovedLot` from that date; older removals get them only from the sale that emptied them). Those lines are safe only
   because stories leave the machine solely inside the vault; if stories ever go
-  back into `dashboard.json`, the sale text has to come out first. A test in
+  back into `dashboard.json`, the sale and buy text has to come out first. A test in
   `tests/holdingsOps.test.ts` checks the published document for it.
 
 ## Trigger details before 2026-09-13 are incomplete, and can't be backfilled

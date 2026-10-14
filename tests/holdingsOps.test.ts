@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MarketData } from "../src/alerts/engine.js";
 import { buildDashboard } from "../src/dashboard.js";
 import { editLot, removeLot, removePosition, replaceStop, sellShares } from "../src/holdings/engine.js";
-import type { HoldingsStore } from "../src/holdings/models.js";
+import { holdingHistory, type HoldingsStore } from "../src/holdings/models.js";
 import { loadHoldingsStore, saveHoldingsStore } from "../src/holdings/store.js";
 import { applyOp, parseOp, type OpResult } from "../src/ops/apply.js";
 import type { StaticAlert } from "../src/alerts/models.js";
@@ -158,14 +158,11 @@ describe("holdings engine", () => {
   });
 
   // The story needs removals, and stories are published: no size, no basis.
-  it("records removed lots for the story, without count or basis", () => {
-    removeLot(holdingsFile, "lotmsft1", new Date("2026-09-20T15:00:00.000Z"));
-    removePosition(holdingsFile, "AAPL", new Date("2026-09-21T15:00:00.000Z"));
-    expect(loadHoldingsStore(holdingsFile).removedLots).toEqual([
-      { lotId: "lotmsft1", symbol: "MSFT", purchaseDate: "2026-08-20", createdAt: "2026-08-20T15:00:00.000Z", removedAt: "2026-09-20T15:00:00.000Z" },
-      { lotId: "lotaapl1", symbol: "AAPL", purchaseDate: "2026-09-01", createdAt: "2026-09-01T15:00:00.000Z", removedAt: "2026-09-21T15:00:00.000Z" },
-      { lotId: "lotaapl2", symbol: "AAPL", purchaseDate: "2026-09-08", createdAt: "2026-09-08T15:00:00.000Z", removedAt: "2026-09-21T15:00:00.000Z" },
-    ]);
+  it("leaves no trace of a removal with no sale, which corrects a mistake", () => {
+    removeLot(holdingsFile, "lotmsft1");
+    removePosition(holdingsFile, "AAPL");
+    expect(loadHoldingsStore(holdingsFile).removedLots ?? []).toEqual([]);
+    expect(holdingHistory(loadHoldingsStore(holdingsFile))).toEqual([]);
   });
 });
 
@@ -540,7 +537,7 @@ describe("vault", () => {
       writeSite(site, d, { holdings: true, vault: true }, [], NO_OPS, sealVault(vaultContents(d, store()), TOKEN));
       expect(readFileSync(join(site, "dashboard.json"), "utf-8")).not.toContain("you bought");
       const opened = openVault(JSON.parse(readFileSync(join(site, VAULT_FILE), "utf-8")) as VaultDocument, TOKEN);
-      expect(opened.stories.find((s) => s.symbol === "AAPL")?.lines.map((l) => l.text)).toContain("Sep 1: you bought AAPL.");
+      expect(opened.stories.find((s) => s.symbol === "AAPL")?.lines.map((l) => l.text)).toContain("Sep 1: you bought AAPL: 10 shares at 150.00.");
     });
 
     // Every drawer reads its symbol's story out of the vault, so a cap left most drawers without one.
