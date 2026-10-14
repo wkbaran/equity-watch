@@ -2345,6 +2345,7 @@
   let scrollToRevisit = false;
   // "all", an account label, or UNLABELED_ACCOUNT for positions whose lots name none.
   let holdingsAccount = "all";
+  let holdingsQuery = "";
   let baseView = "overview";
   let openDrawerKey = null;
   const alertsFilter = { q: "", kind: "all", sort: "symbol" };
@@ -2743,7 +2744,9 @@
     const options = [...counts.keys()].sort().map((a) => ({ value: a, text: `${a} (${counts.get(a)})` }));
     if (unlabeled) options.push({ value: UNLABELED_ACCOUNT, text: `No account (${unlabeled})` });
     // One bucket is nothing to choose between, so the filter stays out of the way.
-    $("holdings-toolbar").hidden = options.length < 2;
+    // The toolbar itself stays: search and sort are useful with any number of accounts.
+    $("holdings-toolbar").hidden = false;
+    $("holdings-account").hidden = options.length < 2;
     // Drop a selection whose account is gone, or the table would render empty
     // with no way to see why.
     if (holdingsAccount !== "all" && !options.some((o) => o.value === holdingsAccount)) holdingsAccount = "all";
@@ -2752,9 +2755,38 @@
     select.value = holdingsAccount;
   }
 
+  /**
+   * The sort menu's choices. A header click can leave a column and direction the
+   * menu doesn't offer (Price, ascending), so renderSortMenu adds that one as an
+   * extra choice rather than showing a sort that isn't the one in force.
+   */
+  const HOLDING_SORTS = [
+    { key: "symbol", dir: 1, text: "symbol" },
+    { key: "pctFromBasis", dir: -1, text: "best vs basis" },
+    { key: "pctFromBasis", dir: 1, text: "worst vs basis" },
+    { key: "marketValue", dir: -1, text: "largest value" },
+    { key: "atrPct", dir: -1, text: "most volatile (ATR)" },
+    { key: "beta", dir: -1, text: "highest beta" },
+  ];
+  const sortValue = (key, dir) => `${key}:${dir}`;
+
+  function renderSortMenu() {
+    const { key, dir } = holdingsSort;
+    const options = HOLDING_SORTS.map((o) => ({ value: sortValue(o.key, o.dir), text: `Sort: ${o.text}` }));
+    if (!options.some((o) => o.value === sortValue(key, dir))) {
+      const label = HOLDING_COLS.find((c) => c.key === key)?.label || key;
+      options.push({ value: sortValue(key, dir), text: `Sort: ${label.toLowerCase()} ${dir > 0 ? "ascending" : "descending"}` });
+    }
+    const select = $("holdings-sort");
+    select.replaceChildren(...options.map((o) => h("option", o)));
+    select.value = sortValue(key, dir);
+  }
+
   function renderHoldings(rows) {
     renderAccountFilter(rows);
-    const shown = rows.filter(inAccountFilter);
+    renderSortMenu();
+    const needle = holdingsQuery.trim().toLowerCase();
+    const shown = rows.filter(inAccountFilter).filter((r) => !needle || r.symbol.toLowerCase().includes(needle));
     // Say "3 of 12" while a filter hides some, so a short list never reads as the whole book.
     $("holdings-count").textContent = shown.length === rows.length ? (rows.length ? String(rows.length) : "") : `${shown.length} of ${rows.length}`;
     const { key, dir } = holdingsSort;
@@ -2846,7 +2878,7 @@
       return open ? [row, h("tr", { class: "detail-row" }, h("td", { colspan: String(HOLDING_COLS.length) }, positionDetail(r.symbol)))] : [row];
     });
     if (body.length === 0) {
-      body.push(h("tr", {}, h("td", { class: "empty", colspan: String(HOLDING_COLS.length), text: "No positions." })));
+      body.push(h("tr", {}, h("td", { class: "empty", colspan: String(HOLDING_COLS.length), text: rows.length ? "No positions match." : "No positions." })));
     }
     $("holdings").replaceChildren(h("thead", {}, head), h("tbody", {}, ...body));
     syncTableHead($("holdings"));
@@ -4107,6 +4139,15 @@
   });
   $("holdings-account").addEventListener("change", (e) => {
     holdingsAccount = e.target.value;
+    renderHoldingsView();
+  });
+  $("holdings-search").addEventListener("input", (e) => {
+    holdingsQuery = e.target.value;
+    renderHoldingsView();
+  });
+  $("holdings-sort").addEventListener("change", (e) => {
+    const [key, dir] = e.target.value.split(":");
+    holdingsSort = { key, dir: Number(dir) };
     renderHoldingsView();
   });
   $("alerts-sort").addEventListener("change", (e) => {

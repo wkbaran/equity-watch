@@ -546,3 +546,32 @@ test.describe("phone width", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
   });
 });
+
+test("holdings can be searched by symbol and sorted from the menu", async ({ page }) => {
+  await storeToken(page);
+  await openHoldings(page);
+  const symbols = () => page.locator("#holdings > tbody > tr > td:first-child a.sym").allTextContents();
+  const search = page.locator("#holdings-search");
+  const sort = page.locator("#holdings-sort");
+
+  await sort.selectOption({ label: "Sort: symbol" });
+  expect(await symbols()).toEqual(["AA", "TSLA"]);
+  await sort.selectOption({ label: "Sort: largest value" });
+  const byValue = await symbols();
+  expect([...byValue].sort()).toEqual(["AA", "TSLA"]);
+
+  await search.fill("ts");
+  expect(await symbols()).toEqual(["TSLA"]);
+  await expect(page.locator("#holdings-count")).toHaveText("1 of 2");
+  // Typing keeps the box focused: the table re-renders, the toolbar does not.
+  await expect(search).toBeFocused();
+
+  await search.fill("zzz");
+  await expect(page.locator("#holdings .empty")).toHaveText("No positions match.");
+  await search.fill("");
+  expect(await symbols()).toHaveLength(2);
+
+  // A header click can pick a sort the menu doesn't list; the menu shows it rather than a stale choice.
+  await page.locator("#holdings-head th", { hasText: "Price" }).click();
+  await expect(sort.locator("option:checked")).toHaveText("Sort: price descending");
+});

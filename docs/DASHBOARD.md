@@ -147,6 +147,12 @@ number as the rail and the overview tile.
   browser. Only present once editing is unlocked. Each stop has *Edit* and
   *Remove*.
 
+  The toolbar above the table searches by symbol, filters by account (offered
+  when positions span more than one), and sorts from a menu (symbol, best or
+  worst against basis, largest value, ATR, beta). Clicking a column header sorts
+  too; if that leaves a sort the menu doesn't list, the menu shows it as an extra
+  choice rather than a stale one.
+
   A row carries an **alert pill** for every live alert on the symbol —
   `alert ↑ 55`, or `alert ↑ 55 · 1.5x` when it also has a volume condition. It
   is abbreviated on purpose: which way it fires, the level, and the volume, with
