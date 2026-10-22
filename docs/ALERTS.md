@@ -121,19 +121,29 @@ In effect it is the old once-per-check rule applied once a minute.
 
 Details that matter:
 
-- **Regular session only.** Schwab's minute bars here exclude extended hours, so
-  pre- and post-market prices are still judged on the quote at each check, as
-  before.
+- **Outside the regular session, only a minute that traded counts.** Pre- and
+  post-market, the quote is never judged: Schwab's `lastPrice` there can sit far
+  from anything on the tape. On 2026-10-22, 14 of 16 pre-market fires (ROCK at
+  43.13 before opening at 38.34, EQIX at 1027.96 with nothing traded) had no
+  extended-hours minute anywhere near the level. Now a quote past a level only
+  fetches that symbol's extended-hours minute bars, and the alert fires only if
+  one of them closed past it. A quote the bars don't back up prints a `?` line in
+  the check's output ("quote … is above 42.25, but no minute closed there; not
+  judged"), naming the last trade's size and venue and the bid and ask. A fire
+  outside the regular session keeps the same quote details on its queue entry
+  (`quote` in `revisits.json`). The cost: a thin move with no completed minute
+  past the level waits until one prints, or for the open.
 - **Volume is judged as of the check**, even for a crossing found in an earlier
   bar. The quote's volume is the only figure there is.
 - **Cost.** Each check asks for bars only for symbols where the day's high and
   low (from the quote) reach a level, a trigger or a trailing low. Most levels
   on most days don't, so most symbols cost nothing extra. Schwab allows 120 calls
-  a minute. No bars are fetched outside the regular session, except once just
-  after the close for the last few minutes.
-- **No bars, no change.** If the bars can't be fetched, or there are none yet,
-  the alert is judged on the quote exactly as before, and the check prints a
-  warning.
+  a minute. Outside the regular session bars are fetched only for symbols whose
+  quote is past an alert, plus once just after the close for the last few minutes.
+- **No bars, no change.** In the regular session, if the bars can't be fetched
+  or there are none yet, the alert is judged on the quote exactly as before, and
+  the check prints a warning. Outside it, the alert is judged on nothing that
+  check.
 - An alert added or re-levelled starts from that moment. Bars from before the
   change are never replayed against the new settings.
 

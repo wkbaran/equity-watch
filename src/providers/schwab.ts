@@ -241,7 +241,19 @@ interface PriceHistoryResponse {
 }
 
 interface QuoteResponse {
-  [symbol: string]: { quote?: { lastPrice: number; totalVolume: number; highPrice?: number; lowPrice?: number } };
+  [symbol: string]: {
+    quote?: {
+      lastPrice: number;
+      totalVolume: number;
+      highPrice?: number;
+      lowPrice?: number;
+      bidPrice?: number;
+      askPrice?: number;
+      lastSize?: number;
+      lastMICId?: string;
+      tradeTime?: number;
+    };
+  };
 }
 
 interface InstrumentsResponse {
@@ -261,6 +273,18 @@ export interface Quote {
    */
   dayHigh?: number;
   dayLow?: number;
+  /**
+   * What stood behind `lastPrice`, kept only so an extended-hours fire or a
+   * crossing the bars didn't confirm can be explained afterwards. Nothing
+   * decides on these.
+   */
+  bid?: number;
+  ask?: number;
+  lastSize?: number;
+  /** The venue of the last trade, as a MIC (`XADF` is FINRA's off-exchange facility). */
+  lastVenue?: string;
+  /** When the last trade printed, epoch ms. */
+  tradeTime?: number;
 }
 
 function candlesToBars(candles: Candle[]): PriceBar[] {
@@ -352,6 +376,38 @@ export class SchwabProvider implements PriceDataProvider {
     return candlesToBars(payload.candles ?? []);
   }
 
+  /**
+   * Minute bars between two instants, extended hours included. Only used to
+   * confirm a pre- or post-market crossing against what actually traded; the
+   * regular-session `getIntradayBars` stays regular-only because volume
+   * baselines and moving averages are measured on regular hours.
+   */
+  async getExtendedBars(symbol: string, start: Date, end: Date): Promise<PriceBar[]> {
+    const params = new URLSearchParams({
+      symbol,
+      periodType: "day",
+      frequencyType: "minute",
+      frequency: "1",
+      startDate: String(start.getTime()),
+      endDate: String(end.getTime()),
+      needExtendedHoursData: "true",
+    });
+
+    await this.rateLimiter.acquire();
+    const accessToken = await this.auth.getAccessToken();
+    const response = await fetch(`${PRICE_HISTORY_URL}?${params}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Schwab extended-hours price history request for ${symbol} failed (${response.status}): ${await response.text()}`
+      );
+    }
+
+    const payload = (await response.json()) as PriceHistoryResponse;
+    return candlesToBars(payload.candles ?? []);
+  }
+
   /** Current last-traded price and cumulative session volume per symbol. */
   async getQuotes(symbols: string[]): Promise<Map<string, Quote>> {
     if (symbols.length === 0) {
@@ -382,11 +438,16 @@ export class SchwabProvider implements PriceDataProvider {
     const result = new Map<string, Quote>();
     for (const [symbol, data] of Object.entries(payload)) {
       if (data.quote?.lastPrice !== undefined) {
-        const { highPrice, lowPrice } = data.quote;
+        const { highPrice, lowPrice, bidPrice, askPrice, lastSize, lastMICId, tradeTime } = data.quote;
         result.set(symbol, {
           lastPrice: data.quote.lastPrice,
           totalVolume: data.quote.totalVolume ?? 0,
           ...(highPrice !== undefined && lowPrice !== undefined ? { dayHigh: highPrice, dayLow: lowPrice } : {}),
+          ...(bidPrice !== undefined ? { bid: bidPrice } : {}),
+          ...(askPrice !== undefined ? { ask: askPrice } : {}),
+          ...(lastSize !== undefined ? { lastSize } : {}),
+          ...(lastMICId !== undefined ? { lastVenue: lastMICId } : {}),
+          ...(tradeTime !== undefined ? { tradeTime } : {}),
         });
       }
     }

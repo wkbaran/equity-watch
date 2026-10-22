@@ -1172,6 +1172,33 @@ simplifiable and aren't:
 - **One bar fetch per symbol per check, shared** with volume windows and moving
   averages through `sharedIntradayBars`.
 
+## Outside the regular session, the quote is a hint, never a price
+
+Since 2026-10-22 a static or trailing alert in pre- or post-market is judged only
+on extended-hours minute bars (`MarketData.getExtendedBars`, `needExtendedHoursData=true`),
+never on the quote (docs/ALERTS.md "Between checks"). That morning 14 of 16
+pre-market fires had **no** extended-hours bar near the level; ROCK, EQIX, FCPT and
+AAT had no pre-market trade at all, yet `lastPrice` said 43.13, 1027.96, 23.34 and
+23.02. Things that look simplifiable and aren't:
+
+- **Don't add the quote back as a fallback** when the bars are empty or fail. Empty
+  is the common case pre-market, and it is exactly when the quote lies.
+  `pricePath(..., quoteUsable=false)` returns no points.
+- **The watermark stops a minute short of now** when there are no bars, so a bar
+  still forming (or completed but not yet served) is read next check. Setting it
+  to now, as the quote path does, would skip the very minute the quote pointed at.
+- **The extended fetch is separate from `getIntradayBars`**, which stays
+  regular-only: volume baselines and moving averages are measured on regular
+  hours, and the shared per-check bar cache would hand them pre-market bars.
+- **The quote still gates the fetch** (`quoteReaches`), which is what keeps this
+  cheap: only symbols whose quote is past an alert cost a request.
+- **Fakes without `getExtendedBars` keep the old behaviour**, which is why most
+  engine tests didn't change. Production must wire it (`buildMarketData` and
+  `lazyMarketData` in `src/cli.ts`), or the quote is judged pre-market again.
+- `RevisitEntry.quote` (venue, bid, ask, last size) and the `?` lines in the check
+  output exist to explain the next odd fire. We still don't know what Schwab's
+  pre-market `lastPrice` was on 2026-10-22; that's what they're for.
+
 ## `.cache/beta/` never expires, and the `beta` command must not touch it
 
 `buildBetaFetcher` caches each symbol's beta in `.cache/beta/<symbol>.json` and

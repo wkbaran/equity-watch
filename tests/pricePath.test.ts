@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { checkAlerts, type MarketData } from "../src/alerts/engine.js";
 import type { StaticAlert, TrailingAlert } from "../src/alerts/models.js";
 import {
+  barSession,
   barsMayExist,
   crossingOf,
   dayRangeCovers,
   pricePath,
   quotePoint,
+  quoteReaches,
   rangeReaches,
   trailStep,
   type PricePoint,
@@ -279,5 +281,141 @@ describe("checkAlerts over minute bars", () => {
     const second = await check([alert], market(72.5, bars, { low: 71, high: 72.5 }).m);
     expect(second.revisits).toHaveLength(0);
     expect(second.followUps).toHaveLength(0);
+  });
+});
+
+describe("outside the regular session", () => {
+  // Thursday 2026-10-01, 08:00 Eastern, pre-market.
+  const PRE = new Date("2026-10-01T12:00:00.000Z");
+  const preMinutesBefore = (m: number) => new Date(PRE.getTime() - m * 60_000);
+  const preBar = (minutesAgo: number, close: number, volume = 500): PriceBar => ({
+    date: preMinutesBefore(minutesAgo),
+    open: close,
+    high: close,
+    low: close,
+    close,
+    volume,
+  });
+
+  // ROCK on 2026-10-22: Schwab's quote said 43.1255 with nothing traded pre-market.
+  const bogus: Quote = { lastPrice: 43.1255, totalVolume: 0, bid: 38.5, ask: 47.75, lastSize: 3, lastVenue: "XADF", tradeTime: Date.parse("2026-10-01T11:58:00Z") };
+
+  function extendedMarket(quote: Quote, extended: PriceBar[]) {
+    const calls = { extended: [] as { start: Date; end: Date }[], intraday: 0 };
+    const m: MarketData = {
+      getQuotes: async (symbols) => new Map(symbols.map((s) => [s, quote])),
+      getIntradayBars: async () => {
+        calls.intraday += 1;
+        return [];
+      },
+      getDailyBars: async () => [],
+      getExtendedBars: async (_symbol, start, end) => {
+        calls.extended.push({ start, end });
+        return extended;
+      },
+    };
+    return { m, calls };
+  }
+
+  const rock = (overrides: Partial<StaticAlert> = {}) =>
+    staticAlert({ symbol: "ROCK", level: 42.25, lastEvaluatedAt: preMinutesBefore(15).toISOString(), ...overrides });
+
+  const checkPre = (alerts: (StaticAlert | TrailingAlert)[], m: MarketData, session: "pre" | "post" | "regular" | null = "pre") =>
+    checkAlerts(alerts, m, [], session, new Set(), async () => null, async () => [], { now: PRE });
+
+  it("labels a bar by the exchange clock", () => {
+    expect(barSession(new Date("2026-10-01T12:00:00Z"))).toBe("pre");
+    expect(barSession(new Date("2026-10-01T13:30:00Z"))).toBe("regular");
+    expect(barSession(new Date("2026-10-01T20:00:00Z"))).toBe("post");
+  });
+
+  it("asks whether the quote, taken at its word, would move an alert", () => {
+    expect(quoteReaches(rock(), 43.1255)).toBe(true);
+    expect(quoteReaches(rock(), 42.25)).toBe(false);
+    expect(quoteReaches(trailing(), 66)).toBe(true);
+    expect(quoteReaches(trailing(), 71)).toBe(false);
+  });
+
+  it("never falls back to the quote, and stops the watermark short of a minute that may still be forming", () => {
+    const alert = rock();
+    expect(pricePath(alert, [], bogus, new Date("2026-10-01T12:00:30Z"), false)).toEqual({
+      points: [],
+      through: new Date("2026-10-01T11:59:00Z"),
+    });
+    expect(pricePath(alert, null, bogus, PRE, false)).toEqual({ points: [], through: PRE });
+  });
+
+  it("doesn't fire on a pre-market quote no minute bar traded at, and says so", async () => {
+    const alert = rock();
+    const { m, calls } = extendedMarket(bogus, []);
+    const result = await checkPre([alert], m);
+
+    expect(calls.extended).toHaveLength(1);
+    expect(calls.intraday).toBe(0);
+    expect(result.revisits).toEqual([]);
+    expect(alert.lastKnownSide).toBe("below");
+    expect(result.unconfirmed).toEqual([
+      "ROCK: quote 43.1255 (last 3 at XADF, 11:58 UTC; bid 38.5, ask 47.75) is above 42.25, but no minute closed there; not judged.",
+    ]);
+  });
+
+  it("fires on an extended-hours minute that closed past the level, and keeps the quote beside it", async () => {
+    // SONY on 2026-10-22: a real pre-market print past 25.5.
+    const alert = rock();
+    const { m } = extendedMarket(bogus, [preBar(10, 42.1), preBar(6, 42.4, 1512), preBar(0.5, 43)]);
+    const result = await checkPre([alert], m);
+
+    expect(result.revisits).toHaveLength(1);
+    expect(result.revisits[0]).toMatchObject({
+      triggerPrice: 42.4,
+      triggeredAt: preMinutesBefore(6).toISOString(),
+      session: "pre",
+      quote: { last: 43.1255, bid: 38.5, ask: 47.75, lastSize: 3, venue: "XADF", tradeTime: "2026-10-01T11:58:00.000Z" },
+    });
+    expect(result.unconfirmed).toEqual([]);
+    // The bar still forming is left for the next check.
+    expect(alert.lastEvaluatedAt).toBe(preMinutesBefore(5).toISOString());
+  });
+
+  it("fetches nothing when the quote reaches no alert", async () => {
+    const { m, calls } = extendedMarket({ lastPrice: 41, totalVolume: 0 }, [preBar(5, 50)]);
+    const alert = rock();
+    const result = await checkPre([alert], m);
+    expect(calls.extended).toEqual([]);
+    expect(result.revisits).toEqual([]);
+    expect(alert.lastEvaluatedAt).toBe(PRE.toISOString());
+  });
+
+  it("doesn't let a stray quote set a trailing low", async () => {
+    const alert = trailing({ lastEvaluatedAt: preMinutesBefore(15).toISOString() });
+    const { m } = extendedMarket({ lastPrice: 60, totalVolume: 0 }, []);
+    await checkPre([alert], m);
+    expect(alert.extremePrice).toBe(70);
+  });
+
+  it("follows a trailing low through extended-hours closes", async () => {
+    const alert = trailing({ lastEvaluatedAt: preMinutesBefore(15).toISOString() });
+    const { m } = extendedMarket({ lastPrice: 60, totalVolume: 0 }, [preBar(8, 68), preBar(4, 67)]);
+    const result = await checkPre([alert], m);
+    expect(alert.extremePrice).toBe(67);
+    expect(result.revisits).toEqual([]);
+  });
+
+  it("doesn't fall back to the quote when the extended bars can't be fetched", async () => {
+    const alert = rock();
+    const m: MarketData = { ...extendedMarket(bogus, []).m, getExtendedBars: () => Promise.reject(new Error("HTTP 500")) };
+    const result = await checkPre([alert], m);
+    expect(result.revisits).toEqual([]);
+    expect(result.warnings).toEqual([expect.stringContaining("ROCK: extended-hours minute bars unavailable")]);
+  });
+
+  it("leaves the regular session on regular bars and the quote", async () => {
+    const alert = rock({ lastEvaluatedAt: minutesBefore(15).toISOString() });
+    const { m, calls } = extendedMarket(bogus, []);
+    const result = await checkAlerts([alert], m, [], "regular", new Set(), async () => null, async () => [], { now: NOW });
+    expect(calls.extended).toEqual([]);
+    expect(calls.intraday).toBe(1);
+    expect(result.revisits).toHaveLength(1);
+    expect(result.revisits[0].quote).toBeUndefined();
   });
 });

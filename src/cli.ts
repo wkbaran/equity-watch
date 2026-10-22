@@ -416,6 +416,7 @@ function buildMarketData(opts: CommonOpts): MarketData {
     getQuotes: (symbols) => provider.getQuotes(symbols),
     getIntradayBars: (symbol, daysBack) => provider.getIntradayBars(symbol, daysBack),
     getDailyBars: (symbol, start, end) => provider.getDailyBars(symbol, start, end),
+    getExtendedBars: (symbol, start, end) => provider.getExtendedBars(symbol, start, end),
   };
 }
 
@@ -1139,7 +1140,7 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
   // The whole queue, not just open entries: a crossing folds onto its fire
   // whether or not that entry has been dismissed.
   const stored = loadRevisits(opts.revisitsFile);
-  const { checked, triggered, revisits, followUps, updatedRevisits, warnings } = await checkAlerts(
+  const { checked, triggered, revisits, followUps, updatedRevisits, warnings, unconfirmed } = await checkAlerts(
     alerts,
     market,
     [new ConsoleNotifier()],
@@ -1155,6 +1156,9 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
   );
   for (const warning of warnings) {
     console.error(`  ! ${warning}`);
+  }
+  for (const line of unconfirmed) {
+    console.log(`  ? ${line}`);
   }
   for (const event of followUps) {
     console.log(describeFollowUpEvent(event));
@@ -2064,6 +2068,7 @@ function lazyMarketData(opts: CommonOpts): MarketData {
     getQuotes: (symbols) => get().getQuotes(symbols),
     getIntradayBars: (symbol, daysBack) => get().getIntradayBars(symbol, daysBack),
     getDailyBars: (symbol, start, end) => get().getDailyBars(symbol, start, end),
+    getExtendedBars: (symbol, start, end) => get().getExtendedBars!(symbol, start, end),
   };
 }
 

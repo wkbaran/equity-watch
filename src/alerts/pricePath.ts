@@ -11,6 +11,13 @@
  * for a minute. Closes also come in order, which a bar's high and low do not,
  * so every rule here is the old snapshot rule applied once a minute instead of
  * once a check.
+ *
+ * Outside the regular session the quote is never judged at all (2026-10-22).
+ * Schwab's pre-market `lastPrice` can sit far from anything that traded: on
+ * 2026-10-22, 14 of 16 pre-market fires (ROCK at 43.13, opening at 38.34) had
+ * no extended-hours minute bar near the level, most none at all. There the
+ * quote only decides whether to fetch extended-hours bars (`quoteReaches`),
+ * and only their closes can cross a level.
  */
 
 import type { PriceBar } from "../models.js";
@@ -25,7 +32,7 @@ export const MINUTE_MS = 60_000;
 export interface PricePoint {
   at: Date;
   price: number;
-  /** A completed regular-session minute bar's close, as opposed to the live quote. */
+  /** A completed minute bar's close, as opposed to the live quote. */
   fromBar: boolean;
 }
 
@@ -35,6 +42,18 @@ export function barPoint(bar: PriceBar): PricePoint {
 
 export function quotePoint(price: number, at: Date): PricePoint {
   return { at, price, fromBar: false };
+}
+
+const OPEN_MINUTE = 9 * 60 + 30;
+const CLOSE_MINUTE = 16 * 60;
+
+/**
+ * The session a minute bar traded in, by the exchange clock. Half days aren't
+ * known, so a bar after a 13:00 close reads as regular.
+ */
+export function barSession(at: Date): Session {
+  const minute = marketMinuteOfDay(at);
+  return minute < OPEN_MINUTE ? "pre" : minute >= CLOSE_MINUTE ? "post" : "regular";
 }
 
 /**
@@ -95,6 +114,19 @@ export function rangeReaches(alert: StaticAlert | TrailingAlert, dayLow: number,
     : dayHigh > alert.extremePrice || dayLow <= trigger;
 }
 
+/**
+ * Whether the live quote, taken at its word, would move this alert: a static
+ * alert's price on the other side of its level, or a trailing alert's past its
+ * extreme or its trigger. Outside the regular session that is only a reason to
+ * look at the minute bars, never a crossing in itself.
+ */
+export function quoteReaches(alert: StaticAlert | TrailingAlert, price: number): boolean {
+  if (alert.kind === "static") {
+    return crossingOf(alert.lastKnownSide, alert.level, quotePoint(price, new Date(0))) !== null;
+  }
+  return rangeReaches(alert, price, price);
+}
+
 /** The quote's day range, when it gave a usable one. */
 export function dayRangeOf(quote: Quote): { low: number; high: number } | null {
   const { dayLow, dayHigh } = quote;
@@ -112,12 +144,18 @@ export function dayRangeOf(quote: Quote): { low: number; high: number } | null {
  * the quote now and that bar next time would see the same move twice. When
  * the quote is used, the watermark becomes now, which leaves out the rest of
  * the bar it fell in: at most a minute unseen, never a minute seen twice.
+ *
+ * With `quoteUsable` false (outside the regular session) there is no quote
+ * fallback: no bars means nothing to judge. The watermark then stops a minute
+ * short of the current one, so a bar still forming, or completed but not yet
+ * served, is read at the next check rather than skipped.
  */
 export function pricePath(
   alert: StaticAlert | TrailingAlert,
   bars: PriceBar[] | null,
   quote: Quote,
-  now: Date
+  now: Date,
+  quoteUsable = true
 ): { points: PricePoint[]; through: Date } {
   if (alert.lastEvaluatedAt !== undefined && bars !== null) {
     const since = new Date(alert.lastEvaluatedAt).getTime();
@@ -126,12 +164,16 @@ export function pricePath(
       const last = complete[complete.length - 1];
       return { points: complete.map(barPoint), through: new Date(last.date.getTime() + MINUTE_MS) };
     }
+    if (!quoteUsable) {
+      const settled = Math.floor(now.getTime() / MINUTE_MS) * MINUTE_MS - MINUTE_MS;
+      return { points: [], through: new Date(Math.max(since, settled)) };
+    }
+  }
+  if (!quoteUsable) {
+    return { points: [], through: now };
   }
   return { points: [quotePoint(quote.lastPrice, now)], through: now };
 }
-
-const OPEN_MINUTE = 9 * 60 + 30;
-const CLOSE_MINUTE = 16 * 60;
 
 /** The most recent weekday 16:00 Eastern at or before `now`. Holidays aren't known. */
 export function lastCloseBefore(now: Date): Date {

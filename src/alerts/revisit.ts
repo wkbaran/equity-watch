@@ -39,6 +39,22 @@ export interface RevisitVolume {
   since?: string;
 }
 
+/**
+ * The live quote at the check that recorded an extended-hours fire. The fire's
+ * own price is a minute bar's close; this is what the quote claimed beside it,
+ * kept so a doubtful pre-market fire can be explained later (2026-10-22).
+ */
+export interface RevisitQuote {
+  last: number;
+  bid?: number;
+  ask?: number;
+  lastSize?: number;
+  /** MIC of the last trade's venue. */
+  venue?: string;
+  /** ISO time of the last trade. */
+  tradeTime?: string;
+}
+
 export interface RevisitMa {
   maType: MaType;
   period: number;
@@ -181,6 +197,8 @@ export interface RevisitEntry {
    * the crossing. Absent when both landed in the same check.
    */
   priceMet?: { at: string; price: number };
+  /** Set on fires outside the regular session. See RevisitQuote. */
+  quote?: RevisitQuote;
   /**
    * Every later crossing of the same alert's level inside the reversion
    * window, oldest first. Folded onto the fire they follow instead of
@@ -388,7 +406,7 @@ export function newRevisitEntry(
   triggerPrice: number,
   at: string,
   session: Session | null = null,
-  details: { volume?: RevisitVolume; direction?: CrossDirection; priceMet?: { at: string; price: number } } = {}
+  details: { volume?: RevisitVolume; direction?: CrossDirection; priceMet?: { at: string; price: number }; quote?: RevisitQuote } = {}
 ): RevisitEntry {
   const direction = details.direction ?? fireDirection(alert);
   return {
@@ -401,6 +419,7 @@ export function newRevisitEntry(
     condition: describeAlertCondition(alert),
     ...(details.volume ? { volume: details.volume } : {}),
     ...(details.priceMet ? { priceMet: details.priceMet } : {}),
+    ...(details.quote ? { quote: details.quote } : {}),
     ...(direction !== undefined ? { direction } : {}),
     levelAtTrigger:
       alert.kind === "static"

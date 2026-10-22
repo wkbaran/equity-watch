@@ -24,11 +24,14 @@ import type { Session } from "../marketHours.js";
 import { checkMaAlerts, DEFAULT_TOUCH_MARGIN_PCT, type DailyHistoryResolver } from "./maEngine.js";
 import {
   MINUTE_MS,
+  barSession,
   barsMayExist,
   crossingOf,
   dayRangeCovers,
   dayRangeOf,
   pricePath,
+  quotePoint,
+  quoteReaches,
   rangeReaches,
   trailStep,
   type PricePoint,
@@ -36,7 +39,7 @@ import {
 import { marketDate } from "../marketHours.js";
 import { errorText } from "../errorText.js";
 import type { Notifier } from "./notify.js";
-import { newRevisitEntry, type RevisitEntry, type RevisitFollowUp, type RevisitVolume } from "./revisit.js";
+import { newRevisitEntry, type RevisitEntry, type RevisitFollowUp, type RevisitQuote, type RevisitVolume } from "./revisit.js";
 import {
   DEFAULT_REVERSION_WINDOW_DAYS,
   entryDirection,
@@ -56,6 +59,13 @@ export interface MarketData {
   /** Minute bars for the last `daysBack` trading sessions. */
   getIntradayBars(symbol: string, daysBack: number): Promise<PriceBar[]>;
   getDailyBars(symbol: string, start: Date, end: Date): Promise<PriceBar[]>;
+  /**
+   * Minute bars between two instants, extended hours included. With it, a
+   * static or trailing alert outside the regular session is judged only on
+   * these bars' closes, never on the quote. Without it (test fakes, mostly)
+   * the quote is judged there as it used to be.
+   */
+  getExtendedBars?(symbol: string, start: Date, end: Date): Promise<PriceBar[]>;
 }
 
 const PERIOD_UNIT_MS: Record<VolumePeriodUnit, number> = {
@@ -89,6 +99,7 @@ function sharedIntradayBars(market: MarketData): MarketData {
   return {
     getQuotes: (symbols) => market.getQuotes(symbols),
     getDailyBars: (symbol, start, end) => market.getDailyBars(symbol, start, end),
+    ...(market.getExtendedBars ? { getExtendedBars: market.getExtendedBars.bind(market) } : {}),
     getIntradayBars: (symbol, daysBack) => {
       const cached = fetched.get(symbol);
       if (cached !== undefined && cached.days >= daysBack) {
@@ -109,6 +120,11 @@ function sharedIntradayBars(market: MarketData): MarketData {
  * the quote's day range covers the whole gap and reaches none of its alerts,
  * which on most days is most of them: Schwab allows 120 calls a minute, and
  * hundreds of symbols would otherwise cost a bar request each, every check.
+ *
+ * Outside the regular session (when the market can serve them) the bars are
+ * extended-hours ones and the quote is not usable: a symbol is fetched when
+ * its quote reaches an alert, or for the last regular bars after a close, and
+ * otherwise judged on nothing at all.
  */
 async function fetchPathBars(
   live: Alert[],
@@ -117,7 +133,8 @@ async function fetchPathBars(
   now: Date,
   session: Session | null,
   warnings: string[]
-): Promise<Map<string, PriceBar[]>> {
+): Promise<{ bars: Map<string, PriceBar[]>; quoteUsable: boolean }> {
+  const extended = session !== "regular" && market.getExtendedBars !== undefined;
   const bySymbol = new Map<string, (StaticAlert | TrailingAlert)[]>();
   for (const alert of live) {
     if ((alert.kind === "static" || alert.kind === "trailing") && alert.lastEvaluatedAt !== undefined) {
@@ -132,12 +149,23 @@ async function fetchPathBars(
     const since = new Date(Math.min(...alerts.map((a) => new Date(a.lastEvaluatedAt!).getTime())));
     // Not a whole minute since the last look: no bar can have completed.
     if (now.getTime() - since.getTime() < MINUTE_MS) continue;
-    if (!barsMayExist(since, now, session)) continue;
 
     const range = dayRangeOf(quote);
-    if (range !== null && dayRangeCovers(since, now) && !alerts.some((a) => rangeReaches(a, range.low, range.high))) {
+    const regularBars =
+      barsMayExist(since, now, session) &&
+      !(range !== null && dayRangeCovers(since, now) && !alerts.some((a) => rangeReaches(a, range.low, range.high)));
+
+    if (extended) {
+      if (!regularBars && !alerts.some((a) => quoteReaches(a, quote.lastPrice))) continue;
+      const start = new Date(Math.max(since.getTime(), now.getTime() - MAX_INTRADAY_HISTORY_DAYS * 86_400_000));
+      try {
+        result.set(symbol, await market.getExtendedBars!(symbol, start, now));
+      } catch (err) {
+        warnings.push(`${symbol}: extended-hours minute bars unavailable, not judged this check (${errorText(err)})`);
+      }
       continue;
     }
+    if (!regularBars) continue;
 
     const gapDays = marketDate(since) === marketDate(now) ? 1 : Math.ceil((now.getTime() - since.getTime()) / 86_400_000) + 1;
     try {
@@ -146,7 +174,33 @@ async function fetchPathBars(
       warnings.push(`${symbol}: minute bars unavailable, judged on the live quote only (${errorText(err)})`);
     }
   }
-  return result;
+  return { bars: result, quoteUsable: !extended };
+}
+
+/** The quote's supporting fields, for the record. */
+function quoteRecord(quote: Quote): RevisitQuote {
+  return {
+    last: quote.lastPrice,
+    ...(quote.bid !== undefined ? { bid: quote.bid } : {}),
+    ...(quote.ask !== undefined ? { ask: quote.ask } : {}),
+    ...(quote.lastSize !== undefined ? { lastSize: quote.lastSize } : {}),
+    ...(quote.lastVenue !== undefined ? { venue: quote.lastVenue } : {}),
+    ...(quote.tradeTime !== undefined ? { tradeTime: new Date(quote.tradeTime).toISOString() } : {}),
+  };
+}
+
+/** "1027.96 (last 25 at XADF, 14:02 UTC; bid 1010, ask 1030)", from whatever the quote carried. */
+function describeQuote(quote: Quote): string {
+  const r = quoteRecord(quote);
+  const trade = [
+    r.lastSize !== undefined ? `last ${r.lastSize}` : null,
+    r.venue !== undefined ? `at ${r.venue}` : null,
+  ].filter((x) => x !== null).join(" ");
+  const parts = [
+    trade !== "" ? trade + (r.tradeTime !== undefined ? `, ${r.tradeTime.slice(11, 16)} UTC` : "") : null,
+    r.bid !== undefined || r.ask !== undefined ? `bid ${r.bid ?? "-"}, ask ${r.ask ?? "-"}` : null,
+  ].filter((x) => x !== null);
+  return parts.length > 0 ? `${r.last} (${parts.join("; ")})` : `${r.last}`;
 }
 
 async function volumeSatisfied(
@@ -334,6 +388,11 @@ export interface CheckResult {
   /** Entries from `existingRevisits` that gained a follow-up. The store needs re-saving when non-empty. */
   updatedRevisits: RevisitEntry[];
   warnings: string[];
+  /**
+   * Outside the regular session: alerts the live quote said had crossed, with
+   * no minute bar closing past them. Not fired; one line each, for the log.
+   */
+  unconfirmed: string[];
 }
 
 export async function checkAlerts(
@@ -363,9 +422,10 @@ export async function checkAlerts(
   const followUps: FollowUpEvent[] = [];
   const updated = new Set<RevisitEntry>();
   const warnings: string[] = [];
+  const unconfirmed: string[] = [];
   const nowDate = options.now ?? new Date();
 
-  const pathBars = await fetchPathBars(live, quotes, bars, nowDate, session, warnings);
+  const { bars: pathBars, quoteUsable } = await fetchPathBars(live, quotes, bars, nowDate, session, warnings);
 
   for (const alert of live) {
     // Moving-average alerts are path-evaluated in one batch below.
@@ -401,6 +461,7 @@ export async function checkAlerts(
           volume: volume?.observation ?? undefined,
           direction: cross,
           priceMet,
+          quote: session === "regular" ? undefined : quoteRecord(quote),
         })
       );
       alert.triggerSnapshot = snapshot;
@@ -424,11 +485,12 @@ export async function checkAlerts(
       continue;
     }
 
-    const { points, through } = pricePath(alert, pathBars.get(alert.symbol) ?? null, quote, nowDate);
+    const { points, through } = pricePath(alert, pathBars.get(alert.symbol) ?? null, quote, nowDate, quoteUsable);
     alert.lastEvaluatedAt = through.toISOString();
-    // A bar is a completed regular-session minute; the live quote is whatever
+    // A bar's session is the one it traded in; the live quote's is whatever
     // session this check runs in.
-    const sessionOf = (p: PricePoint): Session | null => (p.fromBar ? "regular" : session);
+    const sessionOf = (p: PricePoint): Session | null => (p.fromBar ? barSession(p.at) : session);
+    const quoteNow = quotePoint(quote.lastPrice, nowDate);
 
     // Price first, then volume. A met price condition primes the alert, and
     // its volume is judged once per check, counting only what traded after it
@@ -500,6 +562,12 @@ export async function checkAlerts(
         // The alert does not disarm: it goes quiet until price genuinely re-crosses.
         alert.lastKnownSide = to;
       }
+      const quoteSide = quoteUsable ? null : crossingOf(alert.lastKnownSide, alert.level, quoteNow);
+      if (quoteSide !== null && watchesDirection(alert.direction, quoteSide === "above" ? "up" : "down")) {
+        unconfirmed.push(
+          `${alert.symbol}: quote ${describeQuote(quote)} is ${quoteSide} ${alert.level}, but no minute closed there; not judged.`
+        );
+      }
       await confirmVolume();
       continue;
     }
@@ -531,6 +599,11 @@ export async function checkAlerts(
         alert.extremePrice = extreme;
         alert.extremeAt = p.at.toISOString();
       }
+    }
+    if (!quoteUsable && trailStep(alert, alert.extremePrice, quoteNow).fire) {
+      unconfirmed.push(
+        `${alert.symbol}: quote ${describeQuote(quote)} is past the trail's trigger ${effectiveTrigger(alert)}, but no minute closed there; not judged.`
+      );
     }
     if (await confirmVolume()) {
       // Starts trailing afresh from where price is now.
@@ -599,7 +672,7 @@ export async function checkAlerts(
     }
   }
 
-  return { checked: live.length, triggered, revisits, followUps, updatedRevisits: [...updated], warnings };
+  return { checked: live.length, triggered, revisits, followUps, updatedRevisits: [...updated], warnings, unconfirmed };
 }
 
 /** Backdates an imported alert to when it was really first watched. */
