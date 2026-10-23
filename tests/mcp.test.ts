@@ -317,6 +317,14 @@ describe("every write tool, through the server", () => {
     expect(bare.text).toMatch(/only with stopHit/);
   });
 
+  it("dismiss_revisit passes the wait through, and has no never", async () => {
+    const { call } = await connect({}, { action: "accept", content: { confirm: true } });
+    expect((await call("dismiss_revisit", { revisitId: "rv0000a2", days: 0 })).isError).toBe(true);
+    const r = await call("dismiss_revisit", { revisitId: "rv0000a2", days: 14 });
+    expect(r.isError, r.text).toBe(false);
+    expect((await queued())[0]).toMatchObject({ type: "revisit.dismiss", params: { days: 14 } });
+  });
+
   it("has a case for every write tool the server offers, and covers every op type", async () => {
     const box = await loadToolbox();
     const writes = box.TOOLS.filter((t) => t.ops !== undefined).map((t) => t.name).sort();

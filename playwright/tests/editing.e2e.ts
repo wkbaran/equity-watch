@@ -941,6 +941,22 @@ test.describe("dismissing from the revisit queue", () => {
     await expect(page.locator("#ops-pending")).toContainText(/AA: dismiss the .+ fire at 55 from the queue/);
   });
 
+  test("sends the chosen wait, nothing for the default, and offers no never", async ({ page }) => {
+    await storeToken(page);
+    await page.goto("/#/queue");
+    const wait = aaRow(page).getByLabel(/How long dismissing AA waits/);
+    await expect(wait).toHaveValue("");
+    await expect(wait.locator("option:checked")).toHaveText("for 7 days");
+    await expect(wait.locator("option", { hasText: "for good" })).toHaveCount(0);
+    await wait.selectOption({ label: "for 14 days" });
+    await aaRow(page).getByRole("button", { name: "Dismiss" }).click();
+    await aaRow(page).getByRole("button", { name: "Click again to confirm" }).click();
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "revisit.dismiss", params: { days: 14 } });
+    await openAlerts(page);
+    await expect(page.locator("#ops-pending")).toContainText(/AA: dismiss the .+ fire at 55 from the queue for 14 days/);
+  });
+
   test("resolves from the published result", async ({ page }) => {
     await storeToken(page);
     await page.goto("/#/queue");

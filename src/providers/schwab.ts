@@ -253,6 +253,7 @@ interface QuoteResponse {
       lastMICId?: string;
       tradeTime?: number;
     };
+    regular?: { regularMarketLastPrice?: number };
   };
 }
 
@@ -285,6 +286,12 @@ export interface Quote {
   lastVenue?: string;
   /** When the last trade printed, epoch ms. */
   tradeTime?: number;
+  /**
+   * The last trade of the regular session (Schwab's `regularMarketLastPrice`).
+   * Outside the session it is the close, a real price where `lastPrice` is a
+   * hint. `alert revisit rules` judges on it.
+   */
+  regularPrice?: number;
 }
 
 function candlesToBars(candles: Candle[]): PriceBar[] {
@@ -448,6 +455,7 @@ export class SchwabProvider implements PriceDataProvider {
           ...(lastSize !== undefined ? { lastSize } : {}),
           ...(lastMICId !== undefined ? { lastVenue: lastMICId } : {}),
           ...(tradeTime !== undefined ? { tradeTime } : {}),
+          ...(data.regular?.regularMarketLastPrice !== undefined ? { regularPrice: data.regular.regularMarketLastPrice } : {}),
         });
       }
     }

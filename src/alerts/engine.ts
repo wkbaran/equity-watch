@@ -393,6 +393,12 @@ export interface CheckResult {
    * no minute bar closing past them. Not fired; one line each, for the log.
    */
   unconfirmed: string[];
+  /**
+   * Each quoted symbol's last price, in the regular session only (empty
+   * otherwise, where the quote is a hint, not a price). The queue rules
+   * (queueRules.ts) judge on these.
+   */
+  regularPrices: Map<string, number>;
 }
 
 export async function checkAlerts(
@@ -672,7 +678,8 @@ export async function checkAlerts(
     }
   }
 
-  return { checked: live.length, triggered, revisits, followUps, updatedRevisits: [...updated], warnings, unconfirmed };
+  const regularPrices = new Map(session === "regular" ? [...quotes].map(([symbol, q]) => [symbol, q.lastPrice] as const) : []);
+  return { checked: live.length, triggered, revisits, followUps, updatedRevisits: [...updated], warnings, unconfirmed, regularPrices };
 }
 
 /** Backdates an imported alert to when it was really first watched. */

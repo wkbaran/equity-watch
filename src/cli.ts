@@ -27,6 +27,7 @@ import {
   effectiveTrigger,
 } from "./alerts/models.js";
 import { endedOnFiredSide, entryDirection, reversalOf, reversionWindowFor, sideOf } from "./alerts/reversion.js";
+import { applyQueueRules, compareRanked, dismissWithSnooze, queueRank, queueSettings, snoozeText } from "./alerts/queueRules.js";
 import { DEFAULT_TOUCH_MARGIN_PCT, describeMaAlert, type DailyHistoryResolver } from "./alerts/maEngine.js";
 import { describeAlertCondition, describeVolumeCondition } from "./alerts/describe.js";
 import { liveAlertsFor, normalizeSymbolQuery, renderSymbolAlerts } from "./alerts/symbolView.js";
@@ -40,9 +41,7 @@ import {
   listRevisits,
   loadRevisits,
   migrateDirectionStores,
-  resolveRevisit,
   saveRevisits,
-  sortByPriority,
 } from "./alerts/revisitStore.js";
 import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.js";
 import { addLot, addStop, checkHoldings } from "./holdings/engine.js";
@@ -68,7 +67,7 @@ import { buildAlertRows } from "./web/alertsPage.js";
 import { applyOp, DEFAULT_OP_LOG, loadOpLog, parseOp, recentOpResults, type ApplyContext } from "./ops/apply.js";
 import { pullOps, sqsOpsQueue } from "./ops/pull.js";
 import { drainIntervalMinutes, recordDrain, type OpsPullState } from "./ops/schedule.js";
-import { parseAddInput, parseAlertEdit } from "./ops/validate.js";
+import { parseAddInput, parseAlertEdit, parseRevisitDismiss } from "./ops/validate.js";
 import { sealVault, vaultContents } from "./web/vault.js";
 import { shouldPublish, siteDocument, siteFingerprint, writeSite, type OpsPublishState, type PublishState } from "./web/site.js";
 import {
@@ -649,6 +648,9 @@ interface AlertCommonOpts extends CommonOpts {
 interface RevisitApplyOpts extends AlertCommonOpts {
   /** Overrides the entry's own suggestion, as the dashboard's edit-before-applying does. */
   level?: number;
+  /** dismiss only: trading days before it may come back. */
+  days?: number;
+  config: string;
 }
 
 interface AlertAddOpts extends AlertCommonOpts {
@@ -1140,7 +1142,7 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
   // The whole queue, not just open entries: a crossing folds onto its fire
   // whether or not that entry has been dismissed.
   const stored = loadRevisits(opts.revisitsFile);
-  const { checked, triggered, revisits, followUps, updatedRevisits, warnings, unconfirmed } = await checkAlerts(
+  const { checked, triggered, revisits, followUps, updatedRevisits, warnings, unconfirmed, regularPrices } = await checkAlerts(
     alerts,
     market,
     [new ConsoleNotifier()],
@@ -1164,10 +1166,16 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
     console.log(describeFollowUpEvent(event));
   }
   saveAlerts(opts.alertsFile, alerts);
-  // Follow-ups were appended onto the stored entries in place, so saving the
-  // loaded array carries them.
-  if (revisits.length > 0 || updatedRevisits.length > 0) {
-    saveRevisits(opts.revisitsFile, [...stored, ...revisits]);
+  // After the fires, so a fire this check is new, can be accelerating, and
+  // closes its alert's drift.
+  const queue = applyQueueRules([...stored, ...revisits], alerts, regularPrices, now, queueSettings(config), ignored);
+  for (const line of queue.lines) {
+    console.log(line);
+  }
+  // Follow-ups and the queue rules change stored entries in place, so saving
+  // the loaded array carries them.
+  if (revisits.length > 0 || updatedRevisits.length > 0 || queue.created.length > 0 || queue.changed.length > 0) {
+    saveRevisits(opts.revisitsFile, [...stored, ...revisits, ...queue.created]);
   }
   console.log(
     `Checked ${checked} alert(s), ${triggered.length} triggered, ${followUps.length} later crossing(s) folded onto earlier fires. ` +
@@ -1180,6 +1188,43 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
     const open = listRevisits(opts.revisitsFile).filter((e) => e.followUpOf === undefined).length;
     console.log(`Queue is now ${open} open — 'alert revisit list' to review.`);
   }
+}
+
+interface RevisitRulesOpts extends AlertCommonOpts {
+  config: string;
+}
+
+/**
+ * `alert revisit rules`: the queue rules (queueRules.ts) once, now, judged on
+ * each symbol's last regular-session trade. `alert check` already runs them in
+ * the regular session; this is for outside it, when the quote's lastPrice is a
+ * hint but the session's own last trade is still a real price: a weekend
+ * review, or a first run after a change to the rules.
+ */
+async function cmdRevisitRules(opts: RevisitRulesOpts): Promise<void> {
+  const now = new Date();
+  const alerts = loadAlerts(opts.alertsFile);
+  const config = loadTuningConfig(opts.config);
+  const ignored = ignoredSymbols(config);
+  const symbols = [...new Set(alerts.filter((a) => a.status === "live" && !ignored.has(a.symbol.toUpperCase())).map((a) => a.symbol))];
+  const quotes = await buildMarketData(opts).getQuotes(symbols);
+  const prices = new Map<string, number>();
+  for (const [symbol, quote] of quotes) {
+    if (quote.regularPrice !== undefined) prices.set(symbol, quote.regularPrice);
+  }
+  const stored = loadRevisits(opts.revisitsFile);
+  const result = applyQueueRules(stored, alerts, prices, now, queueSettings(config), ignored);
+  for (const line of result.lines) {
+    console.log(line);
+  }
+  if (result.created.length > 0 || result.changed.length > 0) {
+    saveRevisits(opts.revisitsFile, [...stored, ...result.created]);
+  }
+  const reopened = result.changed.filter((e) => e.status === "open" && e.reminder?.at === now.toISOString()).length;
+  console.log(
+    `Judged ${prices.size} symbol(s) on their last regular-session trade: ${result.created.length} drift(s) raised, ` +
+      `${reopened} dismissal(s) back in the queue, ${result.changed.length} entry(ies) changed in all.`
+  );
 }
 
 /** One terminal line for a folded crossing. Template-only, like the rest of the CLI's output. */
@@ -1218,13 +1263,24 @@ function describeFollowUps(entry: RevisitEntry): string | null {
 interface RevisitListOpts extends AlertCommonOpts {
   status: string;
   limit?: number;
+  holdingsFile: string;
+  config: string;
 }
 
 function cmdRevisitList(opts: RevisitListOpts): void {
   const status = opts.status === "all" ? "all" : (opts.status as "open" | "applied" | "dismissed");
   // Entries the migration folded are crossings already listed under their fire.
   const matching = listRevisits(opts.revisitsFile, { status });
-  const entries = sortByPriority(matching.filter((e) => e.followUpOf === undefined));
+  // The same order and reasons as the dashboard's queue (queueRules.ts).
+  const heldSymbols = heldSymbolsOf(loadHoldingsStore(opts.holdingsFile));
+  const settings = queueSettings(loadTuningConfig(opts.config));
+  const now = new Date();
+  const ranked = matching
+    .filter((e) => e.followUpOf === undefined)
+    .map((entry) => ({ entry, rank: queueRank(entry, heldSymbols.has(entry.symbol.toUpperCase()), now, settings) }))
+    .sort(compareRanked);
+  const entries = ranked.map((r) => r.entry);
+  const rankOf = new Map(ranked.map((r) => [r.entry, r.rank]));
   const hidden = matching.length - entries.length;
   if (entries.length === 0) {
     console.log(`No ${opts.status} revisit entries.`);
@@ -1236,10 +1292,16 @@ function cmdRevisitList(opts: RevisitListOpts): void {
       `${hidden > 0 ? ` (${hidden} folded into earlier fires, not shown)` : ""}:\n`
   );
   for (const e of shown) {
-    const pri = e.priority === null ? "  -  " : e.priority.toFixed(1).padStart(5);
+    const rank = rankOf.get(e)!;
+    const pri = String(rank.priority).padStart(5);
     const level = e.levelAtTrigger === null ? "-" : String(e.levelAtTrigger);
     const direction = entryDirection(e);
-    const fired = direction === null ? `fired ${level}` : `fired ${direction} through ${level}`;
+    const fired =
+      e.reason === "drift"
+        ? `drifted from ${level} (${e.drift?.pct ?? "?"}% the wrong side)`
+        : direction === null
+          ? `fired ${level}`
+          : `fired ${direction} through ${level}`;
     console.log(`${pri}  ${e.id}  ${e.symbol.padEnd(6)} ${e.kind.padEnd(8)} ${fired} @ ${e.triggerPrice} on ${e.triggeredAt.slice(0, 10)}`);
     const followUpLine = describeFollowUps(e);
     if (followUpLine !== null) {
@@ -1248,6 +1310,7 @@ function cmdRevisitList(opts: RevisitListOpts): void {
     if (e.suggestedLevel !== null) {
       console.log(`         suggested new level: ${e.suggestedLevel}${e.suggestionBasis ? ` (${e.suggestionBasis})` : ""}`);
     }
+    console.log(`         ${rank.why}`);
     if (e.signals !== null) {
       console.log(`         ${explainPriority(e.signals)}`);
     }
@@ -1347,8 +1410,15 @@ function cmdRevisitResolve(id: string, action: "applied" | "dismissed", opts: Re
       console.error(`No revisit entry with id ${id}.`);
       process.exit(1);
     }
-    resolveRevisit(opts.revisitsFile, id, "dismissed");
-    console.log(`Dismissed revisit ${id} (${entry.symbol}). The alert itself is untouched and still live.`);
+    const parsed = parseRevisitDismiss(opts.days === undefined ? {} : { days: opts.days });
+    if (!parsed.ok) {
+      console.error(parsed.error);
+      process.exit(1);
+    }
+    const entries = loadRevisits(opts.revisitsFile);
+    dismissWithSnooze(entries.find((e) => e.id === id)!, parsed.value.days, queueSettings(loadTuningConfig(opts.config)));
+    saveRevisits(opts.revisitsFile, entries);
+    console.log(`Dismissed revisit ${id} (${entry.symbol}). The alert itself is untouched and still live. ${snoozeText(entries.find((e) => e.id === id)!.snoozeDays)}`);
     return;
   }
 
@@ -1881,6 +1951,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
       approachingWithinPct: opts.withinPct,
       windowDays: opts.windowDays,
       ignoredSymbols: ignored,
+      queueSettings: queueSettings(config),
       // Always on for the site, which renders it as a collapsed section, and
       // off by default in the terminal, where `--approaching` opts in. On a
       // 500-alert book a hundred names sit within a few percent of firing at
@@ -2087,6 +2158,7 @@ function applyContext(opts: OpsCommonOpts): ApplyContext {
     ensureProfile: profileFiller(opts),
     relevel: relevelFiller(opts),
     ignored: ignoredSymbols(loadTuningConfig(opts.config)),
+    queueSettings: queueSettings(loadTuningConfig(opts.config)),
   };
 }
 
@@ -2425,6 +2497,8 @@ function buildProgram(): Command {
     .description("List revisit entries, highest priority first")
     .option("--status <status>", "open | applied | dismissed | all", "open")
     .option("--limit <n>", "Show only the top N", (v) => parseInt(v, 10))
+    .option(...HOLDINGS_FILE_OPTION)
+    .option(...configOption())
     .action((opts: RevisitListOpts) => cmdRevisitList(opts));
 
   withAlertCommon(revisitCmd.command("relevel"))
@@ -2441,8 +2515,15 @@ function buildProgram(): Command {
     .option("--level <price>", "Use this level instead of the entry's suggestion", (v) => parseFloat(v))
     .action((id: string, opts: RevisitApplyOpts) => cmdRevisitResolve(id, "applied", opts));
 
+  withAlertCommon(revisitCmd.command("rules"))
+    .description("Apply the queue rules now, on each symbol's last regular-session trade (alert check does this in the session)")
+    .option(...configOption())
+    .action((opts: RevisitRulesOpts) => cmdRevisitRules(opts));
+
   withAlertCommon(revisitCmd.command("dismiss <id>"))
-    .description("Close the entry without touching the alert")
+    .description("Close the entry without touching the alert. It may come back if price keeps going (see --days)")
+    .option("--days <n>", "Trading days before it may come back, 1-90 (default from the config, 7)", (v) => parseInt(v, 10))
+    .option(...configOption())
     .action((id: string, opts: RevisitApplyOpts) => cmdRevisitResolve(id, "dismissed", opts));
 
   withAlertCommon(alertCmd.command("check"))

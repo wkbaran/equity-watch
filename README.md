@@ -20,7 +20,7 @@ your approval, through WebMCP in the browser or an MCP server.
 
 [Quick start](#quick-start) · [How it works](#how-it-works) · [Worked example](#a-worked-example) · [Alerts](docs/ALERTS.md) · [Holdings](docs/HOLDINGS.md) · [Dashboard](docs/DASHBOARD.md) · [MCP server](docs/MCP.md) · [Docker](docker/README.md) · [Architecture](docs/ARCHITECTURE.md)
 
-<img src="docs/images/queue-row.png" alt="A revisit queue row: priority 47, the English headline, the held tag, the fired line with a suggested level, price since the fire, the position, the signal breakdown, and the Details, Chart, Re-suggest, Apply and Dismiss actions" width="900">
+<img src="docs/images/queue-row.png" alt="A revisit queue row: priority 70, the English headline, the new and held tags, the fired line with a suggested level, price since the fire, the position, why it ranks where it does, and the Details, Chart, Re-suggest, Apply and Dismiss actions with how long a dismissal waits" width="900">
 
 <sub>Screenshots come from the test fixture server. Every symbol, level and position in them is invented.</sub>
 
@@ -94,10 +94,11 @@ On a Docker host, `docker/` runs the same loop in one container; see
 | `alert seed` | One-time migration of the two TradingView CSV exports |
 | `alert migrate-directions` | One-time upgrade of stores written before directions existed |
 | **The revisit queue** | |
-| `alert revisit list` | List entries, highest priority first |
-| `alert revisit relevel` | Fetch bars, propose new levels, score the queue |
+| `alert revisit list` | List entries in queue order |
+| `alert revisit relevel` | Fetch bars, propose new levels |
 | `alert revisit apply <id>` | Move the alert to the proposed level and close the entry |
-| `alert revisit dismiss <id>` | Close the entry, leave the alert alone |
+| `alert revisit dismiss <id> [--days N]` | Take the entry off the queue for N trading days, leave the alert alone |
+| `alert revisit rules` | Apply the queue rules now, on the last regular-session trade (the check does this in the session) |
 | **Holdings** | |
 | `holdings import` | One-time import of Webull holdings CSV exports |
 | `holdings add-lot` / `list` | Record and review purchase lots |
@@ -194,19 +195,24 @@ recorded. Both run the same code, so both propose the same level.
 
 **5. It fires again, and this one needs a decision.** AA takes out 55 too, at 55.60.
 The queue row is the whole verdict in one place: priority, the English headline, the
-`held` tag because AA is in `holdings.json`, what has happened since, and the signal
-breakdown behind the score:
+`new` tag because it fired in the last two trading days, the `held` tag because AA is in
+`holdings.json`, what has happened since, and why it ranks where it does:
 
-![A revisit queue row: priority 47, the headline, the held tag, the fired line with a suggested level, price since the fire, the position, what the suggestion was read off, the signal breakdown, and the Details, Chart, Re-suggest, Apply and Dismiss actions](docs/images/queue-row.png)
+![A revisit queue row: priority 70, the headline, the new and held tags, the fired line with a suggested level, price since the fire, the position, what the suggestion was read off, why it ranks where it does, and the Details, Chart, Re-suggest, Apply and Dismiss actions with how long a dismissal waits](docs/images/queue-row.png)
 
-The score is not a recommendation to buy. It ranks what most deserves your attention,
-and `held position (15pt)` is part of why this one is at the top.
+The priority is not a recommendation to buy. It ranks what most deserves your
+attention. New fires go to the top, and fires that ran 2% past their level within two
+days go above those. Next come reminders: dismissals whose wait ran out while price
+kept going. Then drifts: alerts quiet for three weeks because price went 6% the other
+way. A held position adds to any of them. Dismiss takes a row off the queue for a
+number of trading days, never for good. [`docs/ALERTS.md`](docs/ALERTS.md#what-is-in-the-queue-and-in-what-order)
+has the rules and their settings.
 
 **6. Details, if the headline isn't enough.** *Details* opens the trigger drawer.
 Everything here except the current price was recorded when it fired, so it stays true
 even after you move or delete the alert:
 
-![The trigger details drawer: when it fired and in which session, status, the condition at trigger time, price and level at trigger, direction, the breakout verdict, move past level, volume vs normal, the priority breakdown, the suggested level, the watch-history line, and the position](docs/images/trigger-details.png)
+![The trigger details drawer: when it fired and in which session, status, the condition at trigger time, price and level at trigger, direction, the breakout verdict, move past level, volume vs normal, the priority and why, the suggested level, the watch-history line, and the position](docs/images/trigger-details.png)
 
 **7. The story is the part a flat list hides.** Two fires with the re-level between
 them, which is the chase the queue exists to make visible, and your own buys and sales

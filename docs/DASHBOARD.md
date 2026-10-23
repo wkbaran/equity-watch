@@ -21,7 +21,7 @@ Six sections, in the order they print:
 1. **Summary** — live alerts, symbols covered, open vs. actionable queue entries,
    triggers in the last `--window-days` (default 7), positions held, and how many
    alerts had no quote this run.
-2. **Revisit queue** — what needs a decision, priority-ranked, each row carrying its
+2. **Revisit queue** — what needs a decision, ranked by the queue rules, each row carrying its
    proposed level and the signal breakdown behind its score. Every open entry,
    unless `--limit` caps it: the site only publishes every 15 minutes or so, so a
    capped queue made anyone clearing it in one sitting stop and wait for the rest.
@@ -102,13 +102,16 @@ number as the rail and the overview tile.
   the same reason it is off by default in the terminal: on a 500-alert book roughly
   a hundred names sit within a few percent of firing at any moment, which is a
   readout of market noise rather than a list of things to do.
-- **Revisit queue** — open triggers by priority, and the one view built to be acted
+- **Revisit queue** — new and accelerating fires, reminders and drifts, in the order
+  docs/ALERTS.md "What is in the queue" gives, each tagged *accelerating*, *new*,
+  *kept going* or *drifted*. It is the one view built to be acted
   on. Each row has *Details*, *Chart*, and, once editing is unlocked, the whole
   decision: **Suggest level** (a `revisit.relevel` op, which fetches that symbol's
-  bars and proposes a level and a priority for that one entry), **Apply → 61** once
+  bars and proposes a level for that one entry), **Apply → 61** once
   there is a suggestion (a `revisit.apply` op, which re-levels the alert and closes
   the symbol's open entries), and **Dismiss** (a `revisit.dismiss` op, which closes
-  that one entry and leaves the alert alone). Any other change to the symbol (an
+  that one entry and leaves the alert alone). The select beside Dismiss is how long
+  before it may come back (`params.days`, 1 to 90; no `days` is the configured default). There is no "for good". Any other change to the symbol (an
   alert added, edited or removed, or a lot or stop changed) also takes all of its
   rows off the queue; see docs/ALERTS.md.
 

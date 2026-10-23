@@ -385,7 +385,8 @@ describe("applyOp", () => {
     const ctx = { alertsFile, revisitsFile, opLogFile, market: fakeMarket({}) };
     const { result } = await applyOp(dismiss({ revisitId: "rv000001", alertId: "s1abcdef" }), ctx);
     expect(result).toMatchObject({ ok: true, type: "revisit.dismiss", symbol: "TEST", alertId: "s1abcdef" });
-    expect(result.message).toBe("Dismissed revisit rv000001 (TEST) from the queue. Alert s1abcdef is unchanged and still watching.");
+    expect(result.message).toBe("Dismissed revisit rv000001 (TEST) from the queue. Alert s1abcdef is unchanged and still watching. It comes back after 7 trading days if price keeps going past where it was dismissed.");
+    expect(loadRevisits(revisitsFile)[0].snoozeDays).toBe(7);
     expect(loadRevisits(revisitsFile)[0]).toMatchObject({ status: "dismissed", appliedFrom: null, appliedTo: null });
     expect(loadRevisits(revisitsFile)[0].resolvedAt).not.toBeNull();
     expect(loadAlerts(alertsFile)).toEqual(alertsBefore);
@@ -480,7 +481,7 @@ describe("applyOp", () => {
     const { result } = await applyOp(relevelOp({ revisitId: "rv000001" }), ctx);
 
     expect(result).toMatchObject({ ok: true, type: "revisit.relevel", symbol: "TEST", alertId: "s1abcdef" });
-    expect(result.message).toBe("Re-levelled revisit rv000001 (TEST): suggest 118 (60d high). Priority 62.5.");
+    expect(result.message).toBe("Re-levelled revisit rv000001 (TEST): suggest 118 (60d high).");
     expect(relevel.calls).toEqual(["rv000001"]);
     const after = loadRevisits(revisitsFile)[0];
     expect(after).toMatchObject({ suggestedLevel: 118, suggestionBasis: "60d high", priority: 62.5, status: "open" });

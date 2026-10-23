@@ -237,7 +237,8 @@ export function applyRevisitLevel(
  * left the level where it was", which a removed alert or a new lot makes
  * false. Every entry gets `closedBy`, which is what the story tells. Only the
  * moved alert's own entries get `appliedFrom`/`appliedTo`, which say what
- * happened to *that* fire's level. Returns the ids closed, oldest first.
+ * happened to *that* fire's level. A dismissal waiting to come back is
+ * settled too: it stays dismissed for good. Returns the ids closed, oldest first.
  */
 export function closeRevisitsForSymbol(path: string, symbol: string, cause: RevisitClosure, now: Date = new Date()): string[] {
   if (!existsSync(path)) {
@@ -246,8 +247,17 @@ export function closeRevisitsForSymbol(path: string, symbol: string, cause: Revi
   const target = symbol.toUpperCase();
   const entries = loadRevisits(path);
   const closed: string[] = [];
+  let waitsCancelled = false;
   for (const entry of entries) {
-    if (entry.symbol.toUpperCase() !== target || entry.status !== "open") continue;
+    if (entry.symbol.toUpperCase() !== target) continue;
+    // A dismissal still waiting to come back (queueRules.ts) is answered by
+    // the same decision: it stays dismissed, for good.
+    if (entry.status === "dismissed" && entry.snoozeDays !== null) {
+      entry.snoozeDays = null;
+      waitsCancelled = true;
+      continue;
+    }
+    if (entry.status !== "open") continue;
     const moved = cause.moved !== undefined && entry.alertId === cause.alertId ? cause.moved : null;
     entry.status = "applied";
     entry.resolvedAt = now.toISOString();
@@ -256,7 +266,7 @@ export function closeRevisitsForSymbol(path: string, symbol: string, cause: Revi
     entry.closedBy = cause;
     closed.push(entry.id);
   }
-  if (closed.length > 0) {
+  if (closed.length > 0 || waitsCancelled) {
     saveRevisits(path, entries);
   }
   return closed;

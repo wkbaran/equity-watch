@@ -20,7 +20,7 @@ import { describeAlertCondition } from "../alerts/describe.js";
 import { addAlert, editAlert, type MarketData } from "../alerts/engine.js";
 import { applyRelevelPatch, type RelevelPatch } from "../alerts/relevel.js";
 import type { RevisitClosure, RevisitEntry } from "../alerts/revisit.js";
-import { applyRevisitLevel, closeRevisitsForSymbol, editClosure, loadRevisits, resolveRevisit, saveRevisits } from "../alerts/revisitStore.js";
+import { applyRevisitLevel, closeRevisitsForSymbol, editClosure, loadRevisits, saveRevisits } from "../alerts/revisitStore.js";
 import { loadAlerts, saveAlerts } from "../alerts/store.js";
 import type { Alert } from "../alerts/models.js";
 import { applyHoldingsOp, applyCoverOp } from "./holdings.js";
@@ -30,8 +30,10 @@ import {
   parseAddInput,
   parseAlertEdit,
   parseRevisitApply,
+  parseRevisitDismiss,
   stringField,
 } from "./validate.js";
+import { DEFAULT_QUEUE_SETTINGS, dismissWithSnooze, snoozeText, type QueueSettings } from "../alerts/queueRules.js";
 
 export const DEFAULT_OP_LOG = "ops.log.jsonl";
 export const DEFAULT_HOLDINGS_FILE = "holdings.json";
@@ -171,6 +173,8 @@ export interface ApplyContext {
    * rather than a config path: this module reads stores, not settings.
    */
   ignored?: Set<string>;
+  /** The config's queue thresholds; a dismiss with no `days` waits `dismissDays`. */
+  queueSettings?: QueueSettings;
 }
 
 export interface ApplyOutcome {
@@ -432,7 +436,7 @@ async function applyRelevel(op: Op, ctx: ApplyContext): Promise<Outcome> {
     symbol: entry.symbol,
     alertId: entry.alertId,
     ok: true,
-    message: `Re-levelled revisit ${revisitId} (${entry.symbol}): ${proposal}. Priority ${patch.priority}.`,
+    message: `Re-levelled revisit ${revisitId} (${entry.symbol}): ${proposal}.`,
   };
 }
 
@@ -546,11 +550,19 @@ function applyDismiss(op: Op, ctx: ApplyContext): Outcome {
   if (entry.status !== "open") {
     return reject(entry.symbol, entry.alertId, `Revisit ${revisitId} is already ${entry.status}.`);
   }
-  resolveRevisit(revisitsFile, revisitId, "dismissed");
+  const params = parseRevisitDismiss(op.params ?? {});
+  if (!params.ok) {
+    return reject(entry.symbol, entry.alertId, params.error);
+  }
+  const entries = loadRevisits(revisitsFile);
+  const stored = dismissWithSnooze(entries.find((e) => e.id === revisitId)!, params.value.days, ctx.queueSettings ?? DEFAULT_QUEUE_SETTINGS);
+  saveRevisits(revisitsFile, entries);
   return {
     symbol: entry.symbol,
     alertId: entry.alertId,
     ok: true,
-    message: `Dismissed revisit ${revisitId} (${entry.symbol}) from the queue. Alert ${entry.alertId} is unchanged and still watching.`,
+    message:
+      `Dismissed revisit ${revisitId} (${entry.symbol}) from the queue. Alert ${entry.alertId} is unchanged and still watching. ` +
+      snoozeText(stored.snoozeDays),
   };
 }

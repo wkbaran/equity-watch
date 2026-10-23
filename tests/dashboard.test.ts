@@ -131,6 +131,23 @@ describe("recentTriggers", () => {
     expect(d.recentTriggers[0].headline).toContain("AAPL");
   });
 
+  it("caps closed entries but never drops an open one, so every queue row has details", () => {
+    const closed = Array.from({ length: 150 }, (_, i) =>
+      revisit({
+        id: `closed${i}`,
+        triggeredAt: new Date(Date.parse("2026-09-11T12:00:00.000Z") - i * 60_000).toISOString(),
+        status: "dismissed",
+      })
+    );
+    const d = base({
+      revisits: [revisit({ id: "olderOpen", triggeredAt: "2026-09-10T12:00:00.000Z" }), ...closed],
+    });
+    const ids = d.recentTriggers.map((t) => t.id);
+    expect(ids).toHaveLength(101);
+    expect(ids.at(-1)).toBe("olderOpen");
+    expect(d.revisitQueue.every((r) => ids.includes(r.id))).toBe(true);
+  });
+
   it("carries trigger details, preferring what was recorded at trigger time", () => {
     const recorded = revisit({
       id: "rec",
@@ -289,18 +306,33 @@ describe("buildDashboard", () => {
     expect(renderDashboard(d)).toContain("nothing waiting on a decision");
   });
 
-  it("ranks the revisit queue by priority, unscored entries last", () => {
-    const hot = revisit({ id: "hot", symbol: "NVDA", priority: 80 });
-    const mild = revisit({ id: "mild", symbol: "CF", priority: 30 });
-    const unscored = revisit({ id: "cold", symbol: "GO", priority: null });
-    const d = base({ revisits: [mild, unscored, hot] });
-    expect(d.revisitQueue.map((r) => r.id)).toEqual(["hot", "mild", "cold"]);
+  it("ranks the queue by the queue rules: accelerating, new, reminders, drifts, then older fires", () => {
+    // NOW is Saturday 2026-09-12, so a Thursday fire is one trading day old and still new.
+    const accelerating = revisit({ id: "acc", triggeredAt: "2026-09-10T14:00:00.000Z", accelerated: { at: "2026-09-11T15:00:00.000Z", price: 113, pct: 2.7 } });
+    const fresh = revisit({ id: "fresh", triggeredAt: "2026-09-11T14:00:00.000Z" });
+    const reminder = revisit({
+      id: "rem",
+      triggeredAt: "2026-08-20T14:00:00.000Z",
+      reminder: { at: "2026-09-11T15:00:00.000Z", price: 120, dismissedAt: "2026-08-21T15:00:00.000Z", dismissedPrice: 113 },
+    });
+    const drift = revisit({ id: "drift", reason: "drift", triggeredAt: "2026-09-11T15:00:00.000Z", triggerPrice: 100, drift: { pct: 9.1, quietSince: "2026-08-01T15:00:00.000Z" }, direction: "up" });
+    const older = revisit({ id: "older", triggeredAt: "2026-09-01T14:00:00.000Z" });
+    const d = base({ revisits: [older, drift, reminder, fresh, accelerating] });
+    expect(d.revisitQueue.map((r) => r.id)).toEqual(["acc", "fresh", "rem", "drift", "older"]);
+    expect(d.revisitQueue.map((r) => r.reason)).toEqual(["accelerating", "new", "reminder", "drift", "waiting"]);
+    expect(d.revisitQueue[0].why).toBe("New fire; ran 2.7% past the level within 2 trading days.");
+    expect(d.revisitQueue[3].headline).toBe("AAPL drifted 9.1% below its 110 level, which waits for a cross above, no fire since Aug 1");
+    // A drift is not a fire: it doesn't count as a trigger (only acc and fresh are in the 7-day window).
+    expect(d.summary.triggersInWindow).toBe(2);
   });
 
   it("carries every open entry unless a limit is given", () => {
-    const revisits = Array.from({ length: 40 }, (_, i) => revisit({ id: `rv${i}`, symbol: "AAPL", priority: i }));
+    const revisits = Array.from({ length: 40 }, (_, i) =>
+      revisit({ id: `rv${i}`, symbol: "AAPL", triggeredAt: new Date(Date.parse("2026-09-10T14:00:00.000Z") + i * 60_000).toISOString() })
+    );
     expect(base({ revisits }).revisitQueue).toHaveLength(40);
     expect(base({ revisits }).summary.openRevisits).toBe(40);
+    // Equal rank, so newest first.
     expect(base({ revisits, limit: 10 }).revisitQueue.map((r) => r.id)).toEqual(Array.from({ length: 10 }, (_, i) => `rv${39 - i}`));
   });
 
@@ -426,7 +458,7 @@ describe("buildDashboard", () => {
     });
     const d = base({ revisits: [revisit({ priority, signals, suggestedLevel: 125 })] });
     const text = renderDashboard(d);
-    expect(text).toContain("CONFIRMED_BREAKOUT");
+    expect(text).toContain("New fire.");
     expect(text).toContain("Suggest moving 110 to 125.");
     expect(text).toContain("alert revisit apply r1");
   });

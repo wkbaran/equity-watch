@@ -294,6 +294,11 @@
       ? h("span", { class: "tag reversed", title: reversalText(t), text: withDay ? `reversed · ${dayText(t.reversal.tradingDaysAfter)}` : "reversed" })
       : null;
 
+  // Why a queue row sits where it does (src/alerts/queueRules.ts), in a word.
+  // An older fire still waiting gets none: that is the ordinary case.
+  const REASON_TAG = { accelerating: "accelerating", new: "new", reminder: "kept going", drift: "drifted" };
+  const reasonTag = (t) => (REASON_TAG[t.reason] ? h("span", { class: `tag reason ${t.reason}`, title: t.why ?? "", text: REASON_TAG[t.reason] }) : null);
+
   const triggerHash = (id) => `#/trigger/${encodeURIComponent(id)}`;
   const alertHash = (id) => `#/alert/${encodeURIComponent(id)}`;
 
@@ -2466,6 +2471,7 @@
               symbolLink(r.symbol, r.chartUrl),
               " ",
               h("a", { class: "plain", href: triggerHash(r.id), text: bareHeadline(r) }),
+              reasonTag(r),
               heldTag(r),
               reversedTag(r),
               // A queued edit from the details panel closes this entry, but not
@@ -2478,7 +2484,9 @@
             h(
               "div",
               { class: "sub" },
-              `Fired ${r.direction ? `${SIDE_OF[r.direction]} ` : ""}${r.levelAtTrigger ?? "–"} @ ${money(r.triggerPrice)} · ${when(r.triggeredAt)}`,
+              r.reason === "drift"
+                ? `Noticed at ${money(r.triggerPrice)}, against ${r.levelAtTrigger ?? "–"} · ${when(r.triggeredAt)}`
+                : `Fired ${r.direction ? `${SIDE_OF[r.direction]} ` : ""}${r.levelAtTrigger ?? "–"} @ ${money(r.triggerPrice)} · ${when(r.triggeredAt)}`,
               r.session && r.session !== "regular" && SESSION_LABEL[r.session] ? ` · ${SESSION_LABEL[r.session]}` : "",
               r.action ? `. ${r.action}` : ""
             ),
@@ -2607,16 +2615,39 @@
    * row rather than in the trigger panel so what it removes is plain: the row
    * it sits on. The alert keeps its level and keeps watching, and its next
    * fire comes back here as a new entry.
+   *
+   * The select beside it is how long the dismissal waits before the queue
+   * rules may bring it back, if price keeps going (a drift: if it is still
+   * drifted). The default is the config's, sent as no `days` at all so the
+   * worker applies its own number. There is no "for good": dismissing is a
+   * wait, and removing the alert is how to stop it.
    */
   function dismissButton(r) {
-    const btn = confirmButton("Dismiss", () =>
-      submitOp(
-        { type: "revisit.dismiss", target: { revisitId: r.id, alertId: r.alertId }, params: {} },
-        { symbol: r.symbol, alertId: r.alertId, revisitId: r.id, summary: `${r.symbol}: dismiss the ${when(r.triggeredAt)} fire${r.levelAtTrigger === null ? "" : ` at ${r.levelAtTrigger}`} from the queue` }
-      )
+    const fallback = current?.summary.dismissDays ?? 7;
+    const choices = [...new Set([fallback, 3, 7, 14, 30])].sort((a, b) => a - b);
+    const wait = h(
+      "select",
+      { class: "dismiss-wait", "aria-label": `How long dismissing ${r.symbol} waits before it may come back`, onclick: (e) => e.stopPropagation() },
+      ...choices.map((d) => h("option", { value: d === fallback ? "" : String(d), text: `for ${d} days`, ...(d === fallback ? { selected: true } : {}) }))
     );
-    btn.title = "Remove this fire from the queue. The alert is not changed: it keeps its level, keeps watching, and its next fire comes back here.";
-    return btn;
+    const btn = confirmButton("Dismiss", () => {
+      const days = wait.value === "" ? null : Number(wait.value);
+      const params = days === null ? {} : { days };
+      const span = `${days ?? fallback} days`;
+      submitOp(
+        { type: "revisit.dismiss", target: { revisitId: r.id, alertId: r.alertId }, params },
+        {
+          symbol: r.symbol,
+          alertId: r.alertId,
+          revisitId: r.id,
+          summary: `${r.symbol}: dismiss the ${when(r.triggeredAt)} ${r.reason === "drift" ? "drift" : "fire"}${r.levelAtTrigger === null ? "" : ` at ${r.levelAtTrigger}`} from the queue for ${span}`,
+        }
+      );
+    });
+    btn.title =
+      "Remove this row from the queue. The alert is not changed: it keeps its level and keeps watching. " +
+      "After the wait, it comes back if price kept going past where it was dismissed.";
+    return h("span", { class: "dismiss-control" }, btn, wait);
   }
 
   // A div rather than an <a>: the ticker inside is its own link, and links can't nest.

@@ -127,7 +127,7 @@ export function endedOnFiredSide(entry: RevisitEntry): boolean {
 export function latestFireOf(entries: RevisitEntry[], alertId: string, level: number): RevisitEntry | null {
   let latest: RevisitEntry | null = null;
   for (const e of entries) {
-    if (e.alertId !== alertId || e.kind !== "static" || e.followUpOf !== undefined || e.levelAtTrigger !== level) {
+    if (e.alertId !== alertId || e.kind !== "static" || e.reason !== undefined || e.followUpOf !== undefined || e.levelAtTrigger !== level) {
       continue;
     }
     if (latest === null || new Date(e.triggeredAt).getTime() > new Date(latest.triggeredAt).getTime()) {
@@ -185,7 +185,7 @@ export function foldLegacyRevisits(
   const result: FoldResult = { directionsRecorded: 0, folded: 0, dismissed: 0, anchorsWithFollowUps: 0 };
   const byAlert = new Map<string, RevisitEntry[]>();
   for (const e of entries) {
-    if (e.kind !== "static" || e.followUpOf !== undefined) {
+    if (e.kind !== "static" || e.reason !== undefined || e.followUpOf !== undefined) {
       continue;
     }
     byAlert.set(e.alertId, [...(byAlert.get(e.alertId) ?? []), e]);

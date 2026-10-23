@@ -395,14 +395,58 @@ back-and-forth queue entries onto the fire they followed. Safe to re-run.
 
 ```bash
 node dist/cli.js alert revisit list [--status open|applied|dismissed|all] [--limit N]
-node dist/cli.js alert revisit relevel      # fetch bars, propose levels, score the queue
+node dist/cli.js alert revisit relevel      # fetch bars, propose levels
 node dist/cli.js alert revisit apply <id>   # move the alert to the proposed level
-node dist/cli.js alert revisit dismiss <id> # close the entry, leave the alert alone
+node dist/cli.js alert revisit dismiss <id> [--days N]  # close the entry for N trading days, leave the alert alone
+node dist/cli.js alert revisit rules        # apply the queue rules now, on the last regular-session trade
 ```
 
-`relevel` is the pass that makes the queue useful, and it is **not** part of the
-scheduled run — until you ask for it, an entry has no suggested level and no
-priority score. Asking can be this command, over the whole queue, or the
+### What is in the queue, and in what order
+
+Since 2026-10-23 the queue holds three kinds of row (`src/alerts/queueRules.ts`).
+`alert check` applies the rules after each check, on regular-session prices only:
+
+- **Fires.** A fire is **new** for `accelerationDays` trading days (default 2), and new
+  fires sit at the top. One that runs `accelerationPct` (default 2%) past its level
+  inside that time is marked **accelerating** and goes above them. A fire older than
+  that, still waiting on a decision, sinks to the bottom.
+- **Reminders ("kept going").** A dismissal is a wait, never an end. It waits
+  `dismissDays` trading days (default 7, or whatever the Dismiss chose: 3, 14 or 30).
+  After the wait, if price is still past the level and further past it than where it
+  was dismissed, the entry reopens. Dismiss it again to start a new wait, or relevel or
+  remove the alert. Dismissals made before 2026-10-23 count too, measured from the
+  fire's price, since where they were dismissed wasn't recorded. A dismissal stops
+  waiting only when the symbol is acted on (any alert, lot or stop change), a newer
+  fire of the same alert supersedes it, or the alert's level moves.
+- **Drifts.** A static `up` or `down` alert with no fire, and no change to its symbol,
+  for `driftDays` calendar days (default 21) whose price is `driftPct` (default 6%) on
+  the wrong side of its level: below it for an `up` alert, above it for a `down` one.
+  Relevel it the other way, or replace it, say with a trailing alert. A drift is not a
+  fire: it takes no follow-ups, isn't counted as a trigger, and isn't told in stories.
+  A fire closes it. A dismissed drift comes back after its wait if it is still drifted.
+
+Order, highest first: accelerating new fire (90), new fire (60), reminder (50),
+accelerating older fire (40), drift (30), older fire (10), with 10 more for a held
+position. Ties go newest first. Each row's `why` names the reasons.
+
+Acting on a symbol (any alert, lot or stop change) closes its open entries, as before.
+It also settles its dismissals: those stay dismissed.
+
+`alert check` applies the rules only in the regular session. To apply them outside it
+(a weekend review, say), `alert revisit rules` runs them once on each symbol's last
+regular-session trade (Schwab's `regularMarketLastPrice`), which is a real price where
+the after-hours quote is not.
+
+Every threshold can be set in `analysis.config.json`:
+
+```json
+{ "revisitQueue": { "accelerationPct": 2, "accelerationDays": 2, "dismissDays": 7, "driftDays": 21, "driftPct": 6 } }
+```
+
+### Suggesting a level
+
+`relevel` is **not** part of the scheduled run — until you ask for it, an entry has
+no suggested level. Asking can be this command, over the whole queue, or the
 **Suggest level** button on a single row of the browser dashboard, which queues a
 `revisit.relevel` op for that one entry. Both run the same `relevelEntry`, so they
 propose the same level for the same bars.
@@ -415,8 +459,9 @@ For each open entry it pulls daily bars and:
   above it. If price fell back *below* the level, no suggestion is made: the
   original level is still a perfectly good target and re-levelling would throw it
   away.
-- **scores the entry 0–100** by blending five signals, each saturating so no single
-  one can run away with the ranking:
+- **records a breakout score 0–100**, shown with the entry's details. It no longer
+  orders the queue (the rules above do). It blends five signals, each saturating so
+  no single one can run away with it:
 
   | signal | weight | |
   |---|---|---|
@@ -426,8 +471,7 @@ For each open entry it pulls daily bars and:
   | held position | 15% | anything in `holdings.json`, since a trigger on something you own is a live decision |
   | staleness | 10% | days sitting unactioned; a tiebreaker, never a reason to act on its own |
 
-  The per-signal breakdown is stored on the entry and shown in the listing, so the
-  ranking explains itself rather than asserting a number.
+  The per-signal breakdown is stored on the entry and shown in the listing.
 
 Suggestions are only ever *proposed*. **Nothing re-levels itself** — `apply` is the
 only thing that moves an alert, and it re-seeds the crossing baseline against the

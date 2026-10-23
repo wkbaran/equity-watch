@@ -8,6 +8,7 @@ import {
   parseLotInput,
   parseSaleParams,
   parseStopEdit,
+  parseRevisitDismiss,
   parseStopInput,
   type Parsed,
 } from "../src/ops/validate.js";
@@ -75,6 +76,7 @@ const SAMPLE: Record<string, unknown> = {
   clearVolume: true,
   stopHit: true,
   atr: 1.5,
+  days: 14,
 };
 
 /** Fails the test if the validator names the field unknown; any other complaint about a lone field is fine. */
@@ -94,6 +96,7 @@ describe("tool schemas match the worker's validators", () => {
   it("add_stop", () => props("add_stop").forEach((k) => acceptsKey(parseStopInput, k)));
   it("sell_shares", () => props("sell_shares", ["symbol", "lotId"]).forEach((k) => acceptsKey((p) => parseSaleParams(p, "position"), k)));
   it("edit_stop", () => props("edit_stop", ["stopId"]).forEach((k) => acceptsKey(parseStopEdit, k)));
+  it("dismiss_revisit", () => props("dismiss_revisit", ["revisitId"]).forEach((k) => acceptsKey(parseRevisitDismiss, k)));
 
   it("every required property exists, and objects refuse extras", () => {
     for (const t of webmcp.TOOLS) {

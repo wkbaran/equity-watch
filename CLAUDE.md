@@ -1582,3 +1582,34 @@ container: two schedulers on two copies of `alerts.json` re-fire each other's al
   which the `node` user can't write.
 - `check-and-publish.sh` passes no `--next-check`, unlike the `.ps1`; the page
   uses the measured cadence instead.
+
+## The queue's order is the queue rules, not the stored `priority`
+
+`src/alerts/queueRules.ts` (2026-10-23, docs/ALERTS.md "What is in the queue"). Before
+it, `priority` was set only by `relevel`, which the schedule never runs, so every row
+tied and the queue was oldest-first. Things that look simplifiable and aren't:
+
+- **The rank is computed at build time** (`queueRank`), from recorded facts and the
+  trading-day clock, never a live price, so a row's `priority`/`why` change on an event
+  or a day boundary and the fingerprint stays quiet between. Don't store it, and don't
+  feed a live percent into `why`. `RevisitEntry.priority` is now relevel's breakout
+  score, shown in details only.
+- **The rules run in `alert check`, on `regularPrices` only.** Outside the regular
+  session the quote is a hint (the extended-hours section below).
+- **A drift is a revisit entry with `reason: "drift"`, not a fire.** `latestFireOf` and
+  `foldLegacyRevisits` skip it (or it would swallow follow-ups), `triggersInWindow`
+  and stories leave it out, and `isFire` is the test. Any new reader of the queue that
+  means "fires" must filter on it.
+- **A dismissal is a wait, never an end** (the user's rule, 2026-10-23: alerts are
+  never disarmed). Absent `snoozeDays` (every dismissal before that date) waits the
+  default; there is no "never" in the validator, page or tools. Only `null` settles
+  one: `closeRevisitsForSymbol` sets it when the symbol is acted on, and a fire sets
+  it on the drift it closes. Old counter-direction entries the direction migration
+  dismissed stay down because `watchesDirection` must hold.
+- **`alert revisit rules` judges on `Quote.regularPrice`** (Schwab's
+  `regular.regularMarketLastPrice`), so it can run outside the session. Don't make
+  `alert check` use it instead of the session gate without asking: the user chose
+  market hours for the scheduled run.
+- **`recentTriggers` caps only closed entries.** Every open one must be there: each
+  queue row's drawer looks itself up in that list (a 120-fire day pushed IBM's open
+  entry past a flat cap of 100, and its drawer said "Trigger not found").

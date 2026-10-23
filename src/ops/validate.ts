@@ -379,6 +379,28 @@ export function parseRevisitApply(params: unknown): Parsed<{ level?: number }> {
   });
 }
 
+const DISMISS_KEYS = ["days"] as const;
+/** The longest wait a dismissal may ask for. Past a quarter, "never" is the honest choice. */
+export const MAX_DISMISS_DAYS = 90;
+
+/**
+ * `revisit.dismiss`'s params: how many trading days before the queue rules may
+ * bring the entry back (queueRules.ts). Absent means the configured default.
+ * There is no "never": a dismissal is a wait, and removing the alert is how to
+ * stop one. Whole days, so a "7.5" is refused rather than rounded.
+ */
+export function parseRevisitDismiss(params: unknown): Parsed<{ days?: number }> {
+  return attempt(() => {
+    const f = scalarFields(params, DISMISS_KEYS);
+    if (f.days === undefined) return {};
+    const n = typeof f.days === "number" ? f.days : Number(f.days);
+    if (!Number.isInteger(n) || n < 1 || n > MAX_DISMISS_DAYS) {
+      fail(`Invalid --days "${String(f.days)}" — expected whole trading days from 1 to ${MAX_DISMISS_DAYS}.`);
+    }
+    return { days: n };
+  });
+}
+
 /** A string property of an untrusted value, or null. */
 export function stringField(value: unknown, key: string): string | null {
   if (value === null || typeof value !== "object") {

@@ -213,6 +213,28 @@ export interface RevisitEntry {
    * these; the crossing is already on that entry's `followUps`.
    */
   followUpOf?: string;
+  /**
+   * Absent on a fire. "drift" is an entry the queue rules (queueRules.ts)
+   * raised about an alert that has *not* fired for a long while because price
+   * went the other way. It is not a crossing: it never takes follow-ups, never
+   * counts as a trigger, and is left out of stories.
+   */
+  reason?: "drift";
+  /** On a drift entry: how far the wrong side price was, and the last activity it was measured from. */
+  drift?: { pct: number; quietSince: string };
+  /** Set once if price ran `accelerationPct` past the level within `accelerationDays` of the fire. */
+  accelerated?: { at: string; price: number; pct: number };
+  /**
+   * On a dismissal: trading days before the queue rules may bring it back.
+   * Absent (dismissals before 2026-10-23) waits the configured default. Null
+   * settles it for good, and only a change to the symbol or a fire closing a
+   * drift sets that: dismissing is always a wait (the user's rule).
+   */
+  snoozeDays?: number | null;
+  /** The first regular-session price seen after the dismissal; what "kept going" is measured from. */
+  dismissedPrice?: number;
+  /** Set when the queue rules reopened a dismissed entry. The latest reopening only. */
+  reminder?: { at: string; price: number; dismissedAt: string; dismissedPrice: number | null };
 }
 
 export interface RevisitFollowUp {

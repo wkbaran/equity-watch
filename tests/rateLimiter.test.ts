@@ -89,3 +89,19 @@ describe("quote batching", () => {
     expect(500 % MAX_QUOTE_SYMBOLS_PER_REQUEST).toBe(0);
   });
 });
+
+describe("SchwabProvider.getQuotes parsing", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("keeps the regular session's last trade beside the live price", async () => {
+    const { SchwabProvider } = await import("../src/providers/schwab.js");
+    const provider = Object.create(SchwabProvider.prototype) as InstanceType<typeof SchwabProvider>;
+    Object.assign(provider, { rateLimiter: { acquire: async () => {} }, auth: { getAccessToken: async () => "t" } });
+    // As Schwab answered on 2026-10-23 after the close.
+    const body = { IBM: { quote: { lastPrice: 253.0451, totalVolume: 1 }, regular: { regularMarketLastPrice: 253.56 } }, ADC: { quote: { lastPrice: 67.23, totalVolume: 1 } } };
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify(body)));
+    const quotes = await provider.getQuotes(["IBM", "ADC"]);
+    expect(quotes.get("IBM")).toMatchObject({ lastPrice: 253.0451, regularPrice: 253.56 });
+    expect(quotes.get("ADC")?.regularPrice).toBeUndefined();
+  });
+});

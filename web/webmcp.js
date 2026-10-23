@@ -446,7 +446,7 @@
       name: "list_revisit_queue",
       group: "read",
       description:
-        "Fires waiting for a decision, highest priority first. Each has the alert's current condition, the engine's verdict, a suggested new level when one has been proposed, and any change already queued against it. Use the ids with the revisit tools.",
+        "What is waiting for a decision, highest priority first. Each row has a reason: a new or accelerating fire (ran fast past its level), a reminder (dismissed, then kept going in the alert's direction), a drift (no fire for weeks because price went the other way; relevel or replace the alert), or an older fire still waiting. `why` says what put it there. Each also has the alert's current condition, a suggested new level when one has been proposed, and any change already queued against it. Use the ids with the revisit tools.",
       inputSchema: object({}),
       async run(api) {
         const d = await loadedDashboard(api);
@@ -457,6 +457,8 @@
             alertId: r.alertId,
             symbol: r.symbol,
             priority: r.priority,
+            reason: r.reason,
+            why: r.why,
             headline: r.headline,
             action: r.action,
             verdict: r.verdict,
@@ -679,18 +681,31 @@
       group: "write",
       ops: ["revisit.dismiss"],
       description:
-        "Queue taking one fire off the revisit queue. The alert is untouched: it keeps its level and keeps watching, and its next fire comes back as a new entry. The person is asked to approve.",
-      inputSchema: object({ revisitId: revisitIdProp }, ["revisitId"]),
+        "Queue taking one row off the revisit queue. The alert is untouched: it keeps its level and keeps watching, and its next fire comes back as a new entry. After `days` trading days the row comes back if price kept going past where it was dismissed (a drift: if it is still drifted). The person is asked to approve.",
+      inputSchema: object(
+        {
+          revisitId: revisitIdProp,
+          days: {
+            type: "integer",
+            minimum: 1,
+            maximum: 90,
+            description: "Trading days before it may come back, 1 to 90. Omit for the configured default (the dashboard's summary.dismissDays). There is no never: to stop it coming back, remove or change the alert.",
+          },
+        },
+        ["revisitId"]
+      ),
       async run(api, args, signal) {
         const r = await findRevisit(api, args.revisitId);
         if (!r) return refuse("No open queue entry has that id. It may already be closed; list_revisit_queue shows what is open.");
         if (pendingFor(api, "revisitId", r.id).length > 0) return refuse("A change is already queued for this entry.");
         return queue(api, "write", signal, {
-          op: { type: "revisit.dismiss", target: { revisitId: r.id, alertId: r.alertId }, params: {} },
+          op: { type: "revisit.dismiss", target: { revisitId: r.id, alertId: r.alertId }, params: args.days === undefined ? {} : { days: args.days } },
           symbol: r.symbol,
           alertId: r.alertId,
           revisitId: r.id,
-          summary: `${r.symbol}: dismiss the ${shortDate(r.triggeredAt)} fire${r.levelAtTrigger === null ? "" : ` at ${r.levelAtTrigger}`} from the queue`,
+          summary:
+            `${r.symbol}: dismiss the ${shortDate(r.triggeredAt)} ${r.reason === "drift" ? "drift" : "fire"}${r.levelAtTrigger === null ? "" : ` at ${r.levelAtTrigger}`} from the queue` +
+            (args.days === undefined ? "" : ` for ${args.days} days`),
         });
       },
     },

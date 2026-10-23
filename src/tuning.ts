@@ -11,6 +11,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { AnalysisParams, DEFAULT_ANALYSIS_PARAMS } from "./analysis.js";
+import type { QueueSettings } from "./alerts/queueRules.js";
 
 export interface TuningConfig {
   default?: Partial<AnalysisParams>;
@@ -30,6 +31,8 @@ export interface TuningConfig {
   ignoreSymbols?: string[];
   /** Browser dashboard (`dashboard --site/--publish`) options. */
   web?: WebConfig;
+  /** Thresholds for what the revisit queue raises and how long a dismissal waits. See queueRules.ts. */
+  revisitQueue?: Partial<QueueSettings>;
 }
 
 export interface WebConfig {

@@ -21,7 +21,6 @@ import { effectiveTrigger, type Alert, type AlertDirection, type CrossDirection 
 import { describeAlertCondition } from "./alerts/describe.js";
 import { entryDirection, reversalOf, tradingDaysAfter } from "./alerts/reversion.js";
 import {
-  explainPriority,
   type RevisitEntry,
   type RevisitFollowUp,
   type RevisitMa,
@@ -39,6 +38,7 @@ import {
   type TickerStory,
 } from "./narrative.js";
 import type { Quote } from "./providers/schwab.js";
+import { compareRanked, DEFAULT_QUEUE_SETTINGS, isFire, queueRank, type QueueRank, type QueueSettings } from "./alerts/queueRules.js";
 import { round } from "./round.js";
 import { mapExchange, tradingViewUrl } from "./tradingview.js";
 
@@ -50,6 +50,8 @@ export interface DashboardSummary {
   actionableRevisits: number;
   triggersInWindow: number;
   windowDays: number;
+  /** Trading days a dismissal waits by default before it may come back (queueRules.ts), for the page's Dismiss. */
+  dismissDays: number;
   positions: number;
   quotesUnavailable: number;
 }
@@ -84,7 +86,10 @@ export interface RevisitRow extends CrossingDetails {
   /** The alert that fired. The browser dashboard edits it from this row's details panel. */
   alertId: string;
   symbol: string;
+  /** The queue rules' rank (queueRules.ts). Always set since 2026-10-23. */
   priority: number | null;
+  /** Which kind of row: a new or accelerating fire, a reminder, a drift, or an older fire waiting. */
+  reason: QueueRank["reason"];
   /** Plain-English one-liner: "TGT crossed above 110 on volume and held". */
   headline: string;
   /** What it's waiting on, as a sentence. Null when nothing is pending. */
@@ -156,6 +161,8 @@ export interface TriggerRow extends CrossingDetails {
   appliedFrom: number | null;
   appliedTo: number | null;
   priority: number | null;
+  /** See RevisitRow.reason. */
+  reason: QueueRank["reason"];
   heldPosition: boolean;
   chartUrl: string;
   /** The alert's condition in words. */
@@ -323,6 +330,8 @@ export interface DashboardInputs {
   includeApproaching?: boolean;
   /** Symbols excluded from alerting (TuningConfig.ignoreSymbols). */
   ignoredSymbols?: Set<string>;
+  /** The queue's thresholds (TuningConfig.revisitQueue), for its order and reasons. */
+  queueSettings?: QueueSettings;
   /** Symbol to FMP exchange (exchangesFromProfiles), so chart links open the right listing. */
   exchanges?: Map<string, string>;
   /** Symbol to company name and sector, from the same profile cache. */
@@ -416,10 +425,15 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
   // alert behind it has since been cancelled.
   const alertsById = new Map(alerts.map((a) => [a.id, a]));
   const open = revisits.filter((e) => e.status === "open" && !isIgnored(e.symbol));
-  const revisitQueue: RevisitRow[] = [...open]
-    .sort((a, b) => (b.priority ?? -1) - (a.priority ?? -1))
+  // The order is the user's rules (queueRules.ts), computed here from what was
+  // recorded and the trading-day clock, not from the stored relevel score.
+  const settings = inputs.queueSettings ?? DEFAULT_QUEUE_SETTINGS;
+  const rankOf = (e: RevisitEntry) => queueRank(e, heldSymbols.has(e.symbol.toUpperCase()), now, settings);
+  const revisitQueue: RevisitRow[] = open
+    .map((entry) => ({ entry, rank: rankOf(entry) }))
+    .sort(compareRanked)
     .slice(0, queueLimit)
-    .map((e) => {
+    .map(({ entry: e, rank }) => {
       const alert = alertsById.get(e.alertId);
       const crossing = crossingDetails(e);
       const currentLevel = alert !== undefined && alert.kind === "static" ? alert.level : null;
@@ -427,7 +441,8 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       id: e.id,
       alertId: e.alertId,
       symbol: e.symbol,
-      priority: e.priority,
+      priority: rank.priority,
+      reason: rank.reason,
       headline: triggerHeadline(e, narrativeCtx),
       // Given the current level so it stops saying "still stands" about a
       // level that has since been edited.
@@ -446,7 +461,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       suggestedLevel: e.suggestedLevel,
       suggestionBasis: e.suggestionBasis,
       daysOpen: e.signals?.daysOpen ?? null,
-      why: e.signals ? explainPriority(e.signals) : null,
+      why: rank.why,
       heldPosition: heldSymbols.has(e.symbol.toUpperCase()),
       alertCondition: alert === undefined ? null : describeAlertCondition(alert),
       updates: revisitUpdates(e, alert, crossing.reversal),
@@ -571,16 +586,21 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
   }
 
   const windowStart = now.getTime() - windowDays * 86_400_000;
-  const inWindow = revisits.filter((e) => new Date(e.triggeredAt).getTime() >= windowStart);
+  // Drift entries are raised by the queue rules, not fired, so they don't count.
+  const inWindow = revisits.filter((e) => isFire(e) && new Date(e.triggeredAt).getTime() >= windowStart);
   const triggersInWindow = inWindow.length;
 
-  // Capped well above the queue limit: a consumer diffing for new firings
-  // only misses one if more than this many fire between two of its polls.
+  // Closed entries are capped well above the queue limit: a consumer diffing
+  // for new firings only misses one if more than this many fire between two of
+  // its polls. Open entries are never cut, because every queue row opens its
+  // details from this list; a busy day once pushed two-day-old open entries
+  // past the cap and their drawers said "Trigger not found".
+  let closedKept = 0;
   const recentTriggers: TriggerRow[] = revisits
     .filter((e) => !isIgnored(e.symbol))
     .filter((e) => e.status === "open" || new Date(e.triggeredAt).getTime() >= windowStart)
     .sort((a, b) => b.triggeredAt.localeCompare(a.triggeredAt))
-    .slice(0, RECENT_TRIGGER_CAP)
+    .filter((e) => e.status === "open" || closedKept++ < RECENT_TRIGGER_CAP)
     .map((e): TriggerRow => {
       const alert = alertsById.get(e.alertId);
       return {
@@ -597,7 +617,8 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
         resolvedAt: e.resolvedAt,
         appliedFrom: e.appliedFrom ?? null,
         appliedTo: e.appliedTo ?? null,
-        priority: e.priority,
+        priority: rankOf(e).priority,
+        reason: rankOf(e).reason,
         heldPosition: heldSymbols.has(e.symbol.toUpperCase()),
         chartUrl: chartUrl(e.symbol),
         condition: e.condition ?? (alert ? describeAlertCondition(alert) : null),
@@ -608,7 +629,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
         pctMovePastLevel: e.signals?.pctMovePastLevel ?? null,
         volumeRatio: e.signals?.volumeRatio ?? null,
         volumeTrendRatio: e.signals?.volumeTrendRatio ?? null,
-        why: e.signals ? explainPriority(e.signals) : null,
+        why: rankOf(e).why,
         suggestedLevel: e.suggestedLevel,
         suggestionBasis: e.suggestionBasis,
         watchingSince: e.watchingSince ?? null,
@@ -625,7 +646,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
     });
 
   const stories = buildStories(
-    revisits.filter((e) => !isIgnored(e.symbol)),
+    revisits.filter((e) => isFire(e) && !isIgnored(e.symbol)),
     narrativeCtx,
     { limit: inputs.storyLimit }
   );
@@ -653,6 +674,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       liveAlerts: live.length,
       symbolsWatched: new Set(live.map((a) => a.symbol)).size,
       openRevisits: open.length,
+      dismissDays: settings.dismissDays,
       actionableRevisits: open.filter((e) => e.suggestedLevel !== null).length,
       triggersInWindow,
       windowDays,

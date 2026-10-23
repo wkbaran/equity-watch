@@ -153,6 +153,15 @@ export function triggerHeadline(entry: RevisitEntry, ctx: NarrativeContext): str
     return `${subject} traded unusual volume`;
   }
 
+  // Raised by the queue rules (queueRules.ts), not fired: say what was noticed,
+  // in the numbers recorded when it was, so the line doesn't move with price.
+  if (entry.reason === "drift") {
+    const dir = entry.direction ?? "up";
+    const how = entry.drift ? `${pct(entry.drift.pct)} ${otherSide(dir)}` : otherSide(dir);
+    const quiet = entry.drift ? `, no fire since ${shortDate(entry.drift.quietSince)}` : "";
+    return `${subject} drifted ${how} its ${entry.levelAtTrigger ?? "alert"} level, which waits for a cross ${sideOf(dir)}${quiet}`;
+  }
+
   const session = entry.session ?? null;
   const sessionSuffix = session !== null && session !== "regular" ? `in ${describeSession(session)}` : null;
 
@@ -305,6 +314,9 @@ export function triggerAction(entry: RevisitEntry, currentLevel: number | null =
   }
   if (currentLevel !== null && entry.levelAtTrigger !== null && currentLevel !== entry.levelAtTrigger) {
     return null;
+  }
+  if (entry.reason === "drift") {
+    return "Relevel it nearer the price, the other way, or replace it with a trailing alert.";
   }
   if (entry.suggestedLevel === null) {
     return entry.levelAtTrigger === null ? null : `Level ${entry.levelAtTrigger} still stands.`;
