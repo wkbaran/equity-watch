@@ -392,9 +392,18 @@ Whichever way it arrives:
 ## When something breaks
 
 - **Everything that needs a quote exits with code 3, or the page says "checks paused,
-  login expired".** The Schwab login lapsed (they last 7 days). On the machine that
-  runs the checks: `node dist/cli.js schwab-login`. Queued edits wait and are applied
-  on the next run. Why it behaves this way:
+  login expired".** The Schwab login lapsed (they last 7 days). Log in again for the
+  machine that runs the checks, and only that one: a login elsewhere likely revokes it.
+  Run `node dist/cli.js schwab-login` there. If the checks run in Docker, run this from
+  your checkout instead, which uses the paste-back flow because the container has no
+  browser:
+
+  ```bash
+  # Add -H ssh://user@host after docker, or set DOCKER_HOST, if the container runs on another machine
+  docker compose -f docker/docker-compose.yaml run --rm cli schwab-login
+  ```
+
+  Queued edits wait and are applied on the next run. Why it behaves this way:
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#when-the-schwab-login-expires).
 - **A code change didn't show up on the page.** Nothing rebuilds `dist/` for you. Run
   `npm run build`, and the next check publishes. A field that arrives empty is usually
