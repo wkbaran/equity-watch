@@ -41,6 +41,7 @@ import type { Quote } from "./providers/schwab.js";
 import { compareRanked, DEFAULT_QUEUE_SETTINGS, isFire, queueRank, type QueueRank, type QueueSettings } from "./alerts/queueRules.js";
 import { round } from "./round.js";
 import { mapExchange, tradingViewUrl } from "./tradingview.js";
+import { describeSpreadFire, fireAtLevel, spreadLabel, type SpreadStopsStore } from "./spreads/spreadStops.js";
 
 export interface DashboardSummary {
   liveAlerts: number;
@@ -291,6 +292,55 @@ export interface Dashboard {
    * company's sector does not move with the quote.
    */
   profiles: Record<string, CompanyInfo>;
+  /** Stops set by spread-book, or null when there are none. */
+  spreadStops: SpreadStopsSection | null;
+}
+
+/**
+ * One spread stop set by spread-book (src/spreads/). Read-only on the page:
+ * spread-book owns it, and the next sync would undo an edit.
+ *
+ * Public-safe by the size-and-value rule: it names the spread (being held is
+ * not private) and per-share prices, never the contract count or the credit.
+ */
+export interface SpreadStopRow {
+  key: string;
+  symbol: string;
+  /** "CRM 260/270 call". */
+  label: string;
+  expiration: string;
+  direction: CrossDirection;
+  level: number;
+  /** The spread's price at its stop, per share. */
+  stopDebit: number;
+  shortDeltaAtLevel: number | null;
+  /** The snapshot the level came from. */
+  levelAsOf: string;
+  /** Live price, and how far it is from the level toward the stop (both volatile). */
+  price: number | null;
+  distancePct: number | null;
+  /** The fire at this level, if it has fired. */
+  fired: { id: string; at: string; price: number } | null;
+  chartUrl: string;
+}
+
+export interface SpreadFireRow {
+  id: string;
+  key: string;
+  symbol: string;
+  label: string;
+  at: string;
+  level: number;
+  headline: string;
+  chartUrl: string;
+}
+
+export interface SpreadStopsSection {
+  /** generatedAt of spread-book's last synced file; the page says how old the levels are. */
+  syncedFrom: string | null;
+  rows: SpreadStopRow[];
+  /** Fires in the trigger window, newest first, for the page's notifications. */
+  fires: SpreadFireRow[];
 }
 
 export interface CompanyInfo {
@@ -340,6 +390,48 @@ export interface DashboardInputs {
   betas?: Map<string, number | null>;
   /** Symbol to ATR(14) and the high close since purchase, for the holdings rows. */
   daily?: Map<string, HoldingDailyStats>;
+  /** spread-book's stops (src/spreads/), when there is a store. */
+  spreadStops?: SpreadStopsStore;
+}
+
+/** The spread-stops section: live stops (fired ones first, then by name), and recent fires. */
+export function spreadStopsSection(
+  store: SpreadStopsStore | undefined,
+  quotes: Map<string, Quote>,
+  now: Date,
+  windowDays: number,
+  chartUrl: (symbol: string) => string
+): SpreadStopsSection | null {
+  if (store === undefined || store.stops.length === 0) return null;
+  const rows: SpreadStopRow[] = store.stops
+    .filter((s) => s.status === "live")
+    .map((s) => {
+      const quote = quotes.get(s.symbol);
+      const price = quote === undefined ? null : quote.lastPrice;
+      // Positive while price is on the safe side, as a share of price: how far it has to go.
+      const distancePct = price === null || !(price > 0) ? null : round(((s.direction === "down" ? price - s.level : s.level - price) / price) * 100, 1);
+      const fire = fireAtLevel(s);
+      return {
+        key: s.key, symbol: s.symbol, label: spreadLabel(s), expiration: s.spread.expiration, direction: s.direction, level: s.level,
+        stopDebit: s.spread.stopDebit, shortDeltaAtLevel: s.spread.shortDeltaAtLevel, levelAsOf: s.levelAsOf, price, distancePct,
+        fired: fire === null ? null : { id: fire.id, at: fire.at, price: fire.price }, chartUrl: chartUrl(s.symbol),
+      };
+    })
+    // Never by distance: the order would follow the quote, and a quote-less build
+    // must fingerprint the same as the real one (VOLATILE_KEYS). The page sorts by distance.
+    .sort((a, b) => ((a.fired !== null) !== (b.fired !== null) ? (a.fired !== null ? -1 : 1) : a.label.localeCompare(b.label) || a.key.localeCompare(b.key)));
+  const since = now.getTime() - windowDays * 86_400_000;
+  const fires: SpreadFireRow[] = store.stops
+    .flatMap((s) =>
+      s.fires
+        .filter((f) => Date.parse(f.at) >= since)
+        .map((f) => ({
+          id: f.id, key: s.key, symbol: s.symbol, label: spreadLabel(s), at: f.at, level: f.level,
+          headline: describeSpreadFire(s, f), chartUrl: chartUrl(s.symbol),
+        }))
+    )
+    .sort((a, b) => b.at.localeCompare(a.at));
+  return { syncedFrom: store.syncedFrom, rows, fires };
 }
 
 const RECENT_TRIGGER_CAP = 100;
@@ -691,6 +783,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
     quietTotal: quietTotal.count,
     tradingViewPrefixes,
     profiles,
+    spreadStops: spreadStopsSection(inputs.spreadStops, quotes, now, windowDays, chartUrl),
   };
 }
 
@@ -717,6 +810,19 @@ export function renderDashboard(d: Dashboard): string {
   );
   if (s.quotesUnavailable > 0) {
     lines.push(`(${s.quotesUnavailable} alert(s) had no quote available this run)`);
+  }
+
+  if (d.spreadStops !== null && d.spreadStops.rows.length > 0) {
+    // First: a spread at its stop is the one thing here that is about money already at risk.
+    lines.push("");
+    lines.push(`SPREAD STOPS (${d.spreadStops.rows.length}, levels from spread-book's ${d.spreadStops.syncedFrom ?? "?"} snapshot)`);
+    lines.push("-".repeat(72));
+    for (const r of d.spreadStops.rows) {
+      const dist = r.distancePct === null ? "     -" : `${r.distancePct >= 0 ? "+" : ""}${r.distancePct.toFixed(1)}%`;
+      const arrow = r.direction === "down" ? "\u2193" : "\u2191";
+      const fired = r.fired === null ? "" : `  FIRED at ${r.fired.price}`;
+      lines.push(`${dist.padStart(8)}  ${r.label.padEnd(24)} ${r.price ?? "-"} ${arrow} ${r.level}  (spread $${r.stopDebit.toFixed(2)})${fired}`);
+    }
   }
 
   lines.push("");

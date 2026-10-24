@@ -155,6 +155,13 @@ if ($code -eq $EXIT_LOGIN_EXPIRED) {
     Write-Log "Continuing with the check anyway."
 }
 
+# spread-book's stop levels (src/spreads/). Reads a file and fetches nothing. Without
+# spread-book's shared file (SPREAD_ALERTS_FILE, or /shared on the Docker host) it says so and changes nothing.
+$code = Invoke-Logged "spreads sync" "node" @($cli, "spreads", "sync")
+if ($code -ne 0) {
+    Write-Log "Continuing with the check anyway."
+}
+
 # Give any position that has no alert a starting one, so a lot added from the
 # dashboard, an import, or the CLI is all handled the same way. It costs nothing
 # when every position is already covered: it exits before fetching any quote.
@@ -175,6 +182,16 @@ if (-not $loginExpired) {
         $loginExpired = $true
     } elseif ($code -ne 0) {
         Stop-Run $code
+    }
+}
+
+# Spread stops, after the main book. A failure here doesn't stop the publish.
+if (-not $loginExpired) {
+    $code = Invoke-Logged "spreads check" "node" @($cli, "spreads", "check")
+    if ($code -eq $EXIT_LOGIN_EXPIRED) {
+        $loginExpired = $true
+    } elseif ($code -ne 0) {
+        Write-Log "Publishing anyway."
     }
 }
 

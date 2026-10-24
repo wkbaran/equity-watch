@@ -11,6 +11,8 @@ history/
 /alerts.json
 /revisits.json
 /holdings.json
+# Spread stops set by spread-book (src/spreads/): positions, so as private as holdings.
+/spread-stops.json
 # Results of changes applied from the dashboard; also what makes a redelivered op a no-op.
 /ops.log.jsonl
 

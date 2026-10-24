@@ -1237,6 +1237,34 @@ Also: a service's own `volumes:` **replaces** the one it merges from `x-common`
 them silently drops the state mount. And `run-beta.sh` must not touch
 `/tmp/last-run` or ping `HEALTHCHECK_URL`: those are the 15-minute check's.
 
+## Spread stops live outside alerts.json on purpose, and absence means "closed"
+
+`src/spreads/` watches stop levels that spread-book (another container on nuc1)
+writes to `/shared/spread-alerts.json`. Things that look simplifiable and aren't:
+
+- **Don't move them into `alerts.json` as another kind.** The one-alert-per-symbol+side
+  rule, `closeRevisitsForSymbol`, `holdings cover` and the edit ops would each misfire
+  on them, and spread-book re-levels every stop twice a day. They are judged by lending
+  each one to `checkAlerts` as a throwaway static alert (`spreadCheck.ts`), so the
+  crossing rules are the same code; only the watermark and side are copied back, and
+  the engine's revisit entries are discarded.
+- **The file is desired state, so a missing key cancels.** That is why every guard in
+  `parseSpreadFile` refuses the whole file rather than skipping a bad entry (a skipped
+  entry would be cancelled), why `complete: false` and an older `generatedAt` change
+  nothing, and why `unpriced` keys are kept. Don't "tolerate" a partly bad file.
+- **Once per level.** A stop that fired at its current level never fires there again
+  (`fireAtLevel`); a new level from the next sync re-arms it. The static engine's own
+  "fires again on a genuine re-cross" is deliberately overridden here.
+- **The section's row order must not follow the quote.** `spreadStopsSection` sorts by
+  fired, then name; the page sorts by distance. Sorting by distance in the document
+  would change the fingerprint on every check (see the fingerprint section above).
+  `price` and `distancePct` are volatile keys already.
+- **No contract count or credit in it.** Size and value are private; the stored and
+  published records carry per-share prices only. Tests in `tests/spreads.test.ts` and
+  `playwright/tests/spreadStops.e2e.ts` check both.
+- `spreads sync` reads a file and fetches nothing, so the run scripts call it even when
+  the Schwab login has expired.
+
 ## A zero volume baseline must mean "cannot evaluate", never "no threshold"
 
 `requiredVolume` returns `null` for a ratio condition with a zero or missing

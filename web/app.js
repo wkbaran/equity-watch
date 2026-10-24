@@ -19,6 +19,8 @@
 
   const POLL_MS = 60_000;
   const SEEN_KEY = "equity-watch.seenTriggers";
+  // Spread-stop fires (src/spreads/) are announced like triggers, tracked apart from them.
+  const SEEN_SPREADS_KEY = "equity-watch.seenSpreadFires";
   const THEME_KEY = "equity-watch.theme";
   // Keys from before the project was renamed, read as a fallback so a browser
   // keeps its seen triggers and theme. index.html reads the old theme key too.
@@ -3113,6 +3115,51 @@
 
   const ARROW = { below: "↓", above: "↑" };
 
+  // ---- spread stops ---------------------------------------------------------
+  //
+  // Set by spread-book through the shared directory and read-only here: the
+  // next sync would undo an edit. Fired stops first, then nearest their level.
+
+  /** spread-book publishes twice a trading day; older than this and its pipeline has stopped. */
+  const SPREAD_LEVELS_STALE_HOURS = 30;
+
+  function renderSpreadStops(section) {
+    const rows = section?.rows ?? [];
+    $("spreads-section").hidden = rows.length === 0;
+    if (rows.length === 0) return;
+    $("spreads-count").textContent = String(rows.length);
+    const asOf = section.syncedFrom === null ? null : new Date(section.syncedFrom);
+    const stale = asOf !== null && Date.now() - asOf.getTime() > SPREAD_LEVELS_STALE_HOURS * 3_600_000;
+    $("spreads-note").textContent =
+      (asOf === null ? "" : `Levels from spread-book's snapshot of ${when(section.syncedFrom)}${stale ? " — stale: spread-book hasn't sent new levels since" : ""}. `) +
+      "Each is the stock price at which that spread's loss would reach its stop. The stock price stands in for the spread's: check the spread's own price before acting.";
+    $("spreads-note").classList.toggle("warn", stale);
+    const sorted = [...rows].sort(
+      (a, b) => (a.fired !== null) !== (b.fired !== null) ? (a.fired !== null ? -1 : 1) : (a.distancePct ?? Infinity) - (b.distancePct ?? Infinity)
+    );
+    $("spreads").replaceChildren(
+      ...sorted.map((r) => {
+        const way = r.direction === "down" ? "below" : "above";
+        const dist = r.distancePct === null ? "–" : r.distancePct <= 0 ? "past" : `${r.distancePct.toFixed(1)}%`;
+        const delta = r.shortDeltaAtLevel === null ? "" : `, short Δ ${r.shortDeltaAtLevel.toFixed(2)}`;
+        return h(
+          "div",
+          { class: `trigger-row${r.fired !== null && freshSpreadIds.has(r.fired.id) ? " new" : ""}` },
+          h("span", { class: "when", text: dist, title: "How far the stock is from the stop level" }),
+          h(
+            "span",
+            {},
+            symbolLink(r.symbol, r.chartUrl),
+            ` ${r.label.slice(r.symbol.length + 1)}, expires ${r.expiration}: stop level ${way} ${r.level} (spread $${r.stopDebit.toFixed(2)}${delta})`,
+            r.price === null ? "" : `. Now ${r.price}.`,
+            r.fired === null ? "" : ` Fired at ${r.fired.price}, ${when(r.fired.at)}.`
+          ),
+          h("span", { class: "status", text: r.fired === null ? "watching" : "at stop" })
+        );
+      })
+    );
+  }
+
   function renderQuiet(notes, total) {
     $("quiet-section").hidden = notes.length === 0;
     $("quiet-summary").textContent = `${total} watched a while with nothing since${total > notes.length ? ` (showing ${notes.length})` : ""}`;
@@ -3233,6 +3280,7 @@
     renderTiles(d.summary, holdingRows() !== null);
     renderStrip(d);
     renderQueue(d.revisitQueue);
+    renderSpreadStops(d.spreadStops);
     renderTriggers(d.recentTriggers ?? [], d.summary.windowDays);
     renderApproaching(d.approaching ?? [], d.approachingTotal ?? 0);
     renderQuiet(d.quietWatches, d.quietTotal);
@@ -4028,9 +4076,10 @@
 
   async function systemNotify(t) {
     if (!notificationsSupported() || Notification.permission !== "granted") return;
-    const title = `${t.symbol} fired`;
+    const title = t.title ?? `${t.symbol} fired`;
     // The service worker opens this hash when the notification is clicked.
-    const options = { body: t.headline, tag: t.id, data: { hash: triggerHash(t.id) } };
+    const hash = t.hash ?? triggerHash(t.id);
+    const options = { body: t.headline, tag: t.id, data: { hash } };
     try {
       // Android Chrome only allows notifications through a service worker.
       if (swRegistration) {
@@ -4038,7 +4087,7 @@
       } else {
         new Notification(title, options).onclick = () => {
           window.focus();
-          location.hash = triggerHash(t.id);
+          location.hash = hash;
         };
       }
     } catch {
@@ -4052,7 +4101,7 @@
       { class: "toast", role: "status" },
       h(
         "div",
-        { class: t.id ? "t-body" : null, onclick: t.id ? () => (location.hash = triggerHash(t.id)) : null },
+        { class: t.id ? "t-body" : null, onclick: t.id ? () => (location.hash = t.hash ?? triggerHash(t.id)) : null },
         // The "+N more" toast reuses the symbol slot for a count, which isn't a ticker.
         t.id ? symbolLink(t.symbol, t.chartUrl) : h("span", { class: "t-sym", text: t.symbol }),
         " ",
@@ -4083,6 +4132,30 @@
   // ---- polling --------------------------------------------------------------
 
   let seen = loadSeen();
+  let seenSpreads = (() => {
+    try {
+      const raw = storageGet(SEEN_SPREADS_KEY);
+      return raw === null ? null : new Set(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  })();
+  let freshSpreadIds = new Set();
+
+  /** New spread-stop fires, announced as toasts and system notifications like triggers. */
+  function announceSpreadFires(fires) {
+    const ids = fires.map((f) => f.id);
+    if (seenSpreads === null) {
+      // First visit on this browser: what is already there is history, not news.
+      seenSpreads = new Set(ids);
+    } else {
+      const fresh = fires.filter((f) => !seenSpreads.has(f.id)).reverse();
+      freshSpreadIds = new Set([...freshSpreadIds, ...fresh.map((f) => f.id)].filter((id) => ids.includes(id)));
+      announce(fresh.map((f) => ({ id: f.id, symbol: f.symbol, chartUrl: f.chartUrl, headline: f.headline, heldPosition: false, title: `${f.label} at its stop`, hash: "#/" })));
+      seenSpreads = new Set(ids);
+    }
+    storageSet(SEEN_SPREADS_KEY, JSON.stringify([...seenSpreads]));
+  }
 
   async function poll() {
     let d;
@@ -4111,6 +4184,7 @@
       seen = new Set(ids);
     }
     saveSeen(seen);
+    announceSpreadFires(d.spreadStops?.fires ?? []);
     render(d);
     resolvePending(d.opResults, d.opsProcessedThrough);
     // Re-read on every poll: the vault is republished alongside the results, and prices move.

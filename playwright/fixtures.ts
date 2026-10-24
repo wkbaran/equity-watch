@@ -9,6 +9,7 @@ import type { MaAlert, StaticAlert, TrailingAlert, VolumeAlert } from "../src/al
 import { scoreRevisit, type RevisitEntry } from "../src/alerts/revisit.js";
 import type { CompanyInfo } from "../src/dashboard.js";
 import type { HoldingsStore } from "../src/holdings/models.js";
+import type { SpreadStopsStore } from "../src/spreads/spreadStops.js";
 
 /** The fake ops endpoint accepts exactly this bearer token. */
 export const OPS_TOKEN = "x".repeat(32);
@@ -208,3 +209,48 @@ export const FIXTURE_PROFILES = new Map<string, CompanyInfo>([
   ["SPY", { name: "SPDR S&P 500 ETF Trust", sector: null, industry: null }],
   ["NVDA", { name: "NVIDIA Corporation", sector: "Technology", industry: "Semiconductors" }],
 ]);
+
+/**
+ * Two spread stops from spread-book (src/spreads/): an NVDA put spread whose
+ * stock has fallen through its stop (fired ten minutes ago), and an MSFT call
+ * spread still a little under its level.
+ */
+export const SPREAD_FIRE_ID = "sf0000n1";
+export const FIXTURE_SPREAD_STOPS: SpreadStopsStore = {
+  schema: "equity-watch/spread-stops@1",
+  syncedFrom: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+  stops: [
+    {
+      key: "NVDA Nov 27th 175/180 Bull Put Spread|2026-11-27|175/180#1",
+      symbol: "NVDA",
+      direction: "down",
+      level: 182.5,
+      levelAsOf: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+      spread: {
+        name: "NVDA Nov 27th 175/180 Bull Put Spread", kind: "put", expiration: "2026-11-27",
+        short: { strike: 180, type: "P" }, long: { strike: 175, type: "P" }, stopDebit: 1.86, shortDeltaAtLevel: 0.42,
+      },
+      status: "live",
+      createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+      cancelledAt: null,
+      lastKnownSide: "below",
+      fires: [{ id: SPREAD_FIRE_ID, at: new Date(Date.now() - 10 * 60_000).toISOString(), price: 181.9, level: 182.5, session: "regular" }],
+    },
+    {
+      key: "MSFT Nov 20th 440/445 Bear Call Spread|2026-11-20|440/445#1",
+      symbol: "MSFT",
+      direction: "up",
+      level: 431.2,
+      levelAsOf: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+      spread: {
+        name: "MSFT Nov 20th 440/445 Bear Call Spread", kind: "call", expiration: "2026-11-20",
+        short: { strike: 440, type: "C" }, long: { strike: 445, type: "C" }, stopDebit: 1.71, shortDeltaAtLevel: 0.38,
+      },
+      status: "live",
+      createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+      cancelledAt: null,
+      lastKnownSide: "below",
+      fires: [],
+    },
+  ],
+};

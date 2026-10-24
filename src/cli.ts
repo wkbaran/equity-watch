@@ -93,6 +93,16 @@ import type { PriceDataProvider } from "./providers/types.js";
 import { DailyBudget } from "./profiles/budget.js";
 import { companyInfoFromProfiles, loadCachedProfile, listCachedProfiles, profileNeedsFetch, saveCachedProfile } from "./profiles/store.js";
 import { exchangesFromProfiles } from "./tradingview.js";
+import { checkSpreadStops } from "./spreads/spreadCheck.js";
+import {
+  describeSpreadFire,
+  fireAtLevel,
+  loadSpreadStops,
+  readSpreadFile,
+  saveSpreadStops,
+  spreadLabel,
+  syncSpreadStops,
+} from "./spreads/spreadStops.js";
 import { gatherKnownSymbols } from "./profiles/universe.js";
 import { ignoredSymbols, isIgnored, loadTuningConfig, resolveParamsForSymbol, type TuningConfig } from "./tuning.js";
 
@@ -1107,33 +1117,43 @@ interface AlertCheckOpts extends AlertCommonOpts {
   profileCacheDir: string;
 }
 
+/**
+ * The session to check in, established before spending any quote requests:
+ * outside market hours the quotes are stale and a "trigger" would just be
+ * yesterday's close re-crossing a level. `skip` when this isn't a session to
+ * poll in (and says so). Shared by `alert check` and `spreads check`.
+ */
+async function pollSession(
+  opts: CommonOpts & { regularOnly?: boolean; ignoreHours?: boolean },
+  now: Date
+): Promise<{ skip: boolean; session: Session | null }> {
+  const allowed = opts.regularOnly ? REGULAR_SESSIONS : EXTENDED_SESSIONS;
+  if (opts.ignoreHours) return { skip: false, session: null };
+  try {
+    const hours = await getMarketHoursCached(opts, marketDate(now));
+    const session = sessionAt(hours, now);
+    if (!isPollable(session, allowed)) {
+      const waitMs = msUntilNextSession(hours, now, allowed);
+      const next =
+        waitMs === null
+          ? "no further session today"
+          : `next session opens in ${Math.round(waitMs / 60_000)} min`;
+      console.log(`Skipped: ${describeSession(session)} (${next}). No quotes fetched.`);
+      return { skip: true, session };
+    }
+    return { skip: false, session };
+  } catch (err) {
+    // A hours lookup failure shouldn't take the poller down; fall through
+    // and check anyway, but say so rather than silently claiming a session.
+    console.error(`  ! market-hours lookup failed (${errorText(err)}); checking anyway.`);
+    return { skip: false, session: null };
+  }
+}
+
 async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
   const now = new Date();
-  const allowed = opts.regularOnly ? REGULAR_SESSIONS : EXTENDED_SESSIONS;
-
-  // Establish the session before spending any quote requests: outside market
-  // hours the quotes are stale and a "trigger" would just be yesterday's close
-  // re-crossing a level.
-  let session: Session | null = null;
-  if (!opts.ignoreHours) {
-    try {
-      const hours = await getMarketHoursCached(opts, marketDate(now));
-      session = sessionAt(hours, now);
-      if (!isPollable(session, allowed)) {
-        const waitMs = msUntilNextSession(hours, now, allowed);
-        const next =
-          waitMs === null
-            ? "no further session today"
-            : `next session opens in ${Math.round(waitMs / 60_000)} min`;
-        console.log(`Skipped: ${describeSession(session)} (${next}). No quotes fetched.`);
-        return;
-      }
-    } catch (err) {
-      // A hours lookup failure shouldn't take the poller down; fall through
-      // and check anyway, but say so rather than silently claiming a session.
-      console.error(`  ! market-hours lookup failed (${errorText(err)}); checking anyway.`);
-    }
-  }
+  const { skip, session } = await pollSession(opts, now);
+  if (skip) return;
 
   const alerts = loadAlerts(opts.alertsFile);
   const config = loadTuningConfig(opts.config);
@@ -1187,6 +1207,73 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
     console.log(`Wrote ${triggered.length} triggered alert(s) to ${outPath}`);
     const open = listRevisits(opts.revisitsFile).filter((e) => e.followUpOf === undefined).length;
     console.log(`Queue is now ${open} open — 'alert revisit list' to review.`);
+  }
+}
+
+interface SpreadsOpts extends CommonOpts {
+  spreadStopsFile: string;
+  file: string;
+  regularOnly?: boolean;
+  ignoreHours?: boolean;
+}
+
+/** `spreads sync`: reconcile the spread stops with spread-book's file. Fetches nothing. */
+function cmdSpreadsSync(opts: SpreadsOpts): void {
+  const read = readSpreadFile(opts.file);
+  if (!read.ok) {
+    console.log(`Spread stops unchanged: ${read.reason}.`);
+    return;
+  }
+  const store = loadSpreadStops(opts.spreadStopsFile);
+  // An older file than the last one synced (a republished old snapshot, or a
+  // restored backup) would move the levels back. Ignore it.
+  if (store.syncedFrom !== null && read.file.generatedAt < store.syncedFrom) {
+    console.log(`Spread stops unchanged: ${opts.file} is from ${read.file.generatedAt}, older than the last sync (${store.syncedFrom}).`);
+    return;
+  }
+  const r = syncSpreadStops(store, read.file, new Date());
+  saveSpreadStops(opts.spreadStopsFile, r.store);
+  for (const s of r.added) console.log(`  + ${spreadLabel(s)}: stop level ${s.level} (${s.direction === "down" ? "below" : "above"})`);
+  for (const { stop, from } of r.relevelled) console.log(`  ~ ${spreadLabel(stop)}: ${from} -> ${stop.level}`);
+  for (const s of r.cancelled) console.log(`  - ${spreadLabel(s)}: spread closed, stop cancelled`);
+  const live = r.store.stops.filter((s) => s.status === "live").length;
+  console.log(
+    `Spread stops: ${live} live from spread-book's ${read.file.generatedAt} snapshot; ` +
+      `${r.added.length} added, ${r.relevelled.length} moved, ${r.cancelled.length} cancelled, ${r.kept.length} kept without a level today.`
+  );
+}
+
+/** `spreads check`: judge the spread stops against live prices. */
+async function cmdSpreadsCheck(opts: SpreadsOpts): Promise<void> {
+  const store = loadSpreadStops(opts.spreadStopsFile);
+  if (!store.stops.some((s) => s.status === "live")) {
+    console.log("No live spread stops.");
+    return;
+  }
+  const now = new Date();
+  const { skip, session } = await pollSession(opts, now);
+  if (skip) return;
+  const r = await checkSpreadStops(store, buildMarketData(opts), session, now);
+  for (const warning of r.warnings) console.error(`  ! ${warning}`);
+  for (const { stop, fire } of r.fired) console.log(`  ! SPREAD STOP ${describeSpreadFire(stop, fire)}`);
+  saveSpreadStops(opts.spreadStopsFile, store);
+  console.log(`Checked ${r.checked} spread stop(s), ${r.fired.length} fired.`);
+}
+
+function cmdSpreadsList(opts: SpreadsOpts): void {
+  const store = loadSpreadStops(opts.spreadStopsFile);
+  const live = store.stops.filter((s) => s.status === "live");
+  if (live.length === 0) {
+    console.log("No live spread stops.");
+    return;
+  }
+  console.log(`Spread stops, levels from spread-book's ${store.syncedFrom ?? "?"} snapshot:`);
+  for (const s of live) {
+    const fire = fireAtLevel(s);
+    console.log(
+      `  ${spreadLabel(s).padEnd(24)} ${s.direction === "down" ? "below" : "above"} ${String(s.level).padEnd(9)} ` +
+        `spread $${s.spread.stopDebit.toFixed(2)}${fire === null ? "" : `  FIRED ${fire.at} at ${fire.price}`}`
+    );
   }
 }
 
@@ -1843,6 +1930,7 @@ function cmdHoldingsImport(opts: HoldingsImportOpts): void {
 
 interface DashboardOpts extends AlertCommonOpts {
   holdingsFile: string;
+  spreadStopsFile: string;
   config: string;
   out?: string;
   limit?: number;
@@ -1889,6 +1977,7 @@ function loadPublishState(): PublishState | null {
 
 async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   const alerts = loadAlerts(opts.alertsFile);
+  const spreadStops = loadSpreadStops(opts.spreadStopsFile);
   const revisits = loadRevisits(opts.revisitsFile);
   const holdings = loadHoldingsStore(opts.holdingsFile);
   const config = loadTuningConfig(opts.config);
@@ -1966,6 +2055,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
       profiles: companyInfoFromProfiles(cachedProfiles),
       betas,
       daily,
+      spreadStops,
     });
 
   // The fingerprint ignores price-derived fields, so it can be taken from a
@@ -1988,7 +2078,11 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
 
   // One quote request covers every live alert plus every position.
   const symbols = [
-    ...new Set([...alerts.filter((a) => a.status === "live").map((a) => a.symbol), ...holdings.lots.map((l) => l.symbol)]),
+    ...new Set([
+      ...alerts.filter((a) => a.status === "live").map((a) => a.symbol),
+      ...holdings.lots.map((l) => l.symbol),
+      ...spreadStops.stops.filter((s) => s.status === "live").map((s) => s.symbol),
+    ]),
   ];
   let quotes = new Map<string, Quote>();
   if (symbols.length > 0) {
@@ -2296,6 +2390,7 @@ function buildProgram(): Command {
   // Spread into .option(...) rather than applied as a decorator, so each flag
   // keeps its place in the command's --help rather than jumping to the front.
   const HOLDINGS_FILE_OPTION = ["--holdings-file <path>", "Path to the holdings JSON store", "holdings.json"] as const;
+  const SPREAD_STOPS_FILE_OPTION = ["--spread-stops-file <path>", "Path to the spread-stops JSON store (src/spreads/)", "spread-stops.json"] as const;
   const FMP_API_KEY_OPTION = ["--fmp-api-key <key>", "Financial Modeling Prep API key (or FMP_API_KEY in env/.env)"] as const;
   const PROFILE_CACHE_DIR_OPTION = [
     "--profile-cache-dir <path>",
@@ -2416,6 +2511,7 @@ function buildProgram(): Command {
     .description("One periodic JSON document: the revisit queue, what's close to firing, and holdings")
     .option("--out <path>", "Output JSON path (default: reports/dashboard_<timestamp>.json)")
     .option(...HOLDINGS_FILE_OPTION)
+    .option(...SPREAD_STOPS_FILE_OPTION)
     .option("--limit <n>", "Max rows in the revisit queue (default: all) and the approaching list (default: 25)", (v) => parseInt(v, 10))
     .option("--approaching", "Include the list of alerts closest to firing (off by default)")
     .option("--within-pct <n>", "With --approaching: only list alerts within this percent of firing", (v) => parseFloat(v))
@@ -2534,6 +2630,23 @@ function buildProgram(): Command {
     .option(...CACHE_DIR_OPTION)
     .option(...PROFILE_CACHE_DIR_OPTION)
     .action((opts: AlertCheckOpts) => cmdAlertCheck(opts));
+
+  const spreadsCmd = program.command("spreads").description("Stop alerts for option spreads, set by spread-book through the shared directory");
+  const withSpreadsCommon = (cmd: Command): Command =>
+    withCommon(cmd)
+      .option(...SPREAD_STOPS_FILE_OPTION)
+      .option("--file <path>", "spread-book's alerts file", process.env.SPREAD_ALERTS_FILE ?? "/shared/spread-alerts.json");
+  withSpreadsCommon(spreadsCmd.command("sync"))
+    .description("Add, move and cancel spread stops to match spread-book's file; fetches nothing, and changes nothing if the file is missing or incomplete")
+    .action((opts: SpreadsOpts) => cmdSpreadsSync(opts));
+  withSpreadsCommon(spreadsCmd.command("check"))
+    .description("Check live spread stops against live Schwab quotes (run after alert check)")
+    .option("--regular-only", "Only poll during the regular session (default also polls pre/post market)")
+    .option("--ignore-hours", "Poll regardless of market hours")
+    .action((opts: SpreadsOpts) => cmdSpreadsCheck(opts));
+  withSpreadsCommon(spreadsCmd.command("list"))
+    .description("List the live spread stops")
+    .action((opts: SpreadsOpts) => cmdSpreadsList(opts));
 
   const opsCmd = program.command("ops").description("Alert and holdings changes queued from the browser dashboard");
   const withOpsCommon = (cmd: Command): Command =>

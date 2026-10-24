@@ -29,7 +29,7 @@ import type { Quote } from "../src/providers/schwab.js";
 import { buildAlertRows } from "../src/web/alertsPage.js";
 import { SITE_ASSETS, siteDocument } from "../src/web/site.js";
 import { sealVault, vaultContents } from "../src/web/vault.js";
-import { FIXTURE_ALERTS, FIXTURE_PROFILES, FIXTURE_REVISITS, HOLDINGS, OPS_TOKEN, PRICES } from "./fixtures.js";
+import { FIXTURE_ALERTS, FIXTURE_PROFILES, FIXTURE_REVISITS, FIXTURE_SPREAD_STOPS, HOLDINGS, OPS_TOKEN, PRICES } from "./fixtures.js";
 
 const PORT = Number(process.env.PW_PORT ?? 4178);
 const WEB_DIR = fileURLToPath(new URL("../web/", import.meta.url));
@@ -86,6 +86,7 @@ function documents() {
     // exercised with an exchange prefix as well as without.
     exchanges: new Map([["MSFT", "NASDAQ Global Select"]]),
     betas: new Map([["AA", -0.4], ["TSLA", 2.1]]),
+    spreadStops: FIXTURE_SPREAD_STOPS,
     // AA's stop at 38 is 9 under its 47 high close, 1.8 ATRs of 5; TSLA has no stop.
     daily: new Map([
       ["AA", { atr: 5, highClose: 47 }],

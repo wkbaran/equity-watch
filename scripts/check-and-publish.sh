@@ -38,12 +38,17 @@ run_step() {
 
 # Dashboard changes first, so the check evaluates them. A failure doesn't stop the check.
 run_step "ops pull" cli ops pull || echo "ops pull failed; continuing with the check."
+# spread-book's stop levels (src/spreads/). Reads a file, fetches nothing, so it runs even with the login expired.
+cli spreads sync || echo "spreads sync failed; continuing with the check."
 if [ "$login_expired" -eq 0 ]; then
   # Cover any position that has no alert, whatever added it. Free when all are covered.
   run_step "holdings cover" cli holdings cover || echo "holdings cover failed; continuing with the check."
 fi
 if [ "$login_expired" -eq 0 ]; then
   run_step "alert check" cli alert check
+fi
+if [ "$login_expired" -eq 0 ]; then
+  run_step "spreads check" cli spreads check || echo "spreads check failed; publishing anyway."
 fi
 
 if [ "$login_expired" -eq 1 ]; then
