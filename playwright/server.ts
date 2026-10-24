@@ -29,7 +29,7 @@ import type { Quote } from "../src/providers/schwab.js";
 import { buildAlertRows } from "../src/web/alertsPage.js";
 import { SITE_ASSETS, siteDocument } from "../src/web/site.js";
 import { sealVault, vaultContents } from "../src/web/vault.js";
-import { FIXTURE_ALERTS, FIXTURE_PROFILES, FIXTURE_REVISITS, FIXTURE_SPREAD_STOPS, HOLDINGS, OPS_TOKEN, PRICES } from "./fixtures.js";
+import { FIXTURE_ALERTS, FIXTURE_PROFILES, FIXTURE_REVISITS, FIXTURE_SPREAD_STOPS, HOLDINGS, OPS_TOKEN, PRICES, SPREAD_BOOK_URL } from "./fixtures.js";
 
 const PORT = Number(process.env.PW_PORT ?? 4178);
 const WEB_DIR = fileURLToPath(new URL("../web/", import.meta.url));
@@ -95,7 +95,7 @@ function documents() {
   });
   const heldSymbols = new Set(HOLDINGS.lots.map((l) => l.symbol.toUpperCase()));
   return {
-    "dashboard.json": siteDocument(dashboard, { holdings: false, ops: true, vault: true }, {
+    "dashboard.json": siteDocument(dashboard, { holdings: false, ops: true, vault: true, spreadBookUrl: SPREAD_BOOK_URL }, {
       results: released && !suppressResults ? ops.map(resultFor) : [],
       processedThrough: released ? new Date().toISOString() : new Date(Date.now() - cadence.minutesAgo * 60_000).toISOString(),
       intervalMinutes: cadence.interval,
@@ -104,7 +104,7 @@ function documents() {
       maxStaleMinutes: cadence.maxStale,
     }),
     "alerts.json": { generatedAt: dashboard.generatedAt, alerts: buildAlertRows(FIXTURE_ALERTS, quotes, new Set(), new Map(), heldSymbols) },
-    "vault.json": sealVault(vaultContents(dashboard, HOLDINGS), OPS_TOKEN),
+    "vault.json": sealVault(vaultContents(dashboard, HOLDINGS, FIXTURE_SPREAD_STOPS), OPS_TOKEN),
   };
 }
 

@@ -53,6 +53,12 @@ export interface SpreadInfo {
   stopDebit: number;
   /** The short leg's delta at the stop level, by spread-book's model. */
   shortDeltaAtLevel: number | null;
+  /**
+   * The saved trade on OptionStrat. It shows the position, quantity included,
+   * so it is a size fact: it travels only in the sealed vault (vaultContents),
+   * never in dashboard.json. Null when spread-book had none.
+   */
+  optionStratUrl: string | null;
 }
 
 export interface SpreadAlertWanted {
@@ -125,6 +131,8 @@ export function saveSpreadStops(path: string, store: SpreadStopsStore): void {
 export type SpreadFileRead = { ok: true; file: SpreadAlertsFile } | { ok: false; reason: string };
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+/** Only OptionStrat's own short links: anything else is dropped, not followed. */
+const OPTIONSTRAT_URL = /^https:\/\/optionstrat\.com\/[A-Za-z0-9_-]+$/;
 const isStr = (v: unknown): v is string => typeof v === "string" && v.length > 0;
 
 function legOf(v: unknown): SpreadLeg | null {
@@ -150,6 +158,7 @@ function wantedOf(v: unknown): SpreadAlertWanted | null {
     spread: {
       name: s.name, kind: s.kind, expiration: s.expiration, short, long, stopDebit: s.stopDebit,
       shortDeltaAtLevel: isNum(s.shortDeltaAtLevel) ? s.shortDeltaAtLevel : null,
+      optionStratUrl: typeof s.optionStratUrl === "string" && OPTIONSTRAT_URL.test(s.optionStratUrl) ? s.optionStratUrl : null,
     },
   };
 }
@@ -269,6 +278,9 @@ export function newFire(price: number, level: number, at: string, session: Sessi
 
 /** The fire at the stop's current level, if it has fired there. */
 export const fireAtLevel = (s: SpreadStop): SpreadFire | null => [...s.fires].reverse().find((f) => f.level === s.level) ?? null;
+
+/** The key spread-book's report selects a spread by (?spread=): the stop's key without its episode. */
+export const reportKey = (s: Pick<SpreadStop, "key">): string => s.key.replace(/#\d+$/, "");
 
 /** "CRM 260/270 call", the way the page and the log name a spread. */
 export const spreadLabel = (s: SpreadStop): string => {

@@ -15,6 +15,7 @@ import {
   type SpreadStopsStore,
 } from "../src/spreads/spreadStops.js";
 import { dashboardFingerprint, siteDocument } from "../src/web/site.js";
+import { vaultContents } from "../src/web/vault.js";
 
 const NOW = new Date("2026-10-26T15:00:00.000Z"); // a Monday, 11:00 Eastern
 const later = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
@@ -41,6 +42,7 @@ const NVDA = {
     name: "NVDA Nov 27th 195/200 Bull Put Spread", kind: "put", expiration: "2026-11-27",
     short: { strike: 200, type: "P" }, long: { strike: 195, type: "P" },
     contracts: 1, credit: 1.0, stopDebit: 1.86, debitNow: 1.35, shortDeltaAtLevel: 0.42,
+    optionStratUrl: "https://optionstrat.com/AbC123xyz",
   },
 };
 
@@ -77,6 +79,12 @@ describe("parseSpreadFile", () => {
     expect(parseSpreadFile("{ half a fi")).toMatchObject({ ok: false });
     // One entry it can't read refuses the file: skipping it would cancel that spread's stop.
     expect(parseSpreadFile(fileText({ alerts: [CRM, { ...NVDA, direction: "sideways" }] }))).toMatchObject({ ok: false, reason: "alert 1 is not one this version understands" });
+  });
+
+  it("keeps an OptionStrat short link, and drops any other URL", () => {
+    expect(parsed().alerts.map((a) => a.spread.optionStratUrl)).toEqual([null, "https://optionstrat.com/AbC123xyz"]);
+    const odd = parsed({ alerts: [{ ...NVDA, spread: { ...NVDA.spread, optionStratUrl: "https://evil.example/x" } }] });
+    expect(odd.alerts[0].spread.optionStratUrl).toBeNull();
   });
 
   it("keeps nothing it doesn't need: no contract count, no credit", () => {
@@ -221,8 +229,13 @@ describe("the spread-stops section", () => {
     expect(dashboardFingerprint(siteDocument(dashboard(store, { CRM: 200, NVDA: 300 }), off))).toBe(dashboardFingerprint(siteDocument(dashboard(store), off)));
   });
 
-  it("publishes no contract count or credit", () => {
-    const json = JSON.stringify(siteDocument(dashboard(synced().store), { holdings: false }));
-    expect(json).not.toMatch(/contracts|credit/);
+  it("publishes no contract count, credit or OptionStrat link; the link goes in the sealed vault", () => {
+    const store = synced().store;
+    const json = JSON.stringify(siteDocument(dashboard(store), { holdings: false }));
+    expect(json).not.toMatch(/contracts|credit|optionstrat/i);
+    expect(dashboard(store).spreadStops!.rows.map((r) => r.reportKey)).toEqual([CRM.key.replace(/#1$/, ""), NVDA.key.replace(/#1$/, "")]);
+    const vault = vaultContents(dashboard(store), emptyHoldingsStore(), store);
+    expect(vault.spreadLinks).toEqual({ [NVDA.key]: "https://optionstrat.com/AbC123xyz" });
+    expect(vaultContents(dashboard(store), emptyHoldingsStore()).spreadLinks).toBeUndefined();
   });
 });

@@ -20,6 +20,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import type { Dashboard, HoldingRow } from "../dashboard.js";
 import type { TickerStory } from "../narrative.js";
 import type { HoldingsStore, Lot, Stop } from "../holdings/models.js";
+import type { SpreadStopsStore } from "../spreads/spreadStops.js";
 
 export const VAULT_FILE = "vault.json";
 
@@ -38,6 +39,12 @@ export interface VaultContents {
    * 2026-09-25.
    */
   stories: TickerStory[];
+  /**
+   * Each live spread stop's OptionStrat saved trade, by stop key. The trade shows
+   * the quantity, so the link is a size fact and travels only here. Absent in
+   * vaults sealed before 2026-10-24.
+   */
+  spreadLinks?: Record<string, string>;
 }
 
 export interface VaultDocument {
@@ -53,7 +60,14 @@ export function vaultKey(token: string): Buffer {
   return createHash("sha256").update(KEY_CONTEXT + token).digest();
 }
 
-export function vaultContents(dashboard: Pick<Dashboard, "holdings" | "stories">, store: HoldingsStore): VaultContents {
+export function vaultContents(
+  dashboard: Pick<Dashboard, "holdings" | "stories">,
+  store: HoldingsStore,
+  spreadStops?: SpreadStopsStore
+): VaultContents {
+  const links: [string, string][] = (spreadStops?.stops ?? []).flatMap((s) =>
+    s.status === "live" && s.spread.optionStratUrl ? [[s.key, s.spread.optionStratUrl] as [string, string]] : []
+  );
   return {
     holdings: dashboard.holdings,
     lots: store.lots.map(({ id, symbol, count, basisPerShare, purchaseDate, createdAt, account }) => ({
@@ -67,6 +81,7 @@ export function vaultContents(dashboard: Pick<Dashboard, "holdings" | "stories">
     })),
     stops: store.stops.map(({ id, symbol, count, stopPrice }) => ({ id, symbol, count, stopPrice })),
     stories: dashboard.stories,
+    ...(links.length > 0 ? { spreadLinks: Object.fromEntries(links) } : {}),
   };
 }
 

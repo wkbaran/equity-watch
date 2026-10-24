@@ -216,6 +216,8 @@ export const FIXTURE_PROFILES = new Map<string, CompanyInfo>([
  * spread still a little under its level.
  */
 export const SPREAD_FIRE_ID = "sf0000n1";
+/** Stands in for SPREAD_BOOK_URL. */
+export const SPREAD_BOOK_URL = "https://spread-book.example";
 export const FIXTURE_SPREAD_STOPS: SpreadStopsStore = {
   schema: "equity-watch/spread-stops@1",
   syncedFrom: new Date(Date.now() - 3 * 3_600_000).toISOString(),
@@ -229,6 +231,7 @@ export const FIXTURE_SPREAD_STOPS: SpreadStopsStore = {
       spread: {
         name: "NVDA Nov 27th 175/180 Bull Put Spread", kind: "put", expiration: "2026-11-27",
         short: { strike: 180, type: "P" }, long: { strike: 175, type: "P" }, stopDebit: 1.86, shortDeltaAtLevel: 0.42,
+        optionStratUrl: "https://optionstrat.com/FixtureNvda1",
       },
       status: "live",
       createdAt: new Date(Date.now() - 86_400_000).toISOString(),
@@ -245,6 +248,7 @@ export const FIXTURE_SPREAD_STOPS: SpreadStopsStore = {
       spread: {
         name: "MSFT Nov 20th 440/445 Bear Call Spread", kind: "call", expiration: "2026-11-20",
         short: { strike: 440, type: "C" }, long: { strike: 445, type: "C" }, stopDebit: 1.71, shortDeltaAtLevel: 0.38,
+        optionStratUrl: null,
       },
       status: "live",
       createdAt: new Date(Date.now() - 86_400_000).toISOString(),

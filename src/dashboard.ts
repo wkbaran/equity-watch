@@ -41,7 +41,7 @@ import type { Quote } from "./providers/schwab.js";
 import { compareRanked, DEFAULT_QUEUE_SETTINGS, isFire, queueRank, type QueueRank, type QueueSettings } from "./alerts/queueRules.js";
 import { round } from "./round.js";
 import { mapExchange, tradingViewUrl } from "./tradingview.js";
-import { describeSpreadFire, fireAtLevel, spreadLabel, type SpreadStopsStore } from "./spreads/spreadStops.js";
+import { describeSpreadFire, fireAtLevel, reportKey, spreadLabel, type SpreadStopsStore } from "./spreads/spreadStops.js";
 
 export interface DashboardSummary {
   liveAlerts: number;
@@ -305,6 +305,8 @@ export interface Dashboard {
  */
 export interface SpreadStopRow {
   key: string;
+  /** What spread-book's report selects the spread by (?spread=). */
+  reportKey: string;
   symbol: string;
   /** "CRM 260/270 call". */
   label: string;
@@ -412,7 +414,7 @@ export function spreadStopsSection(
       const distancePct = price === null || !(price > 0) ? null : round(((s.direction === "down" ? price - s.level : s.level - price) / price) * 100, 1);
       const fire = fireAtLevel(s);
       return {
-        key: s.key, symbol: s.symbol, label: spreadLabel(s), expiration: s.spread.expiration, direction: s.direction, level: s.level,
+        key: s.key, reportKey: reportKey(s), symbol: s.symbol, label: spreadLabel(s), expiration: s.spread.expiration, direction: s.direction, level: s.level,
         stopDebit: s.spread.stopDebit, shortDeltaAtLevel: s.spread.shortDeltaAtLevel, levelAsOf: s.levelAsOf, price, distancePct,
         fired: fire === null ? null : { id: fire.id, at: fire.at, price: fire.price }, chartUrl: chartUrl(s.symbol),
       };

@@ -36,7 +36,13 @@ each spread-book run.
 ## Where they show
 
 - The overview's **Spread stops** section: fired stops first, then the rest by distance
-  to their level, with the spread's price at the stop and the short leg's delta there.
+  to their level. Each row reads "CRM 260/270 call, expires 2026-11-20: (spread $3.39,
+  short Δ 0.44)" over "Stop above 252.91, Now 248.51", with an *at stop* tag once it has
+  fired, and two links, each in a tab of its own that later clicks reuse:
+  - **spread-book**: the report, opened on that spread (`?spread=`). Shown when
+    `SPREAD_BOOK_URL` is set in `.env` (the report's address; it stays out of the repo).
+  - **OptionStrat**: the saved trade, which shows the quantity. Its link travels only in
+    the encrypted vault, so the pill appears once the page is unlocked.
 - A new fire is a toast and, with the tab in the background, a system notification, like
   a trigger. Same limit: only while a tab is open.
 - `spreads list`, and the run log (`! SPREAD STOP ...`).
@@ -53,7 +59,8 @@ its revisits", `holdings cover`, and the dashboard's edit ops (spread-book would
 edit at the next sync). They are read-only on the page.
 
 The published `dashboard.json` names each spread and carries per-share prices, never the
-contract count or the credit: size and value stay private (CLAUDE.md).
+contract count, the credit or the OptionStrat link: size and value stay private
+(CLAUDE.md). The link goes in `vault.json` as `spreadLinks`, keyed by stop.
 
 ## Commands
 

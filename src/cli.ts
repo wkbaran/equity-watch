@@ -1989,10 +1989,12 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   // (src/web/vault.ts), so the vault needs both.
   const opsToken = process.env.OPS_TOKEN ?? "";
   const vaultToken = process.env.OPS_QUEUE_URL && opsToken.length >= 32 ? opsToken : null;
+  const spreadBookUrl = process.env.SPREAD_BOOK_URL?.trim().replace(/\/+$/, "");
   const siteOptions = {
     holdings: config?.web?.holdings === true,
     ops: Boolean(process.env.OPS_QUEUE_URL),
     vault: vaultToken !== null,
+    ...(spreadBookUrl && /^https:\/\//.test(spreadBookUrl) ? { spreadBookUrl } : {}),
   };
   // What the page needs to reason about changes it queued: the results of ops
   // already applied, the drain watermark, and how often drains actually happen.
@@ -2066,7 +2068,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     const fingerprint = siteFingerprint(
       siteDocument(quoteless, siteOptions, ops),
       buildAlertRows(alerts, new Map(), ignored, exchanges, heldSymbols),
-      vaultToken === null ? null : vaultContents(quoteless, holdings)
+      vaultToken === null ? null : vaultContents(quoteless, holdings, spreadStops)
     );
     const decision = shouldPublish(loadPublishState(), fingerprint, new Date(), opts.maxStaleMinutes, ops.nextCheckAt);
     if (!decision.publish) {
@@ -2113,7 +2115,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   // a publish while the holdings section is off.
   const siteDashboard = siteDocument(dashboard, siteOptions, ops);
   const alertRows = buildAlertRows(alerts, quotes, ignored, exchanges, heldSymbols);
-  const vault = vaultToken === null ? null : vaultContents(dashboard, holdings);
+  const vault = vaultToken === null ? null : vaultContents(dashboard, holdings, spreadStops);
   if (siteDir !== undefined) {
     writeSite(siteDir, dashboard, siteOptions, alertRows, ops, vault === null ? null : sealVault(vault, vaultToken!));
     console.log(`Wrote site to ${siteDir}/${siteOptions.holdings ? "" : " (holdings excluded; set web.holdings in the config to include)"}`);

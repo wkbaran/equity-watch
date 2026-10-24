@@ -226,6 +226,10 @@
   .tag.above-basis { color: var(--on-signal); background: var(--signal); }
   .tag.no-stop, .tag.stop-tight, .tag.stop-loose, .tag.past-trail { color: var(--signal); background: transparent; box-shadow: inset 0 0 0 1px var(--signal); }
   .tag.pending { color: var(--signal); background: var(--wash); }
+  .tag.link { color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); background: transparent; }
+  .tag.at-stop { color: var(--on-signal); background: var(--signal); }
+  .spread-row .spread-line { display: block; }
+  .spread-row .spread-tags { display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
   /* Why a queue row sits where it does. Accelerating is the loudest; a drift is the quietest. */
   .tag.reason.accelerating { color: var(--on-signal); background: var(--signal); }
   .tag.reason.new { color: var(--signal); background: transparent; box-shadow: inset 0 0 0 1px var(--signal); }

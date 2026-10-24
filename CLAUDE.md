@@ -1259,8 +1259,11 @@ writes to `/shared/spread-alerts.json`. Things that look simplifiable and aren't
   fired, then name; the page sorts by distance. Sorting by distance in the document
   would change the fingerprint on every check (see the fingerprint section above).
   `price` and `distancePct` are volatile keys already.
-- **No contract count or credit in it.** Size and value are private; the stored and
-  published records carry per-share prices only. Tests in `tests/spreads.test.ts` and
+- **No contract count, credit or OptionStrat link in it.** Size and value are private;
+  the published records carry per-share prices only. The OptionStrat link opens the saved
+  trade, quantity included, so it is a size fact: it rides in the vault (`spreadLinks` in
+  `vaultContents`), and the page shows its pill only when unlocked. `SPREAD_BOOK_URL` comes
+  from `.env` so the owner's hostname stays out of the repo. Tests in `tests/spreads.test.ts` and
   `playwright/tests/spreadStops.e2e.ts` check both.
 - `spreads sync` reads a file and fetches nothing, so the run scripts call it even when
   the Schwab login has expired.

@@ -39,6 +39,11 @@ export interface SiteOptions {
   ops?: boolean;
   /** Whether vault.json (holdings encrypted under the ops token) is published. Absent means no. */
   vault?: boolean;
+  /**
+   * spread-book's report, for the spread stops' links (SPREAD_BOOK_URL in .env).
+   * From the environment, not the repo: the hostname is the owner's. Absent, the link isn't shown.
+   */
+  spreadBookUrl?: string;
 }
 
 /**

@@ -393,6 +393,8 @@
     syncAgentTools();
     if (current) {
       renderTiles(current.summary, holdingRows() !== null);
+      // The OptionStrat pills come from the vault, so they appear and go with the unlock.
+      renderSpreadStops(current.spreadStops);
       // The queue rows carry an "edit pending" tag of their own.
       renderQueue(current.revisitQueue);
     }
@@ -3122,6 +3124,23 @@
 
   /** spread-book publishes twice a trading day; older than this and its pipeline has stopped. */
   const SPREAD_LEVELS_STALE_HOURS = 30;
+  // One tab each, reused across clicks, like the chart link's.
+  const SPREAD_BOOK_TARGET = "spread-book";
+  const OPTIONSTRAT_TARGET = "optionstrat";
+
+  /**
+   * The links on a spread-stop row. spread-book's report opens on that spread
+   * (?spread=). OptionStrat's saved trade shows the quantity, so its link comes
+   * only from the unlocked vault and the pill is absent on a locked page.
+   */
+  function spreadLinks(r) {
+    const book = current?.site?.spreadBookUrl;
+    const os = vaultData?.spreadLinks?.[r.key];
+    return [
+      book ? h("a", { class: "tag link", href: `${book}/?spread=${encodeURIComponent(r.reportKey)}`, target: SPREAD_BOOK_TARGET, text: "spread-book", title: "Open this spread in spread-book" }) : null,
+      os ? h("a", { class: "tag link", href: os, target: OPTIONSTRAT_TARGET, text: "OptionStrat", title: "Open the saved trade in OptionStrat" }) : null,
+    ].filter(Boolean);
+  }
 
   function renderSpreadStops(section) {
     const rows = section?.rows ?? [];
@@ -3142,19 +3161,28 @@
         const way = r.direction === "down" ? "below" : "above";
         const dist = r.distancePct === null ? "–" : r.distancePct <= 0 ? "past" : `${r.distancePct.toFixed(1)}%`;
         const delta = r.shortDeltaAtLevel === null ? "" : `, short Δ ${r.shortDeltaAtLevel.toFixed(2)}`;
+        // "CRM 260/270 call, expires 2026-11-20: (spread $3.39, short Δ 0.44)" over "Stop above 252.91, Now 248.51".
         return h(
           "div",
-          { class: `trigger-row${r.fired !== null && freshSpreadIds.has(r.fired.id) ? " new" : ""}` },
+          { class: `trigger-row spread-row${r.fired !== null && freshSpreadIds.has(r.fired.id) ? " new" : ""}` },
           h("span", { class: "when", text: dist, title: "How far the stock is from the stop level" }),
           h(
             "span",
             {},
-            symbolLink(r.symbol, r.chartUrl),
-            ` ${r.label.slice(r.symbol.length + 1)}, expires ${r.expiration}: stop level ${way} ${r.level} (spread $${r.stopDebit.toFixed(2)}${delta})`,
-            r.price === null ? "" : `. Now ${r.price}.`,
-            r.fired === null ? "" : ` Fired at ${r.fired.price}, ${when(r.fired.at)}.`
+            h(
+              "span",
+              { class: "spread-line" },
+              symbolLink(r.symbol, r.chartUrl),
+              ` ${r.label.slice(r.symbol.length + 1)}, expires ${r.expiration}: (spread $${r.stopDebit.toFixed(2)}${delta})`
+            ),
+            h(
+              "span",
+              { class: "spread-line" },
+              `Stop ${way} ${r.level}${r.price === null ? "" : `, Now ${r.price}`}`,
+              r.fired === null ? "" : `. Fired at ${r.fired.price}, ${when(r.fired.at)}.`
+            )
           ),
-          h("span", { class: "status", text: r.fired === null ? "watching" : "at stop" })
+          h("span", { class: "status spread-tags" }, ...(r.fired === null ? [] : [h("span", { class: "tag at-stop", text: "at stop" })]), ...spreadLinks(r))
         );
       })
     );
