@@ -207,6 +207,8 @@ describe("the spread-stops section", () => {
     expect(d.spreadStops!.fires).toHaveLength(1);
     expect(d.spreadStops!.fires[0].headline).toBe("NVDA 195/200 put: stock 202 crossed below its stop level 203.21 (spread about $1.86). Check the spread's price.");
     expect(renderDashboard(d)).toContain("SPREAD STOPS (2");
+    // An after-hours quote can carry four decimals; the row shows cents.
+    expect(dashboard(store, { CRM: 248.5149, NVDA: 211.1726 }).spreadStops!.rows.map((r) => r.price)).toEqual([211.17, 248.51]);
   });
 
   it("is null without stops, and fingerprints the same with and without quotes", () => {

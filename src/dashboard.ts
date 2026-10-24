@@ -407,7 +407,7 @@ export function spreadStopsSection(
     .filter((s) => s.status === "live")
     .map((s) => {
       const quote = quotes.get(s.symbol);
-      const price = quote === undefined ? null : quote.lastPrice;
+      const price = quote === undefined ? null : round(quote.lastPrice);
       // Positive while price is on the safe side, as a share of price: how far it has to go.
       const distancePct = price === null || !(price > 0) ? null : round(((s.direction === "down" ? price - s.level : s.level - price) / price) * 100, 1);
       const fire = fireAtLevel(s);
