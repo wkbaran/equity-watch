@@ -131,7 +131,7 @@ describe("tools cover the ops vocabulary", () => {
 
   it("every holdings-group tool is a holdings op or a vault read", () => {
     for (const t of webmcp.TOOLS.filter((x) => x.group === "holdings")) {
-      for (const op of t.ops ?? []) expect(/^(lot|stop|position|holdings)\./.test(op), t.name).toBe(true);
+      for (const op of t.ops ?? []) expect(/^(lot|stop|position|holdings|holding)\./.test(op), t.name).toBe(true);
     }
     for (const t of webmcp.TOOLS.filter((x) => x.group === "write")) {
       for (const op of t.ops ?? []) expect(/^(alert|revisit)\./.test(op), t.name).toBe(true);

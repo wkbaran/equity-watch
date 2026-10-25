@@ -216,6 +216,8 @@ export interface SaleInput {
   account?: string;
   /** Marks the sale as stop-triggered; the symbol's stops are copied onto it before a closing sale deletes them. */
   stopHit?: { atr: number | null };
+  /** The Webull order behind it, when the sync records it. */
+  orderId?: string;
 }
 
 /**
@@ -240,6 +242,19 @@ export type SaleResult = { ok: true; sale: Sale; closedPosition: boolean } | { o
  */
 export function sellShares(path: string, input: SaleInput, now: Date = new Date()): SaleResult {
   const store = loadHoldingsStore(path);
+  const result = sellFromStore(store, input, now);
+  if (result.ok) {
+    saveHoldingsStore(path, store);
+  }
+  return result;
+}
+
+/**
+ * sellShares on a store already in memory, which it changes in place and does
+ * not save. For callers that make several changes in one save (the Webull
+ * sync), so a crash can't leave half of them written.
+ */
+export function sellFromStore(store: HoldingsStore, input: SaleInput, now: Date = new Date()): SaleResult {
   const eligible = saleOrder(
     store.lots.filter(
       (l) =>
@@ -264,6 +279,7 @@ export function sellShares(path: string, input: SaleInput, now: Date = new Date(
     soldOn: input.soldOn ?? localDateString(now),
     recordedAt: now.toISOString(),
     lots: [],
+    ...(input.orderId !== undefined ? { orderId: input.orderId } : {}),
     ...(input.stopHit
       ? {
           stopHit: {
@@ -294,7 +310,6 @@ export function sellShares(path: string, input: SaleInput, now: Date = new Date(
   if (closedPosition) {
     closePosition(store, input.symbol);
   }
-  saveHoldingsStore(path, store);
   return { ok: true, sale, closedPosition };
 }
 

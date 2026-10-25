@@ -155,6 +155,14 @@ if ($code -eq $EXIT_LOGIN_EXPIRED) {
     Write-Log "Continuing with the check anyway."
 }
 
+# Webull's positions and cash into holdings.json (docs/HOLDINGS.md#syncing-from-webull),
+# after the page's queued Adopt/Link ops and before cover, so a new buy gets its
+# starting alert in the same run. Exits 0 when Webull isn't set up.
+$code = Invoke-Logged "holdings sync" "node" @($cli, "holdings", "sync")
+if ($code -ne 0) {
+    Write-Log "Continuing with the check anyway."
+}
+
 # spread-book's stop levels (src/spreads/). Reads a file and fetches nothing. Without
 # spread-book's shared file (SPREAD_ALERTS_FILE, or /shared on the Docker host) it says so and changes nothing.
 $code = Invoke-Logged "spreads sync" "node" @($cli, "spreads", "sync")

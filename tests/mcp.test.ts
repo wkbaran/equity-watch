@@ -28,7 +28,16 @@ let site: ChildProcess;
 let dir: string;
 
 beforeAll(async () => {
-  site = spawn("npx", ["tsx", "playwright/server.ts"], { env: { ...process.env, PW_PORT: String(PORT) }, stdio: "ignore" });
+  // A server already on the port is a leftover from an earlier run, serving that
+  // run's fixtures and op types; testing against it gives baffling failures.
+  const stale = await fetch(`${SITE}/index.html`).then(
+    () => true,
+    () => false
+  );
+  if (stale) throw new Error(`Something is already listening on port ${PORT}: a leftover playwright/server.ts? Stop it and rerun.`);
+  // Its own process group: `npx` starts the server as a child, and killing npx
+  // alone left that child holding the port after the run.
+  site = spawn("npx", ["tsx", "playwright/server.ts"], { env: { ...process.env, PW_PORT: String(PORT) }, stdio: "ignore", detached: true });
   for (let i = 0; i < 80; i++) {
     try {
       if ((await fetch(`${SITE}/index.html`)).ok) return;
@@ -41,7 +50,13 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(() => {
-  site?.kill();
+  if (site?.pid !== undefined) {
+    try {
+      process.kill(-site.pid);
+    } catch {
+      /* already gone */
+    }
+  }
 });
 
 beforeEach(async () => {
@@ -305,6 +320,10 @@ describe("every write tool, through the server", () => {
     { tool: "edit_stop", args: { stopId: "stop0001", stopPrice: 36, count: 5 }, op: { type: "stop.edit", target: { stopId: "stop0001" }, expect: { stopPrice: 38 }, params: { stopPrice: 36, count: 5 } } },
     { tool: "remove_stop", args: { stopId: "stop0001" }, op: { type: "stop.remove", target: { stopId: "stop0001" }, expect: { stopPrice: 38 } } },
     { tool: "cover_position", args: { symbol: "TSLA" }, op: { type: "holdings.cover", target: { symbol: "TSLA" } } },
+    { tool: "adopt_webull_position", args: { account: "margin", symbol: "newco" }, op: { type: "holding.adopt", target: { account: "margin", symbol: "NEWCO" }, expect: { count: 12 } } },
+    { tool: "link_webull_holding", args: { account: "margin", symbol: "AA" }, op: { type: "holding.link", target: { account: "margin", symbol: "AA" }, expect: { count: 5 } } },
+    { tool: "unlink_webull_holding", args: { account: "margin", symbol: "AA" }, op: { type: "holding.unlink", target: { account: "margin", symbol: "AA" } } },
+    { tool: "ignore_webull_position", args: { account: "margin", symbol: "NEWCO" }, op: { type: "holding.ignore", target: { account: "margin", symbol: "NEWCO" }, params: { ignore: true } } },
   ];
 
   it("sell_shares marks a stop-triggered sale, with the ATR given or the vault's", async () => {

@@ -29,6 +29,13 @@ export interface TuningConfig {
    * would mean anything for an instrument held deliberately flat.
    */
   ignoreSymbols?: string[];
+  /**
+   * Symbols counted as cash: where idle money is parked between trades (a
+   * T-bill ETF). Separate from ignoreSymbols, which means "no alerts". The two
+   * usually name the same thing but mean different things. See
+   * docs/WEBULL_SYNC_PLAN.md.
+   */
+  cashEquivalents?: string[];
   /** Browser dashboard (`dashboard --site/--publish`) options. */
   web?: WebConfig;
   /** Thresholds for what the revisit queue raises and how long a dismissal waits. See queueRules.ts. */
@@ -49,6 +56,11 @@ export interface WebConfig {
 /** Case-insensitive set of symbols the config says to leave alone. */
 export function ignoredSymbols(config: TuningConfig | null): Set<string> {
   return new Set((config?.ignoreSymbols ?? []).map((s) => s.trim().toUpperCase()).filter((s) => s.length > 0));
+}
+
+/** Upper-cased, in config order, for the cash + BIL figures. */
+export function cashEquivalentSymbols(config: TuningConfig | null): string[] {
+  return [...new Set((config?.cashEquivalents ?? []).map((s) => s.trim().toUpperCase()).filter((s) => s.length > 0))];
 }
 
 export function isIgnored(symbol: string, ignored: Set<string>): boolean {

@@ -98,7 +98,10 @@ one SQS message and returns `202`.
 
 The op types are `alert.add`, `alert.edit`, `alert.remove`, `revisit.relevel`,
 `revisit.apply`, `revisit.dismiss`, `lot.add`, `lot.edit`, `lot.remove`,
-`position.remove`, `stop.add`, `stop.edit`, `stop.remove`, and `holdings.cover`.
+`position.remove`, `stop.add`, `stop.edit`, `stop.remove`, `holdings.cover`, and the
+four that decide who keeps a holding (docs/HOLDINGS.md#syncing-from-webull):
+`holding.adopt`, `holding.link`, `holding.unlink` and `holding.ignore`, each aimed at
+`target.symbol` plus `target.account`.
 Adding another means updating the Lambda's inline `TARGET_KEY` and redeploying the
 stack, or the page gets "Unknown op type"; `tests/lambdaContract.test.ts` asserts the
 template and `OP_TYPES` agree.

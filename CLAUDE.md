@@ -1289,6 +1289,54 @@ measures real windows instead. Intraday baselines are matched by time of day
 because volume is U-shaped — MSFT's closing hour runs ~2.4x its early
 afternoon.
 
+## Webull's API (`src/providers/webull.ts`, `holdings sync`)
+
+Added 2026-10-25, phases 1 and 2 of `docs/WEBULL_SYNC_PLAN.md`, before there
+was an API key: the plan's "Assumptions to check" lists what no real response
+has confirmed yet.
+
+- **The four `holding.*` op types need the stack redeployed.** They are in the
+  Lambda's inline `TARGET_KEY`, and a stack that predates them answers the
+  page's Adopt, Link, Ignore and Unlink with "Unknown op type".
+- **A webull holding's lots belong to the sync.** `src/ops/holdings.ts` refuses
+  hand edits of them (`isWebullHolding`), and the page hides Edit and Sell. Don't
+  add a path that writes them except through `applySyncPlan` and the
+  `holding.*` ops.
+- **Orders are booked by id with their share count (`Holding.booked`), not by a
+  time cutoff.** Webull's history can lag, so an order can appear dated before
+  the last run. `linkedAt` only excludes fills that predate Adopt or Link.
+- **`applySyncPlan` applies each holding's changes on a copy** and keeps them
+  only if every one succeeds, so a sale the store refuses leaves that holding
+  untouched and becomes a flag. It uses `sellFromStore`, the in-memory core of
+  `sellShares`, so a sync is one save.
+- **The Webull state rides in the vault, and some of its keys are in
+  `VOLATILE_KEYS`** (`readAt`, `lastPrice`, `cashEquivalents`,
+  `cashEquivalentPrice`, `total`), or every run would publish. `total` is
+  generic; if another document field is ever named that, it goes volatile too.
+
+- **Two signature schemes exist; use the documented one.** Webull's docs
+  (authentication/signature.md) sign with HMAC-SHA1 over an MD5 body hash, and
+  give a worked example that `tests/webull.test.ts` reproduces. Their Python
+  SDK quietly signs with HMAC-SHA256 over a SHA-256 body hash, and says so in
+  `x-signature-algorithm`, so the server presumably honors that header. Only
+  the documented scheme has a test vector, so don't "match the SDK". If the
+  first real call gets a 401 for its signature, that is the place to look.
+- **`x-timestamp` has no milliseconds** (`2026-10-25T14:00:00Z`), and the
+  signed string is percent-encoded like Python's `quote(safe="")`, which also
+  encodes `!'()*`. `encodeURIComponent` alone doesn't.
+- **Every number arrives as a string**, and a zero `filled_price` means
+  nothing filled. The normalizers parse once; nothing downstream should see
+  Webull's raw fields.
+- **Account ids live in `.env` (`WEBULL_ACCOUNTS`), not
+  `analysis.config.json`**, which is committed. The labels are the ones lots
+  already carry (`margin`, `roth`).
+- **There is no read-only key.** The same key and token can trade. Keep the
+  client's methods to what the current phase needs.
+- **Unverified until the first real run** (no API key yet): that a position's
+  `cost_price` is per share (the reference's example suggests so), and how
+  Webull reports a Roth account's balance. Check both against the Webull app
+  on the first `holdings sync --dry-run`.
+
 ## Webull's holdings export has a wrong `Quantity` column
 
 Webull does not officially support this export and the 2026-09-11 files prove

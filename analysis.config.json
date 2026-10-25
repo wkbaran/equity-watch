@@ -1,3 +1,4 @@
 {
-  "ignoreSymbols": ["BIL"]
+  "ignoreSymbols": ["BIL"],
+  "cashEquivalents": ["BIL"]
 }

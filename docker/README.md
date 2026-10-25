@@ -71,6 +71,14 @@ them up on its next run. **Repeat this weekly**: Schwab refresh tokens last 7
 days. When one lapses the container keeps running, publishes "login expired" to
 the dashboard, and (if `HEALTHCHECK_URL` is set) pings `<url>/fail`.
 
+For the Webull sync, log in from the container the same way, so its token is the
+only one (docs/HOLDINGS.md#syncing-from-webull). It prints what to do, then waits
+for the SMS code to be entered in the Webull app:
+
+```sh
+docker compose -f docker/docker-compose.yaml run --rm cli webull-login
+```
+
 ## Sharing betas with another container
 
 A second job, `docker/run-beta.sh`, writes Schwab's beta for a list of symbols to a

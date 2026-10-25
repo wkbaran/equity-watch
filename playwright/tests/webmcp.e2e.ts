@@ -54,7 +54,25 @@ async function openUnlocked(page: Page) {
 
 const READS = ["get_alert", "get_chart_url", "get_overview", "get_pending_changes", "list_alerts", "list_revisit_queue"];
 const WRITES = ["add_alert", "apply_revisit", "dismiss_revisit", "edit_alert", "relevel_revisit", "remove_alert"];
-const HOLDINGS = ["add_lot", "add_stop", "cover_position", "edit_lot", "edit_stop", "get_position", "get_stories", "list_positions", "remove_lot", "remove_position", "remove_stop", "sell_shares"];
+const HOLDINGS = [
+  "add_lot",
+  "add_stop",
+  "adopt_webull_position",
+  "cover_position",
+  "edit_lot",
+  "edit_stop",
+  "get_position",
+  "get_stories",
+  "get_webull",
+  "ignore_webull_position",
+  "link_webull_holding",
+  "list_positions",
+  "remove_lot",
+  "remove_position",
+  "remove_stop",
+  "sell_shares",
+  "unlink_webull_holding",
+];
 
 let errors: string[] = [];
 

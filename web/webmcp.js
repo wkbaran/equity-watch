@@ -372,6 +372,9 @@
   // ---- schemas ---------------------------------------------------------------
 
   const symbolProp = { type: "string", description: "Ticker symbol, e.g. GMED." };
+  const accountProp = { type: "string", description: "The account label lots carry, e.g. margin or roth." };
+  const webullTarget = (args) => ({ account: String(args.account ?? "").trim(), symbol: String(args.symbol ?? "").trim().toUpperCase() });
+  const webullAccount = (api, label) => (api.vault().webull?.accounts ?? []).find((a) => a.label === label) ?? null;
   const alertIdProp = { type: "string", description: "An alert's id, from list_alerts or list_revisit_queue." };
   const revisitIdProp = { type: "string", description: "A revisit queue entry's id, from list_revisit_queue." };
   const lotIdProp = { type: "string", description: "A lot's id, from get_position." };
@@ -1034,6 +1037,87 @@
           op: { type: "stop.remove", target: { stopId: stop.id }, expect: { stopPrice: stop.stopPrice }, params: {} },
           symbol: stop.symbol,
           summary: `remove ${stop.symbol} stop at ${stop.stopPrice}`,
+        });
+      },
+    },
+    {
+      name: "get_webull",
+      group: "holdings",
+      description:
+        "The last Webull sync: each account's cash, BIL and cash + BIL with its warning (low on cash, using margin, on margin), the positions Webull holds that the record doesn't (adopt or ignore), the hand-entered holdings Webull also holds (link), and what the sync flagged. Private: shares and money.",
+      inputSchema: object({}),
+      run(api) {
+        const w = api.vault().webull;
+        return w ? say(w) : refuse("No Webull sync has run yet.");
+      },
+    },
+    {
+      name: "adopt_webull_position",
+      group: "holdings",
+      ops: ["holding.adopt"],
+      description:
+        "Queue adopting a position Webull holds and the record doesn't: it gets the lots the last sync proposed, and the Webull sync keeps it from then on. Rejected at apply time if Webull's share count has changed since. The person is asked to approve.",
+      inputSchema: object({ account: accountProp, symbol: symbolProp }, ["account", "symbol"]),
+      run(api, args, signal) {
+        const { account, symbol } = webullTarget(args);
+        const entry = webullAccount(api, account)?.unmatched.find((u) => u.symbol === symbol && !u.ignored);
+        if (!entry) return refuse(`The last Webull sync has no ${symbol || "such"} position to adopt in ${account || "that account"}.`);
+        return queue(api, "holdings", signal, {
+          op: { type: "holding.adopt", target: { account, symbol }, expect: { count: entry.count }, params: {} },
+          symbol,
+          summary: `adopt ${symbol} from Webull (${account}, ${entry.count} shares)`,
+        });
+      },
+    },
+    {
+      name: "link_webull_holding",
+      group: "holdings",
+      ops: ["holding.link"],
+      description:
+        "Queue linking a hand-entered holding to Webull when its shares agree: it keeps its lots, and the Webull sync keeps it from then on. The person is asked to approve.",
+      inputSchema: object({ account: accountProp, symbol: symbolProp }, ["account", "symbol"]),
+      run(api, args, signal) {
+        const { account, symbol } = webullTarget(args);
+        const entry = webullAccount(api, account)?.links.find((l) => l.symbol === symbol);
+        if (!entry) return refuse(`The last Webull sync didn't find ${symbol || "that symbol"} both in the record and in ${account || "that account"}.`);
+        return queue(api, "holdings", signal, {
+          op: { type: "holding.link", target: { account, symbol }, expect: { count: entry.webullCount }, params: {} },
+          symbol,
+          summary: `link ${symbol} (${account}) to Webull`,
+        });
+      },
+    },
+    {
+      name: "unlink_webull_holding",
+      group: "holdings",
+      ops: ["holding.unlink"],
+      description: "Queue making a holding the Webull sync keeps manual again. Its lots stay; the sync stops changing them. The person is asked to approve.",
+      inputSchema: object({ account: accountProp, symbol: symbolProp }, ["account", "symbol"]),
+      run(api, args, signal) {
+        const { account, symbol } = webullTarget(args);
+        if (!account || !symbol) return refuse("Name the account and the symbol.");
+        return queue(api, "holdings", signal, {
+          op: { type: "holding.unlink", target: { account, symbol }, params: {} },
+          symbol,
+          summary: `make ${symbol} (${account}) manual again`,
+        });
+      },
+    },
+    {
+      name: "ignore_webull_position",
+      group: "holdings",
+      ops: ["holding.ignore"],
+      description:
+        "Queue ignoring a position Webull holds and the record doesn't, so it stops being offered for adoption; ignore false offers it again. The person is asked to approve.",
+      inputSchema: object({ account: accountProp, symbol: symbolProp, ignore: { type: "boolean", description: "False offers an ignored position again. Default true." } }, ["account", "symbol"]),
+      run(api, args, signal) {
+        const { account, symbol } = webullTarget(args);
+        if (!account || !symbol) return refuse("Name the account and the symbol.");
+        const ignore = args.ignore !== false;
+        return queue(api, "holdings", signal, {
+          op: { type: "holding.ignore", target: { account, symbol }, params: { ignore } },
+          symbol,
+          summary: ignore ? `ignore ${symbol} (${account}) from Webull` : `offer ${symbol} (${account}) for adoption again`,
         });
       },
     },

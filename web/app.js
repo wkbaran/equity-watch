@@ -1574,6 +1574,169 @@
     return vaultLoading;
   }
 
+  // ---- Webull (docs/WEBULL_SYNC_PLAN.md) ---------------------------------------
+  //
+  // What the last `holdings sync` read: each account's cash, the positions to
+  // adopt or ignore, the manual holdings to link, and whatever it flagged. All of
+  // it is shares and money, so it exists only in the vault, and only here.
+
+  const CASH_STATUS = {
+    low: { kind: "cash-low", label: "low on cash" },
+    usingMargin: { kind: "using-margin", label: "using margin" },
+    onMargin: { kind: "on-margin", label: "on margin" },
+  };
+  const webullState = () => (canEditHoldings() ? (vaultData?.webull ?? null) : null);
+  const holdingSource = (account, symbol) =>
+    (vaultData?.holdingSources ?? []).find((s) => s.account === account && s.symbol === symbol) ?? null;
+  /** The Webull sync keeps this lot's shares, so it can't be edited or sold by hand. */
+  const keptByWebull = (lot) => lot.account !== undefined && lot.account !== null && holdingSource(lot.account, lot.symbol)?.source === "webull";
+  const webullPending = (type, symbol) => pendingOps.some((p) => p.type === type && p.symbol === symbol);
+  const shareText = (n) => String(Math.round(n * 1e6) / 1e6);
+
+  /** Whole shares of BIL (or whatever is parked) to sell to bring cash back to zero: a copy of sharesToCover in src/holdings/webullSync.ts. */
+  function sharesToCover(cash) {
+    if (cash.cash >= 0 || !(cash.cashEquivalentPrice > 0)) return null;
+    return Math.ceil(-cash.cash / cash.cashEquivalentPrice);
+  }
+
+  function cashLine(account) {
+    const c = account.cash;
+    if (c === null) return h("p", { class: "note", text: "Webull returned no balance for this account." });
+    const status = CASH_STATUS[account.cashStatus];
+    const n = account.cashStatus === "usingMargin" ? sharesToCover(c) : null;
+    const advice =
+      account.cashStatus === "usingMargin"
+        ? ` Sell${n === null ? "" : ` about ${n} shares of`} BIL to cover.`
+        : account.cashStatus === "onMargin"
+          ? " Borrowing that BIL can't cover."
+          : account.cashStatus === "low" && account.lowCash !== null
+            ? ` Under the ${money(account.lowCash)} mark.`
+            : "";
+    return h(
+      "p",
+      { class: "webull-cash" },
+      h("span", { text: `Cash ${money(c.cash)}` }),
+      c.unsettledCash ? h("span", { class: "note", text: ` (settled ${money(c.settledCash)}, unsettled ${money(c.unsettledCash)})` }) : null,
+      h("span", { text: ` · BIL ${money(c.cashEquivalents)} · cash + BIL ` }),
+      h("strong", { text: money(c.total) }),
+      status ? h("span", { class: `tag ${status.kind}`, text: status.label }) : null,
+      advice ? h("span", { class: "note", text: advice }) : null
+    );
+  }
+
+  function unmatchedRow(account, u) {
+    const target = { account: account.label, symbol: u.symbol };
+    const lotsText = u.fallback === null ? `${u.adopt.length} lot${u.adopt.length === 1 ? "" : "s"} from its fills` : "one lot at the average cost";
+    const actions = u.ignored
+      ? [
+          h("button", {
+            type: "button",
+            text: "Offer again",
+            disabled: webullPending("holding.ignore", u.symbol),
+            onclick: () =>
+              submitOp({ type: "holding.ignore", target, params: { ignore: false } }, { symbol: u.symbol, summary: `offer ${u.symbol} (${account.label}) for adoption again` }),
+          }),
+        ]
+      : [
+          h("button", {
+            type: "button",
+            text: "Adopt",
+            disabled: webullPending("holding.adopt", u.symbol),
+            title: u.fallback ?? "Lots with the dates and prices of the orders that bought it.",
+            onclick: () =>
+              submitOp(
+                { type: "holding.adopt", target, expect: { count: u.count }, params: {} },
+                { symbol: u.symbol, summary: `adopt ${u.symbol} from Webull (${account.label}, ${shareText(u.count)} shares as ${lotsText})` }
+              ),
+          }),
+          h("button", {
+            type: "button",
+            text: "Ignore",
+            disabled: webullPending("holding.ignore", u.symbol),
+            onclick: () =>
+              submitOp({ type: "holding.ignore", target, params: { ignore: true } }, { symbol: u.symbol, summary: `ignore ${u.symbol} (${account.label}) from Webull` }),
+          }),
+        ];
+    return h(
+      "li",
+      { class: u.ignored ? "ignored" : null },
+      h("strong", { text: u.symbol }),
+      h("span", { text: ` ${shareText(u.count)} @ ${money(u.basis)} avg → ${lotsText}` }),
+      u.ignored ? h("span", { class: "tag stagnant", text: "ignored" }) : null,
+      u.fallback !== null && !u.ignored ? h("span", { class: "note", text: ` ${u.fallback}.` }) : null,
+      h("span", { class: "row-actions" }, ...actions)
+    );
+  }
+
+  function linkRow(account, l) {
+    const sharesAgree = !l.differences.some((d) => d.startsWith("shares"));
+    return h(
+      "li",
+      {},
+      h("strong", { text: l.symbol }),
+      h("span", { text: l.differences.length === 0 ? " agrees with Webull" : ` ${l.differences.join("; ")}` }),
+      h(
+        "span",
+        { class: "row-actions" },
+        sharesAgree
+          ? h("button", {
+              type: "button",
+              text: "Link",
+              disabled: webullPending("holding.link", l.symbol),
+              title: "The Webull sync keeps it from now on. Its lots, dates and story stay.",
+              onclick: () =>
+                submitOp(
+                  { type: "holding.link", target: { account: account.label, symbol: l.symbol }, expect: { count: l.webullCount }, params: {} },
+                  { symbol: l.symbol, summary: `link ${l.symbol} (${account.label}) to Webull` }
+                ),
+            })
+          : h("span", { class: "note", text: "Fix the shares to link it." })
+      )
+    );
+  }
+
+  function renderWebullPanel() {
+    const el = $("webull-panel");
+    const state = webullState();
+    el.hidden = state === null;
+    if (state === null) return el.replaceChildren();
+    const problem = state.problem
+      ? h(
+          "p",
+          { class: "webull-problem" },
+          h("strong", { text: state.problem.login ? "⚠ Webull login needed" : "⚠ Webull sync failed" }),
+          document.createTextNode(` ${ago(state.problem.at)}: ${state.problem.message}`),
+          state.problem.login
+            ? h("span", { class: "auth-detail" }, "Run ", h("code", { text: "webull-login" }), " on the machine that runs the checks, and enter the SMS code in the Webull app.")
+            : null
+        )
+      : null;
+    const accounts = state.accounts.map((a) => {
+      const open = a.unmatched.filter((u) => !u.ignored);
+      const ignored = a.unmatched.filter((u) => u.ignored);
+      return h(
+        "div",
+        { class: "webull-account" },
+        h("h3", { text: `${a.label} · Webull ${a.accountType === "CASH" ? "cash" : "margin"} account` }),
+        cashLine(a),
+        open.length > 0 ? h("p", { class: "note", text: "Webull holds these and the record doesn't:" }) : null,
+        open.length > 0 ? h("ul", { class: "webull-list" }, ...open.map((u) => unmatchedRow(a, u))) : null,
+        a.links.length > 0 ? h("p", { class: "note", text: "Entered by hand, and also at Webull:" }) : null,
+        a.links.length > 0 ? h("ul", { class: "webull-list" }, ...a.links.map((l) => linkRow(a, l))) : null,
+        a.flags.length > 0 ? h("p", { class: "note", text: "Not brought in line, nothing applied:" }) : null,
+        a.flags.length > 0 ? h("ul", { class: "webull-list flags" }, ...a.flags.map((f) => h("li", {}, h("strong", { text: f.symbol }), h("span", { text: ` ${f.message}` })))) : null,
+        ignored.length > 0
+          ? h("details", {}, h("summary", { text: `${ignored.length} ignored` }), h("ul", { class: "webull-list" }, ...ignored.map((u) => unmatchedRow(a, u))))
+          : null
+      );
+    });
+    el.replaceChildren(
+      h("div", { class: "section-header" }, h("h3", { class: "section-title", text: "Webull" }), h("span", { class: "note", text: state.readAt ? `read ${ago(state.readAt)}` : "" })),
+      ...(problem ? [problem] : []),
+      ...accounts
+    );
+  }
+
   function renderHoldingsView() {
     const rows = holdingRows();
     $("nav-holdings").hidden = rows === null;
@@ -1597,6 +1760,7 @@
     renderLotAddForm();
     applyLotPrefill();
     renderPending();
+    renderWebullPanel();
     if (rows === null) {
       $("holdings").replaceChildren();
       $("holdings-count").textContent = "";
@@ -1803,6 +1967,20 @@
       error
     );
     const formRow = h("tr", { class: "lot-edit", hidden: true }, h("td", { colspan: "6" }, form));
+    if (keptByWebull(lot)) {
+      return [
+        h(
+          "tr",
+          { "data-lot-id": lot.id },
+          h("td", { class: "lot-shares" }, h("span", { text: lot.count })),
+          h("td", { class: "lot-take" }),
+          h("td", { text: money(lot.basisPerShare) }),
+          h("td", { text: lot.purchaseDate }),
+          h("td", { text: lot.account }),
+          h("td", {}, h("span", { class: "tag webull", title: "Kept by the Webull sync: it follows Webull's trades. Unlink to edit it by hand.", text: "Webull" }))
+        ),
+      ];
+    }
     const row = h(
       "tr",
       { "data-lot-id": lot.id },
@@ -2058,11 +2236,21 @@
       alerts.map((a) => [a.id, a.condition, a.primed?.at ?? null]),
       alerts.flatMap((a) => pendingFor(a.id).map((p) => p.id)),
       storyFor(symbol)?.lines ?? null,
+      lots.map((l) => keptByWebull(l)),
+      webullPending("holding.unlink", symbol),
     ]);
     const cached = detailCache.get(symbol);
     if (cached?.sig === sig) return cached.el;
     const sellToggle = h("button", { type: "button", text: "Sell from position", "aria-expanded": "false", onclick: () => sell.toggle() });
-    const sell = sellBand(symbol, lots, sellToggle);
+    // The sync records sales of what it keeps; selling here would only be refused.
+    const handLots = lots.filter((l) => !keptByWebull(l));
+    const sell = sellBand(symbol, handLots, sellToggle, lots);
+    const keptAccounts = [...new Set(lots.filter(keptByWebull).map((l) => l.account))].sort();
+    const unlinks = keptAccounts.map((account) =>
+      confirmButton(`Unlink ${account} from Webull`, () =>
+        submitOp({ type: "holding.unlink", target: { account, symbol }, params: {} }, { symbol, summary: `make ${symbol} (${account}) manual again` })
+      )
+    );
     const el = h(
       "div",
       { class: "position-detail" },
@@ -2093,7 +2281,8 @@
             prefillLotAdd(symbol, soleAccount(symbol));
           },
         }),
-        sellToggle
+        handLots.length > 0 ? sellToggle : null,
+        ...unlinks
       )
     );
     sell.attach(el);
@@ -2148,11 +2337,18 @@
    * note says how old it is, since a quiet run can leave it half an hour stale.
    * The op always carries a number: the worker has no quote to default from.
    */
-  function sellBand(symbol, lots, toggle) {
+  /**
+   * `lots` are what this band may sell; `allLots` the whole position, which the
+   * worker's guard compares against. They differ when the Webull sync keeps some
+   * of the position's lots: then every sale names its account, so none can reach
+   * a kept lot, and there is no whole-position removal.
+   */
+  function sellBand(symbol, lots, toggle, allLots = lots) {
     let detail = null;
+    const partial = allLots.length !== lots.length;
     const accounts = [...new Set(lots.map((l) => l.account ?? ""))];
-    const scopes = [{ value: "all", text: lots.length > 1 ? "Oldest lots first" : "This lot", lots }];
-    if (accounts.length > 1) {
+    const scopes = partial ? [] : [{ value: "all", text: lots.length > 1 ? "Oldest lots first" : "This lot", lots }];
+    if (accounts.length > 1 || partial) {
       for (const a of accounts.sort()) {
         scopes.push({ value: `account:${a}`, text: `Oldest in ${a || "no account"} first`, lots: lots.filter((l) => (l.account ?? "") === a), account: a });
       }
@@ -2184,10 +2380,12 @@
             { type: "lot.remove", target: { lotId: sc.lot.id }, expect: lotExpect(sc.lot), params: {} },
             { symbol, summary: `remove a ${symbol} lot (${sc.lot.count} @ ${sc.lot.basisPerShare})` }
           ).then((queued) => queued && close())
-        : submitOp(
-            { type: "position.remove", target: { symbol }, expect: { lotIds: lots.map((l) => l.id) }, params: {} },
-            { symbol, summary: `remove the ${symbol} position` }
-          ).then((queued) => queued && close());
+        : partial
+          ? Promise.resolve(notice(`Remove ${symbol}'s lots one at a time: the Webull sync keeps the rest of the position.`, false))
+          : submitOp(
+              { type: "position.remove", target: { symbol }, expect: { lotIds: lots.map((l) => l.id) }, params: {} },
+              { symbol, summary: `remove the ${symbol} position` }
+            ).then((queued) => queued && close());
     });
     removeOnly.classList.add("link-button");
 
@@ -2284,7 +2482,7 @@
                 {
                   type: "position.remove",
                   target: { symbol },
-                  expect: { lotIds: lots.map((l) => l.id), shares: available({ lots }) },
+                  expect: { lotIds: allLots.map((l) => l.id), shares: available({ lots: allLots }) },
                   params: sc.account !== undefined ? { ...params, account: sc.account } : params,
                 },
                 { symbol, summary }

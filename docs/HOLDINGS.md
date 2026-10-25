@@ -97,6 +97,107 @@ Webull does not officially support this export, and the 2026-09-11 files proved 
   defaults to today and the "stagnant" alert stays silent for 30 days. The import
   says so rather than leaving you to discover it.
 
+## Syncing from Webull
+
+`holdings sync` reads each mapped Webull account through Webull's API and keeps
+the record in line with it, replacing `holdings import`
+([WEBULL_SYNC_PLAN.md](WEBULL_SYNC_PLAN.md) has the design). The scheduled script
+runs it every check, after `ops pull` and before `holdings cover`.
+
+```bash
+node dist/cli.js webull-login                  # once, then whenever the token dies
+node dist/cli.js webull accounts               # the account ids, for WEBULL_ACCOUNTS
+node dist/cli.js holdings sync --dry-run       # print what it would change; holdings.json untouched
+node dist/cli.js holdings sync                 # apply it
+node dist/cli.js holdings sync --full-history  # re-read every order, not just the last few days
+```
+
+**Setup**, in `.env`: `WEBULL_APP_KEY` (it starts with `us.`) and
+`WEBULL_APP_SECRET` from an approved Webull API application, and `WEBULL_ACCOUNTS`, which maps the account labels lots
+already carry to Webull account ids (`margin=<id>,roth=<id>`). Optionally
+`WEBULL_LOW_CASH` (`margin=<dollars>,roth=<dollars>`), below. The ids and amounts
+stay in `.env` because `analysis.config.json` is committed.
+`WEBULL_ENVIRONMENT=sandbox` points everything at Webull's test environment, which
+needs no token. Without the key, secret and accounts the sync says it isn't
+configured and exits 0, so the scheduled run is unchanged.
+
+**The token.** `webull-login` creates one, and Webull texts a code to the phone
+on the account. Entering it in the Webull app (Menu → Messages → OpenAPI
+Notifications → Check Now) within 5 minutes activates it, and the command waits
+for that. The token then lasts until 15 days pass with no call, and the scheduled
+sync calls every 15 minutes. It lives beside the Schwab tokens in
+`~/.equity_watch/` (`STATE_DIR/.equity_watch` in Docker). Run the login from the
+container (`docker compose ... run --rm cli webull-login`), not the dev machine, so
+there is one token: whether a new one ends the old one isn't documented. A 401
+marks the stored token dead; the sync then records "Webull login needed", which the
+Holdings page shows, and stops calling until you log in again.
+
+### Who keeps a holding
+
+A holding is one account's position in one symbol, because that is what Webull
+reports. Each is either **manual** (the default, and every holding before the
+sync) or **webull**:
+
+- **A webull holding's lots and sales are written by the sync.** A buy becomes a
+  lot at the order's average fill price, dated by its fill in New York time. A
+  sale goes through the same code as the page's Sell, oldest lot first, and is
+  marked stop-triggered when the order was a stop. The page shows its lots with a
+  *Webull* tag and no Edit or Sell, and the worker refuses `lot.*` and
+  `position.remove` ops that would touch them. A sale from the position names its
+  account so it can't reach them. Stops are still entered by hand.
+- **A manual holding is never rewritten.**
+
+Each order is booked on its holding by id, with the shares booked, so an order
+seen twice is booked once, an order that appears late in Webull's history is still
+booked, and a partly filled order books its new shares on a later run. Fills are
+applied only when they account exactly for the change in shares, and never sell
+more than is held along the way. Anything else (a split, history that hasn't
+caught up) is flagged on the page and nothing is applied to that holding.
+
+### The Webull panel
+
+The unlocked Holdings page has a **Webull** panel with what the last sync read,
+per account:
+
+- **Cash**: cash (negative in a margin account means borrowing), settled and
+  unsettled cash, the value of `cashEquivalents` (BIL, in `analysis.config.json`),
+  and cash + BIL, with a warning tag:
+  - **low on cash**: cash + BIL is under `WEBULL_LOW_CASH` for the account.
+  - **using margin**: cash is negative and BIL covers it. It says about how many
+    whole BIL shares to sell.
+  - **on margin**: cash + BIL is negative: borrowing BIL can't cover.
+
+  A change into a warning is also printed in the run log once. equity-watch has no
+  push channel, so the page and the log are where you see it.
+- **Unmatched**: positions Webull holds and the record doesn't. **Adopt** writes
+  the lots the sync proposed: from the order history's fills when they explain the
+  whole position (real dates and prices), else one lot at Webull's average cost
+  dated today, with the reason. **Ignore** stops offering one; it moves under
+  *ignored*, with **Offer again**.
+- **Entered by hand, and also at Webull**: manual holdings Webull also holds.
+  **Link** makes one a webull holding and keeps its lots, dates and story. It is
+  offered only when the shares agree (a basis within 0.1% of Webull's average cost
+  agrees too; a basis difference alone is shown but doesn't block it).
+- **Not brought in line**: the sync's flags.
+
+An expanded position kept by the sync has **Unlink *account* from Webull**, which
+makes it manual again (its lots stay).
+
+All of it is shares and money, so it travels only in the encrypted vault. The
+ops' published results name the symbol and account, never a count or price.
+
+### The order history
+
+Each account's orders are kept in `.cache/webull/orders-<label>.json`. The first
+run reads all of Webull's history, back to 2018-05-21 (`--history-from` starts
+later), one request every 1.25 s (Webull allows two every two seconds, counted
+when they arrive, and an even two drew 429s), so it takes a few minutes. Later
+runs, dry runs included, read from three days before the last one.
+`--full-history` reads it all again. A 429 is retried after a wait.
+
+Lots with no account label can't be matched to an account, and `--dry-run` lists
+them. Give them one (`margin` or `roth`) before syncing.
+
 ## Basis-relative alerts
 
 `holdings check` evaluates three conditions per position, each firing once on the

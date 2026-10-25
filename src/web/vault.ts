@@ -19,7 +19,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { Dashboard, HoldingRow } from "../dashboard.js";
 import type { TickerStory } from "../narrative.js";
-import type { HoldingsStore, Lot, Stop } from "../holdings/models.js";
+import type { Holding, HoldingsStore, Lot, Stop, WebullState } from "../holdings/models.js";
 import type { SpreadStopsStore } from "../spreads/spreadStops.js";
 
 export const VAULT_FILE = "vault.json";
@@ -45,6 +45,13 @@ export interface VaultContents {
    * vaults sealed before 2026-10-24.
    */
   spreadLinks?: Record<string, string>;
+  /**
+   * Who keeps each holding (docs/WEBULL_SYNC_PLAN.md), without the sync's
+   * booking map, which the page has no use for. Absent before the Webull sync.
+   */
+  holdingSources?: Pick<Holding, "account" | "symbol" | "source" | "ignored">[];
+  /** The last Webull read: cash per account, unmatched and linkable positions, flags. Absent until the first sync. */
+  webull?: WebullState;
 }
 
 export interface VaultDocument {
@@ -82,6 +89,22 @@ export function vaultContents(
     stops: store.stops.map(({ id, symbol, count, stopPrice }) => ({ id, symbol, count, stopPrice })),
     stories: dashboard.stories,
     ...(links.length > 0 ? { spreadLinks: Object.fromEntries(links) } : {}),
+    ...(store.holdings !== undefined && store.holdings.length > 0
+      ? { holdingSources: store.holdings.map(({ account, symbol, source, ignored }) => ({ account, symbol, source, ...(ignored ? { ignored } : {}) })) }
+      : {}),
+    ...(store.webull !== undefined ? { webull: webullForPage(store.webull) } : {}),
+  };
+}
+
+/** The state minus each entry's booking map: the page never needs order ids it can't act on. */
+function webullForPage(state: WebullState): WebullState {
+  return {
+    ...state,
+    accounts: state.accounts.map((a) => ({
+      ...a,
+      unmatched: a.unmatched.map((u) => ({ ...u, booked: {} })),
+      links: a.links.map((l) => ({ ...l, booked: {} })),
+    })),
   };
 }
 

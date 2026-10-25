@@ -24,6 +24,7 @@ import { applyRevisitLevel, closeRevisitsForSymbol, editClosure, loadRevisits, s
 import { loadAlerts, saveAlerts } from "../alerts/store.js";
 import type { Alert } from "../alerts/models.js";
 import { applyHoldingsOp, applyCoverOp } from "./holdings.js";
+import { applyWebullHoldingOp } from "./webullHoldings.js";
 import {
   addFieldsFromJson,
   editFieldsFromJson,
@@ -39,7 +40,7 @@ export const DEFAULT_OP_LOG = "ops.log.jsonl";
 export const DEFAULT_HOLDINGS_FILE = "holdings.json";
 export const DEFAULT_REVISITS_FILE = "revisits.json";
 
-export const OP_TYPES = ["alert.add", "alert.edit", "alert.remove", "revisit.relevel", "revisit.apply", "revisit.dismiss", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.edit", "stop.remove", "holdings.cover"] as const;
+export const OP_TYPES = ["alert.add", "alert.edit", "alert.remove", "revisit.relevel", "revisit.apply", "revisit.dismiss", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.edit", "stop.remove", "holdings.cover", "holding.adopt", "holding.link", "holding.unlink", "holding.ignore"] as const;
 export type OpType = (typeof OP_TYPES)[number];
 
 /**
@@ -233,6 +234,12 @@ async function applyByType(op: Op, ctx: ApplyContext): Promise<Outcome> {
       return applyDismiss(op, ctx);
     case "holdings.cover":
       return applyCover(op, ctx);
+    case "holding.adopt":
+    case "holding.link":
+    case "holding.unlink":
+    case "holding.ignore":
+      // Who keeps the holding, not a decision about the symbol: its revisits stay open.
+      return applyWebullHoldingOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE, ctx.now?.() ?? new Date());
     default: {
       // Lots, positions and stops. A change to any of them is a decision
       // about the symbol, so its open fires stop asking. The message is

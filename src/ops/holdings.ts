@@ -15,10 +15,15 @@ import { addLot, addStop, editLot, removeLot, removePosition, replaceStop, sellS
 import { computeBasis, type Lot } from "../holdings/models.js";
 import { loadHoldingsStore, removeStop } from "../holdings/store.js";
 import type { Op, Outcome } from "./apply.js";
+import { isWebullHolding } from "./webullHoldings.js";
 import { parseLotEdit, parseLotInput, parseSaleParams, parseStopEdit, parseStopInput, stringField } from "./validate.js";
 
 const ok = (symbol: string, message: string): Outcome => ({ symbol, alertId: null, ok: true, message });
 const reject = (symbol: string | null, message: string): Outcome => ({ symbol, alertId: null, ok: false, message });
+
+/** The refusal for a hand edit of shares the Webull sync keeps. Public, like every message here: no digits. */
+const kept = (symbol: string, account: string | undefined): Outcome =>
+  reject(symbol, `Not changed: ${symbol} in ${account ?? "that account"} is kept by the Webull sync, so its lots follow Webull. Unlink it to edit by hand.`);
 
 function field(value: unknown, key: string): unknown {
   return value !== null && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined;
@@ -59,6 +64,9 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
         return reject(stringField(op.params, "symbol")?.trim().toUpperCase() || null, parsed.error);
       }
       const { stopPrice, stopCount, ...lotInput } = parsed.value;
+      if (isWebullHolding(loadHoldingsStore(holdingsFile), lotInput.account, lotInput.symbol)) {
+        return kept(lotInput.symbol, lotInput.account);
+      }
       const lot = addLot(holdingsFile, lotInput);
       if (stopPrice !== undefined) {
         // Whatever stop(s) the symbol already had (e.g. from a prior lot on this
@@ -77,9 +85,13 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       if (!lotId) {
         return reject(null, `A lot ${op.type === "lot.edit" ? "edit" : "removal"} needs target.lotId.`);
       }
-      const lot = loadHoldingsStore(holdingsFile).lots.find((l) => l.id === lotId);
+      const store = loadHoldingsStore(holdingsFile);
+      const lot = store.lots.find((l) => l.id === lotId);
       if (lot === undefined) {
         return reject(null, "That lot no longer exists. It may have been removed.");
+      }
+      if (isWebullHolding(store, lot.account, lot.symbol)) {
+        return kept(lot.symbol, lot.account);
       }
       if (!lotMatches(lot, op.expect)) {
         return reject(lot.symbol, `Not changed: that ${lot.symbol} lot changed since the page loaded.`);
@@ -104,6 +116,10 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       if (!parsed.ok) {
         return reject(lot.symbol, parsed.error);
       }
+      // Moving a lot into an account the sync keeps would hand it shares Webull doesn't know about.
+      if (typeof parsed.value.account === "string" && isWebullHolding(store, parsed.value.account, lot.symbol)) {
+        return kept(lot.symbol, parsed.value.account);
+      }
       editLot(holdingsFile, lotId, parsed.value);
       return ok(lot.symbol, `Edited a lot of ${lot.symbol}.`);
     }
@@ -113,7 +129,8 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       if (!symbol) {
         return reject(null, "A position removal needs target.symbol.");
       }
-      const lots = loadHoldingsStore(holdingsFile).lots.filter((l) => l.symbol === symbol);
+      const store = loadHoldingsStore(holdingsFile);
+      const lots = store.lots.filter((l) => l.symbol === symbol);
       const lotIds = lots.map((l) => l.id).sort();
       if (lotIds.length === 0) {
         return reject(symbol, `No ${symbol} position to remove.`);
@@ -135,6 +152,12 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
         return reject(symbol, sale.error);
       }
       const { price, count, soldOn, account, stopHit } = sale.value;
+      // Whatever the sale or removal would take from: one account's lots, or all of them.
+      const touched = account === undefined ? lots : lots.filter((l) => (l.account ?? "") === account);
+      const keptLot = touched.find((l) => isWebullHolding(store, l.account, symbol));
+      if (keptLot !== undefined) {
+        return kept(symbol, keptLot.account);
+      }
       if (price !== undefined) {
         const inAccount = account === undefined ? lots : lots.filter((l) => (l.account ?? "") === account);
         const sold = sellShares(holdingsFile, {

@@ -204,6 +204,15 @@ const VOLATILE_KEYS = new Set([
   "opsIntervalMinutes",
   // Advances by one repetition on every run, so it would publish every run.
   "opsNextCheckAt",
+  // The vault's Webull state (holdings.json's webull): when it was read, and
+  // the figures that move with BIL's price and the market's, every run. A trade,
+  // a cash change, a new warning or a flag still publishes: cash, cashStatus,
+  // unmatched and flags are not here.
+  "readAt",
+  "lastPrice",
+  "cashEquivalents",
+  "cashEquivalentPrice",
+  "total",
 ]);
 
 function stableHash(value: unknown): string {

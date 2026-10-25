@@ -101,6 +101,35 @@ export const HOLDINGS: HoldingsStore = {
   ],
   stops: [{ id: "stop0001", symbol: "AA", count: null, stopPrice: 38, createdAt: "2026-09-02T15:00:00.000Z" }],
   alertState: [],
+  // The last Webull read (docs/WEBULL_SYNC_PLAN.md): one position to adopt, and
+  // AA's margin lot, which agrees with Webull, to link.
+  webull: {
+    readAt: "2026-10-25T14:00:00.000Z",
+    accounts: [
+      {
+        label: "margin",
+        accountType: "MARGIN",
+        cash: { cash: 1200, settledCash: 1200, unsettledCash: 0, cashEquivalents: 9150, cashEquivalentPrice: 91.5, total: 10350 },
+        cashStatus: "ok",
+        lowCash: null,
+        unmatched: [
+          {
+            symbol: "NEWCO",
+            count: 12,
+            basis: 18.25,
+            lastPrice: 19,
+            adopt: [{ count: 12, basisPerShare: 18.25, purchaseDate: "2026-10-01", orderId: "ORDER-0009" }],
+            fallback: null,
+            ignored: false,
+            booked: { "ORDER-0009": 12 },
+          },
+        ],
+        links: [{ symbol: "AA", count: 5, basis: 44, webullCount: 5, differences: [], booked: {} }],
+        flags: [],
+        skipped: [],
+      },
+    ],
+  },
 };
 
 /**

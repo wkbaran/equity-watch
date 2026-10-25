@@ -228,6 +228,9 @@
   .tag.pending { color: var(--signal); background: var(--wash); }
   .tag.link { color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); background: transparent; }
   .tag.at-stop { color: var(--on-signal); background: var(--signal); }
+  .tag.webull { color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); background: transparent; }
+  .tag.cash-low { color: var(--signal); background: transparent; box-shadow: inset 0 0 0 1px var(--signal); }
+  .tag.using-margin, .tag.on-margin { color: var(--on-signal); background: var(--signal); }
   /* A paper trade's stop: dashed, like spread-book's own paper tag, so it never reads as a real position. */
   .tag.paper { color: var(--sub); background: transparent; box-shadow: none; border: 1px dashed var(--line-strong); text-transform: uppercase; letter-spacing: 0.05em; }
   .spread-row .spread-line { display: block; }
@@ -501,6 +504,18 @@
   button.inline-link:hover { background: none; text-decoration-color: var(--signal); }
 
   #holdings-status { margin: -0.4rem 0 1rem; }
+  /* The last Webull read (renderWebullPanel). */
+  #webull-panel { padding: 0.8rem 1rem; margin-bottom: 1rem; }
+  #webull-panel .section-header { margin: 0 0 0.4rem; }
+  .webull-account { margin-top: 0.8rem; }
+  .webull-account h3 { font-size: 0.95rem; margin: 0 0 0.3rem; }
+  .webull-cash { margin: 0 0 0.4rem; display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: baseline; }
+  .webull-list { list-style: none; margin: 0 0 0.6rem; padding: 0; }
+  .webull-list li { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: baseline; padding: 0.25rem 0; border-top: 1px solid var(--line); }
+  .webull-list li.ignored { color: var(--sub); }
+  .webull-list .row-actions { margin-left: auto; }
+  .webull-problem strong { color: var(--signal); }
+  .webull-problem .auth-detail { display: block; margin-top: 0.2rem; color: var(--sub); }
   tr.detail-row > td { background: var(--ground); padding: 0; text-align: left; white-space: normal; }
   /*
    * An expanded position: three bands, Lots, Stop and Alert, each one row of
@@ -754,6 +769,7 @@
     </div>
     <div id="lot-add" hidden></div>
     <div id="holdings-pending" class="card" hidden></div>
+    <div id="webull-panel" class="card" hidden></div>
     <div class="card pinned-table">
       <div class="table-head" aria-hidden="true" hidden><table id="holdings-head"></table></div>
       <div class="table-wrap"><table id="holdings"></table></div>

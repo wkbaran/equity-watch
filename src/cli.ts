@@ -55,6 +55,17 @@ import {
   type HoldingsImportPlan,
 } from "./holdings/import.js";
 import { loadHoldingsStore, removeStop, saveHoldingsStore } from "./holdings/store.js";
+import {
+  applySyncPlan,
+  describeCashStatus,
+  describeChange,
+  parseAccountMap,
+  parseLowCash,
+  planWebullSync,
+  renderSyncPlan,
+  type WebullAccountSnapshot,
+} from "./holdings/webullSync.js";
+import { DEFAULT_ORDER_CACHE_DIR, loadOrderCache, mergeOrders, nextReadStart, orderCachePath, saveOrderCache, type OrderCache } from "./holdings/webullOrders.js";
 import { buildDashboard, renderDashboard, type HoldingDailyStats } from "./dashboard.js";
 import { errorText } from "./errorText.js";
 import { normalizeSymbols, parseSymbolsFile, runBeta } from "./beta.js";
@@ -90,6 +101,7 @@ import { FMP_FREE_DAILY_LIMIT, FmpProvider } from "./providers/fmp.js";
 import { DEFAULT_MAX_REQUESTS_PER_MINUTE, SchwabAuth, SchwabAuthError, SchwabProvider, type Quote } from "./providers/schwab.js";
 import { EXIT_SCHWAB_LOGIN_EXPIRED, readAuthState } from "./providers/authState.js";
 import type { PriceDataProvider } from "./providers/types.js";
+import { WEBULL_HISTORY_START, WebullAuthError, WebullClient, WebullError, type WebullEnvironment } from "./providers/webull.js";
 import { DailyBudget } from "./profiles/budget.js";
 import { companyInfoFromProfiles, loadCachedProfile, listCachedProfiles, profileNeedsFetch, saveCachedProfile } from "./profiles/store.js";
 import { exchangesFromProfiles } from "./tradingview.js";
@@ -107,7 +119,7 @@ import {
   type SpreadBook,
 } from "./spreads/spreadStops.js";
 import { gatherKnownSymbols } from "./profiles/universe.js";
-import { ignoredSymbols, isIgnored, loadTuningConfig, resolveParamsForSymbol, type TuningConfig } from "./tuning.js";
+import { cashEquivalentSymbols, ignoredSymbols, isIgnored, loadTuningConfig, resolveParamsForSymbol, type TuningConfig } from "./tuning.js";
 
 const VERDICT_ORDER: Record<string, number> = {
   CONFIRMED_BREAKOUT: 0,
@@ -1949,6 +1961,206 @@ function cmdHoldingsImport(opts: HoldingsImportOpts): void {
   }
 }
 
+interface WebullOpts {
+  webullTokenPath: string;
+}
+
+const MISSING_WEBULL_CREDENTIALS =
+  "Missing Webull credentials. Set WEBULL_APP_KEY / WEBULL_APP_SECRET in .env (see docs/WEBULL_SYNC_PLAN.md).";
+
+/**
+ * The client, or exit 1 with the one message. The sandbox needs no token
+ * (Webull: test tokens are valid by default), so none is sent there.
+ */
+function webullClient(opts: WebullOpts): WebullClient {
+  const appKey = process.env.WEBULL_APP_KEY?.trim();
+  const appSecret = process.env.WEBULL_APP_SECRET?.trim();
+  if (!appKey || !appSecret) {
+    console.error(MISSING_WEBULL_CREDENTIALS);
+    process.exit(1);
+  }
+  const raw = (process.env.WEBULL_ENVIRONMENT ?? "production").trim();
+  if (raw !== "production" && raw !== "sandbox") {
+    console.error(`WEBULL_ENVIRONMENT must be production or sandbox, not "${raw}".`);
+    process.exit(1);
+  }
+  const environment: WebullEnvironment = raw;
+  return new WebullClient({ appKey, appSecret, environment, ...(environment === "production" ? { tokenPath: opts.webullTokenPath } : {}) });
+}
+
+/** Prints a Webull failure the way the commands share, and exits 1. */
+function exitOnWebullError(err: unknown): never {
+  if (err instanceof WebullAuthError || err instanceof WebullError) {
+    console.error(err.message);
+  } else {
+    console.error(errorText(err));
+  }
+  process.exit(1);
+}
+
+async function cmdWebullLogin(opts: WebullOpts): Promise<void> {
+  const client = webullClient(opts);
+  try {
+    const token = await client.login(() => {
+      console.log("Webull sent an SMS code to the phone on the account.");
+      console.log("Enter it in the Webull app within 5 minutes: Menu → Messages → OpenAPI Notifications → Check Now.");
+      console.log("Waiting for it to be verified...");
+    });
+    const expires = Number.isFinite(token.expiresAt) && token.expiresAt > 0 ? `, expires ${new Date(token.expiresAt).toISOString()}` : "";
+    console.log(`Webull token verified (${token.status}${expires}). Saved to ${opts.webullTokenPath}.`);
+    console.log("It stays valid while it is used at least once every 15 days.");
+  } catch (err) {
+    exitOnWebullError(err);
+  }
+}
+
+/** Lists the accounts the key can see, with the ids WEBULL_ACCOUNTS needs. */
+async function cmdWebullAccounts(opts: WebullOpts): Promise<void> {
+  const client = webullClient(opts);
+  let mapped: { label: string; accountId: string }[] = [];
+  try {
+    mapped = parseAccountMap(process.env.WEBULL_ACCOUNTS);
+  } catch (err) {
+    console.error(errorText(err));
+  }
+  try {
+    const accounts = await client.accounts();
+    if (accounts.length === 0) {
+      console.log("Webull returned no accounts for this key.");
+      return;
+    }
+    for (const a of accounts) {
+      const label = mapped.find((m) => m.accountId === a.accountId)?.label;
+      console.log(`  ${a.accountId}  ${a.accountType.padEnd(6)} ${a.label}${label ? `  → ${label}` : ""}`);
+    }
+    if (mapped.length === 0) {
+      console.log("\nMap them to lot labels with WEBULL_ACCOUNTS in .env, e.g. WEBULL_ACCOUNTS=margin=<id>,roth=<id>");
+    }
+    for (const m of mapped) {
+      if (!accounts.some((a) => a.accountId === m.accountId)) {
+        console.log(`\n! WEBULL_ACCOUNTS maps ${m.label} to ${m.accountId}, which this key can't see.`);
+      }
+    }
+  } catch (err) {
+    exitOnWebullError(err);
+  }
+}
+
+interface HoldingsSyncOpts extends WebullOpts {
+  holdingsFile: string;
+  config: string;
+  orderCacheDir: string;
+  historyFrom?: string;
+  fullHistory?: boolean;
+  dryRun?: boolean;
+}
+
+/**
+ * Reads every mapped Webull account and brings the webull holdings in line
+ * (docs/WEBULL_SYNC_PLAN.md). Runs in the scheduled script after `ops pull`,
+ * so it exits 0, saying so, when Webull isn't set up yet: a run without a key
+ * is normal, not a failure. A Webull failure is recorded in the store, so the
+ * page says it, and still exits 0 for the same reason a Schwab one doesn't stop
+ * the publish; the run log has the detail.
+ */
+async function cmdHoldingsSync(opts: HoldingsSyncOpts): Promise<void> {
+  let mapping: { label: string; accountId: string }[];
+  let lowCash: Map<string, number>;
+  try {
+    mapping = parseAccountMap(process.env.WEBULL_ACCOUNTS);
+    lowCash = parseLowCash(process.env.WEBULL_LOW_CASH);
+  } catch (err) {
+    console.error(errorText(err));
+    process.exit(1);
+  }
+  if (!process.env.WEBULL_APP_KEY?.trim() || !process.env.WEBULL_APP_SECRET?.trim() || mapping.length === 0) {
+    console.log("Webull sync not configured (WEBULL_APP_KEY, WEBULL_APP_SECRET, WEBULL_ACCOUNTS); nothing to do.");
+    return;
+  }
+  const fullFrom = opts.historyFrom !== undefined ? `${opts.historyFrom}T00:00:00.000Z` : WEBULL_HISTORY_START;
+  if (Number.isNaN(Date.parse(fullFrom))) {
+    console.error(`Bad --history-from "${opts.historyFrom}": expected YYYY-MM-DD.`);
+    process.exit(1);
+  }
+  const client = webullClient(opts);
+  const config = loadTuningConfig(opts.config);
+  const cashEquivalents = cashEquivalentSymbols(config);
+  const now = new Date();
+  const snapshots: WebullAccountSnapshot[] = [];
+  const caches: { path: string; cache: OrderCache }[] = [];
+  try {
+    const accounts = await client.accounts();
+    for (const { label, accountId } of mapping) {
+      const account = accounts.find((a) => a.accountId === accountId);
+      if (account === undefined) {
+        throw new WebullError(`WEBULL_ACCOUNTS maps ${label} to an account this key can't see. Run \`equity-watch webull accounts\`.`, 0);
+      }
+      const path = orderCachePath(opts.orderCacheDir, label);
+      const cached = opts.fullHistory ? null : loadOrderCache(path);
+      const start = nextReadStart(cached, fullFrom);
+      const end = now.toISOString();
+      const cache = mergeOrders(cached, await client.orderHistory(accountId, start, end), start, end);
+      caches.push({ path, cache });
+      snapshots.push({
+        label,
+        accountId,
+        accountType: account.accountType,
+        balance: await client.balance(accountId),
+        positions: await client.positions(accountId),
+        orders: cache.orders,
+        historyFrom: cache.readFrom,
+      });
+    }
+  } catch (err) {
+    const message = err instanceof WebullAuthError || err instanceof WebullError ? err.message : errorText(err);
+    console.error(`Webull sync failed: ${message}`);
+    if (!opts.dryRun) {
+      const store = loadHoldingsStore(opts.holdingsFile);
+      store.webull = { ...(store.webull ?? { readAt: "", accounts: [] }), problem: { at: now.toISOString(), message, login: err instanceof WebullAuthError } };
+      saveHoldingsStore(opts.holdingsFile, store);
+    }
+    return;
+  }
+
+  // Saved even on a dry run: it is Webull's history, not a change to the record,
+  // and without it every dry run re-reads every order since 2018 (minutes, at
+  // Webull's rate limit). Booking by order id makes a re-read harmless anyway.
+  for (const { path, cache } of caches) {
+    saveOrderCache(path, cache);
+  }
+
+  const store = loadHoldingsStore(opts.holdingsFile);
+  const plan = planWebullSync(store, snapshots, { cashEquivalents: new Set(cashEquivalents), today: localDateString(now), lowCash });
+  if (opts.dryRun) {
+    console.log(`Dry run against Webull (${client.host}): nothing is written.\n`);
+    for (const line of renderSyncPlan(plan, cashEquivalents)) {
+      console.log(line);
+    }
+    return;
+  }
+
+  const result = applySyncPlan(store, plan, now);
+  saveHoldingsStore(opts.holdingsFile, store);
+
+  const cashName = cashEquivalents.length > 0 ? cashEquivalents.join("+") : "cash equivalents";
+  for (const a of result.applied) {
+    console.log(`  ${a.account} ${a.symbol}: ${describeChange(a.change)}`);
+  }
+  for (const r of result.refused) {
+    console.log(`  ! ${r.account} ${r.symbol}: ${r.message}`);
+  }
+  for (const c of result.cashChanges) {
+    console.log(`  ! ${describeCashStatus(c.label, c.to, c.cash, cashName)}`);
+  }
+  const unmatched = store.webull?.accounts.reduce((n, a) => n + a.unmatched.filter((u) => !u.ignored).length, 0) ?? 0;
+  const flagged = store.webull?.accounts.reduce((n, a) => n + a.flags.length, 0) ?? 0;
+  console.log(
+    `Webull sync: ${result.applied.length} change(s) applied` +
+      `${unmatched > 0 ? `, ${unmatched} unmatched position(s) to adopt or ignore` : ""}` +
+      `${flagged > 0 ? `, ${flagged} flagged` : ""}.`
+  );
+}
+
 interface DashboardOpts extends AlertCommonOpts {
   holdingsFile: string;
   spreadStopsFile: string;
@@ -2436,6 +2648,25 @@ function buildProgram(): Command {
     .description("One-time interactive Schwab OAuth login")
     .action((opts: CommonOpts) => cmdSchwabLogin(opts));
 
+  const WEBULL_TOKEN_OPTION = [
+    "--webull-token-path <path>",
+    "Where to keep the Webull access token",
+    join(homedir(), ".equity_watch", "webull_token.json"),
+  ] as const;
+
+  program
+    .command("webull-login")
+    .description("Create a Webull access token and wait for its SMS code to be entered in the Webull app")
+    .option(...WEBULL_TOKEN_OPTION)
+    .action((opts: WebullOpts) => cmdWebullLogin(opts));
+
+  const webullCmd = program.command("webull").description("Webull accounts (read-only; see docs/WEBULL_SYNC_PLAN.md)");
+  webullCmd
+    .command("accounts")
+    .description("List the Webull accounts the key can see, with the ids WEBULL_ACCOUNTS maps to lot labels")
+    .option(...WEBULL_TOKEN_OPTION)
+    .action((opts: WebullOpts) => cmdWebullAccounts(opts));
+
   withCommon(program.command("beta [symbols...]"))
     .description(
       "Write Schwab's beta for each symbol as JSON (equity-watch/betas@1) for another program to read; " +
@@ -2737,6 +2968,18 @@ function buildProgram(): Command {
     .option("--replace", "Clear existing lots first instead of adding to them")
     .option("--dry-run", "Print the plan without writing anything")
     .action((opts: HoldingsImportOpts) => cmdHoldingsImport(opts));
+
+  holdingsCmd
+    .command("sync")
+    .description("Bring the webull holdings in line with the mapped Webull accounts, and record their cash")
+    .option(...HOLDINGS_FILE_OPTION)
+    .option(...configOption("supplies cashEquivalents"))
+    .option(...WEBULL_TOKEN_OPTION)
+    .option("--order-cache-dir <path>", "Where each account's order history is kept between runs", DEFAULT_ORDER_CACHE_DIR)
+    .option("--history-from <YYYY-MM-DD>", "On a first or full read, start here (default: all of Webull's history, from 2018-05-21)")
+    .option("--full-history", "Read the whole order history again instead of the days since the last run")
+    .option("--dry-run", "Print the plan without changing holdings.json (the order-history cache is still kept)")
+    .action((opts: HoldingsSyncOpts) => cmdHoldingsSync(opts));
 
   withHoldingsChange(holdingsCmd.command("add-lot"))
     .description("Record a purchase lot")

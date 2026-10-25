@@ -262,6 +262,7 @@ Resources:
               "revisit.relevel": "revisitId", "revisit.apply": "revisitId", "revisit.dismiss": "revisitId",
               "lot.add": null, "lot.edit": "lotId", "lot.remove": "lotId", "position.remove": "symbol",
               "stop.add": null, "stop.edit": "stopId", "stop.remove": "stopId", "holdings.cover": "symbol",
+              "holding.adopt": "symbol", "holding.link": "symbol", "holding.unlink": "symbol", "holding.ignore": "symbol",
             };
             if (typeof op.type !== "string" || !Object.prototype.hasOwnProperty.call(TARGET_KEY, op.type)) return reply(400, { error: "Unknown op type" });
             if (!isObject(op.params)) return reply(400, { error: "params must be an object" });

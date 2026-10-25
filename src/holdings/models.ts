@@ -15,6 +15,8 @@ export interface Lot {
   account?: string;
   /** Company name from an import, for display. */
   name?: string;
+  /** The Webull order that bought it, for a lot the Webull sync wrote. */
+  orderId?: string;
 }
 
 export interface Stop {
@@ -84,6 +86,8 @@ export interface Sale {
   lots: SaleLot[];
   /** Present when the person said a stop triggered this sale. Absent means "not marked as one", not "known not to be". */
   stopHit?: StopHit;
+  /** The Webull order that sold it, for a sale the Webull sync recorded. */
+  orderId?: string;
 }
 
 /**
@@ -109,10 +113,118 @@ export interface SaleLot {
   emptied: boolean;
 }
 
+/**
+ * Who keeps one account's position in one symbol (docs/WEBULL_SYNC_PLAN.md).
+ * Webull reports positions per account and symbol, so that pair is what the
+ * sync owns, not single lots. A `webull` holding's lots and sales are written by
+ * `holdings sync`; a `manual` one is never rewritten. No record at all means
+ * manual: every holding was, before the sync existed.
+ */
+export interface Holding {
+  /** The lots' account label ("margin", "roth"), mapped to a Webull account id by WEBULL_ACCOUNTS. */
+  account: string;
+  symbol: string;
+  source: "webull" | "manual";
+  /**
+   * When it became a webull holding (Adopt or Link): the Webull read the lots
+   * were taken from or checked against. Fills before it are already in them.
+   */
+  linkedAt?: string;
+  /**
+   * Shares of each Webull order already written as a lot or sale, by order id.
+   * Keyed by order rather than by time because order history can lag: an order
+   * that shows up late, dated before the last sync, is still booked once. A
+   * partly filled order books its new shares on a later run.
+   */
+  booked?: Record<string, number>;
+  /** A manual holding whose Webull position the person chose to leave out of the record (Ignore). */
+  ignored?: boolean;
+}
+
+/** One proposed lot: from a fill (with its order), or at the average cost (no order). */
+export interface PlannedLot {
+  count: number;
+  basisPerShare: number;
+  purchaseDate: string;
+  orderId: string | null;
+}
+
+/** Cash and what is parked in cash equivalents, for one account, as Webull last reported it. */
+export interface CashSummary {
+  /** Negative in a margin account means borrowing. */
+  cash: number;
+  settledCash: number | null;
+  unsettledCash: number | null;
+  /** Market value of the cash-equivalent positions (BIL). */
+  cashEquivalents: number;
+  /** Last price of the first cash equivalent held, for "sell N shares to cover". */
+  cashEquivalentPrice: number | null;
+  total: number;
+}
+
+/**
+ * How an account stands on the never-borrow rule (docs/WEBULL_SYNC_PLAN.md):
+ * `onMargin` (cash + BIL below zero) is worse than `usingMargin` (cash below
+ * zero, BIL covers it), which is worse than `low` (cash + BIL under the
+ * low-water mark).
+ */
+export type CashStatus = "ok" | "low" | "usingMargin" | "onMargin";
+
+/** What the last `holdings sync` found in one Webull account. Shares and money: never leaves the machine but in the vault. */
+export interface WebullAccountState {
+  label: string;
+  /** MARGIN or CASH (a Roth IRA is CASH). */
+  accountType: string;
+  cash: CashSummary | null;
+  cashStatus: CashStatus;
+  /** The low-water mark it was judged against, when one is set. */
+  lowCash: number | null;
+  /**
+   * Webull positions with no lots in this account: Adopt or Ignore. `booked` is
+   * every order's filled shares at the read, which Adopt books, so a working
+   * order's later fills are all that the sync adds.
+   */
+  unmatched: {
+    symbol: string;
+    count: number;
+    basis: number;
+    lastPrice: number;
+    adopt: PlannedLot[];
+    fallback: string | null;
+    ignored: boolean;
+    booked: Record<string, number>;
+  }[];
+  /**
+   * Manual holdings Webull also holds: Link. `count` and `basis` are the
+   * record's, `webullCount` Webull's; `differences` empty means they agree.
+   */
+  links: { symbol: string; count: number; basis: number; webullCount: number; differences: string[]; booked: Record<string, number> }[];
+  /** Webull holdings the sync couldn't bring in line, and why. Nothing was applied to them. */
+  flags: { symbol: string; message: string }[];
+  /** Positions the sync doesn't model (options). */
+  skipped: { symbol: string; reason: string }[];
+}
+
+export interface WebullState {
+  /** When Webull was last read successfully. */
+  readAt: string;
+  accounts: WebullAccountState[];
+  /** Set when the last attempt couldn't read Webull (a dead token, an outage); cleared by the next good read. */
+  problem?: { at: string; message: string; login: boolean };
+}
+
+export function holdingKey(account: string, symbol: string): string {
+  return `${account}:${symbol.toUpperCase()}`;
+}
+
 export interface HoldingsStore {
   lots: Lot[];
   stops: Stop[];
   alertState: HoldingAlertState[];
+  /** Absent in stores written before the Webull sync. Missing entries are manual. */
+  holdings?: Holding[];
+  /** The last Webull read (docs/WEBULL_SYNC_PLAN.md). Absent until `holdings sync` first runs. */
+  webull?: WebullState;
   /** Absent in stores written before 2026-09-25, which recorded no removals. */
   removedLots?: RemovedLot[];
   /** Absent in stores written before 2026-10-07, which recorded no sales. */
