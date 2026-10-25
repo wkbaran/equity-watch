@@ -11,7 +11,7 @@
 #          the working directory, while `web/` is found relative to dist/, which is
 #          why the two can't simply share a folder.
 
-FROM node:22-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -19,7 +19,7 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-FROM node:22-bookworm-slim
+FROM node:26-bookworm-slim
 # tzdata so TZ shows in logs and report names; curl for the healthcheck ping
 # and for fetching supercronic below.
 RUN apt-get update \

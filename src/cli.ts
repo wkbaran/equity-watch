@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-import "dotenv/config";
+import "./env.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { config as loadDotenv } from "dotenv";
+import { loadEnvFile } from "./env.js";
 import { stringify } from "csv-stringify/sync";
 import { analyzeAlert, AnalysisParams } from "./analysis.js";
 import { revisitsToBreakoutAlerts } from "./alerts/bridge.js";
@@ -3064,10 +3064,10 @@ interface McpCmdOpts {
 }
 
 async function cmdMcp(opts: McpCmdOpts): Promise<void> {
-  // An MCP client starts this from wherever it likes, so dotenv's working-
-  // directory .env may not be this repo's. Fall back to the one beside the
+  // An MCP client starts this from wherever it likes, so the working
+  // directory's .env may not be this repo's. Fall back to the one beside the
   // code; values already in the environment win, as usual.
-  loadDotenv({ path: fileURLToPath(new URL("../.env", import.meta.url)), quiet: true });
+  loadEnvFile(fileURLToPath(new URL("../.env", import.meta.url)));
   const domain = process.env.CUSTOM_DOMAIN?.trim();
   const siteUrl = opts.siteUrl ?? process.env.DASHBOARD_URL?.trim() ?? (domain ? `https://${domain}` : null);
   if (!siteUrl) {

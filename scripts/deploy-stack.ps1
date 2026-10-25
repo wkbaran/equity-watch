@@ -14,7 +14,8 @@ So: put the values in .env once, run this, and they are passed every time.
   .\scripts\deploy-stack.ps1 -DryRun                # print the plan, deploy nothing
 
 Precedence per value: CLI argument > environment variable > .env. That is the same
-order dotenv gives the Node CLI, which does not override an already-set variable.
+order the Node CLI loads .env in (process.loadEnvFile), which does not override an
+already-set variable.
 #>
 [CmdletBinding()]
 param(

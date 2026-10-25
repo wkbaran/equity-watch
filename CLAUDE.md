@@ -1289,6 +1289,19 @@ measures real windows instead. Intraday baselines are matched by time of day
 because volume is U-shaped — MSFT's closing hour runs ~2.4x its early
 afternoon.
 
+## Node 26, and no dotenv
+
+Since 2026-10-25 the CLI and image run Node 26 (`engines`, `.node-version`,
+`docker/Dockerfile`), and `.env` is loaded by `src/env.ts` with Node's own
+`process.loadEnvFile`, not the dotenv package. Same rules: an already-set
+variable wins, and the parse matched dotenv's on every real .env here. Keep
+`import "./env.js"` the first import in cli.ts, so later modules see the
+settings when they load.
+
+The ops Lambda stays on `nodejs24.x` until Lambda's Node 26 runtime leaves
+public preview (targeted for November 2026); move it then, in
+`infra/cloudformation.yaml`, and redeploy the stack.
+
 ## Webull's API (`src/providers/webull.ts`, `holdings sync`)
 
 Added 2026-10-25, phases 1 and 2 of `docs/WEBULL_SYNC_PLAN.md`, before there

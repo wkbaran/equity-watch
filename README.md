@@ -11,7 +11,7 @@ A static browser dashboard shows the queue, your holdings and every live alert, 
 lets you act on them from any device, or lets an AI agent act on them for you, with
 your approval, through WebMCP in the browser or an MCP server.
 
-![Node 22](https://img.shields.io/badge/node-22-339933?logo=nodedotjs&logoColor=white)
+![Node 26](https://img.shields.io/badge/node-26-339933?logo=nodedotjs&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
 ![Market data: Schwab](https://img.shields.io/badge/market%20data-Schwab%20API-00A0DF)
 ![AWS optional](https://img.shields.io/badge/AWS-S3%20%C2%B7%20CloudFront%20%C2%B7%20SQS-FF9900?logo=amazonwebservices&logoColor=white)
@@ -41,17 +41,18 @@ Only Schwab is required. Everything else is optional, and the engine runs withou
 | Sector, industry and listing exchange | [Financial Modeling Prep](https://site.financialmodelingprep.com/) | Optional. Free tier, 250 calls/day, cached locally. Without it, chart links fall back to the bare symbol |
 | Charts | [TradingView](https://www.tradingview.com/) | Links and the free embeddable chart widget. No account or key |
 | Dashboard hosting | AWS S3 + CloudFront | Optional. The page is static files; a CloudFormation template is included (`infra/`) |
-| Editing from the dashboard | AWS Lambda (Node 22) + SQS FIFO | Optional. Changes queue in the cloud and the local machine collects them |
+| Editing from the dashboard | AWS Lambda (Node 24) + SQS FIFO | Optional. Changes queue in the cloud and the local machine collects them |
 | Custom domain | AWS Route 53 + Certificate Manager | Optional. Otherwise the site serves from its `*.cloudfront.net` URL |
 | Scheduled runs | Windows Task Scheduler, cron, or Docker | One of them, to run unattended |
 | Run monitoring | [healthchecks.io](https://healthchecks.io) or any ping URL | Optional dead-man's switch for scheduled runs |
 | AI agents | [WebMCP](https://github.com/webmachinelearning/webmcp) (Chrome 149+, behind a flag) or any [MCP](https://modelcontextprotocol.io/) client | Optional. The same tools either way; see [Agents](#agents-webmcp-and-mcp) |
 | Importing existing data | TradingView alert CSV exports, Webull holdings CSV exports | One-time migration only. There is no brokerage sync |
 
-The CLI is TypeScript on Node.js 22, with [commander](https://github.com/tj/commander.js),
+The CLI is TypeScript on Node.js 26, with [commander](https://github.com/tj/commander.js),
 [csv-parse](https://csv.js.org/parse/)/[csv-stringify](https://csv.js.org/stringify/),
-[dotenv](https://github.com/motdotla/dotenv), the AWS SDK v3 (S3, CloudFront, SQS) and
-the [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk).
+the AWS SDK v3 (S3, CloudFront, SQS) and the
+[MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk). `.env` is
+read by Node itself (`process.loadEnvFile`).
 The dashboard is plain HTML, CSS and JavaScript with no framework or bundler; it
 loads Archivo from Google Fonts and decrypts private holdings and stories in the
 browser with WebCrypto. Tests use [Vitest](https://vitest.dev/) and [Playwright](https://playwright.dev/).

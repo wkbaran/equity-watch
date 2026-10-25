@@ -14,8 +14,8 @@
 #   ./scripts/deploy-stack.sh --dry-run            # print the command, run nothing
 #
 # Precedence per value: CLI argument > exported environment variable > .env.
-# That is the same order dotenv gives the Node CLI, which does not override a
-# variable already set in the environment.
+# That is the same order the Node CLI loads .env in (process.loadEnvFile), which
+# does not override a variable already set in the environment.
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"

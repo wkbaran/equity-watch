@@ -211,7 +211,10 @@ Resources:
     Condition: HasOps
     Properties:
       FunctionName: !Sub '${BucketName}-ops'
-      Runtime: nodejs22.x
+      # Node 24: Lambda's Node 26 runtime is a public preview until its GA
+      # (targeted for November 2026), and AWS says not to run production on a
+      # preview. The handler is a few lines with nothing Node-26-specific.
+      Runtime: nodejs24.x
       Handler: index.handler
       Role: !GetAtt OpsFunctionRole.Arn
       Timeout: 10
