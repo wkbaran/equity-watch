@@ -25,6 +25,11 @@
  * A spread stop fires once per level: a re-cross of a level that already fired
  * is not news. The next sync's new level re-arms it, so a spread still past its
  * stop is reported again after each spread-book run (twice a trading day).
+ *
+ * Two books: the real one (`spread-alerts.json`) and spread-book's paper trades
+ * (`paper-spread-alerts.json`, `book: "paper"`, every key prefixed `paper:`).
+ * Each file reconciles only its own book's stops, so neither can cancel the
+ * other's, and a paper stop says so wherever it is shown.
  */
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -36,6 +41,10 @@ export const SPREAD_FILE_SCHEMA = "spread-book/alerts@1";
 export const SPREAD_STORE_SCHEMA = "equity-watch/spread-stops@1";
 /** Cancelled stops are kept this long, so a fire on the page still has its row. */
 export const CANCELLED_KEEP_DAYS = 30;
+
+/** The real book, or spread-book's paper trades. */
+export type SpreadBook = "real" | "paper";
+export const PAPER_KEY_PREFIX = "paper:";
 
 export interface SpreadLeg {
   strike: number;
@@ -71,6 +80,8 @@ export interface SpreadAlertWanted {
 }
 
 export interface SpreadAlertsFile {
+  /** Which book the file is the complete set for. "real" when the file doesn't say (files from before paper trades). */
+  book: SpreadBook;
   generatedAt: string;
   spotsAsOf: string | null;
   source: string;
@@ -95,6 +106,8 @@ export interface SpreadStop {
   levelAsOf: string;
   spread: SpreadInfo;
   status: "live" | "cancelled";
+  /** "paper" for a paper trade's stop; absent for the real book (stores from before paper trades). */
+  book?: "paper";
   createdAt: string;
   cancelledAt: string | null;
   /** The side of the level price is on, as the static engine tracks it. */
@@ -107,17 +120,23 @@ export interface SpreadStopsStore {
   schema: string;
   /** generatedAt of the last spread-book file synced, for "levels as of". */
   syncedFrom: string | null;
+  /** The same for the paper book's file. */
+  paperSyncedFrom: string | null;
   stops: SpreadStop[];
 }
 
-export const emptyStore = (): SpreadStopsStore => ({ schema: SPREAD_STORE_SCHEMA, syncedFrom: null, stops: [] });
+export const emptyStore = (): SpreadStopsStore => ({ schema: SPREAD_STORE_SCHEMA, syncedFrom: null, paperSyncedFrom: null, stops: [] });
+
+export const bookOf = (s: Pick<SpreadStop, "book">): SpreadBook => (s.book === "paper" ? "paper" : "real");
+/** When the given book's levels were last synced. */
+export const syncedFromOf = (store: SpreadStopsStore, book: SpreadBook): string | null => (book === "paper" ? store.paperSyncedFrom : store.syncedFrom);
 
 // ---- the store ----------------------------------------------------------------
 
 export function loadSpreadStops(path: string): SpreadStopsStore {
   if (!existsSync(path)) return emptyStore();
   const raw = JSON.parse(readFileSync(path, "utf-8")) as Partial<SpreadStopsStore>;
-  return { schema: SPREAD_STORE_SCHEMA, syncedFrom: raw.syncedFrom ?? null, stops: raw.stops ?? [] };
+  return { schema: SPREAD_STORE_SCHEMA, syncedFrom: raw.syncedFrom ?? null, paperSyncedFrom: raw.paperSyncedFrom ?? null, stops: raw.stops ?? [] };
 }
 
 export function saveSpreadStops(path: string, store: SpreadStopsStore): void {
@@ -180,15 +199,21 @@ export function parseSpreadFile(text: string): SpreadFileRead {
   if (doc.schema !== SPREAD_FILE_SCHEMA) return { ok: false, reason: `schema ${String(doc.schema)}, expected ${SPREAD_FILE_SCHEMA}` };
   if (doc.complete !== true) return { ok: false, reason: "spread-book marked it incomplete (no exit plans in that snapshot)" };
   if (!isStr(doc.generatedAt) || !Array.isArray(doc.alerts) || !Array.isArray(doc.unpriced)) return { ok: false, reason: "missing generatedAt, alerts or unpriced" };
+  if (doc.book !== undefined && doc.book !== "real" && doc.book !== "paper") return { ok: false, reason: `book ${JSON.stringify(doc.book)}, expected real or paper` };
+  const book: SpreadBook = doc.book === "paper" ? "paper" : "real";
+  // A paper key is always prefixed and a real one never is, so the two books can't share a stop.
+  const inBook = (key: string) => key.startsWith(PAPER_KEY_PREFIX) === (book === "paper");
   const alerts: SpreadAlertWanted[] = [];
   for (const [i, v] of doc.alerts.entries()) {
     const w = wantedOf(v);
     if (w === null) return { ok: false, reason: `alert ${i} is not one this version understands` };
+    if (!inBook(w.key)) return { ok: false, reason: `alert ${i}'s key doesn't belong to the ${book} book` };
     alerts.push(w);
   }
   return {
     ok: true,
     file: {
+      book,
       generatedAt: doc.generatedAt,
       spotsAsOf: isStr(doc.spotsAsOf) ? doc.spotsAsOf : null,
       source: isStr(doc.source) ? doc.source : "",
@@ -218,7 +243,8 @@ export interface SyncResult {
 }
 
 /**
- * Reconciles the store with spread-book's file. Pure: returns a new store.
+ * Reconciles the store with spread-book's file, for the file's book only: the
+ * other book's stops are left exactly as they are. Pure: returns a new store.
  * An older file than the one last synced is refused by the caller, not here.
  */
 export function syncSpreadStops(store: SpreadStopsStore, file: SpreadAlertsFile, now: Date): SyncResult {
@@ -233,7 +259,7 @@ export function syncSpreadStops(store: SpreadStopsStore, file: SpreadAlertsFile,
     if (had === undefined || had.status === "cancelled") {
       const stop: SpreadStop = {
         key: w.key, symbol: w.symbol, direction: w.direction, level: w.level, levelAsOf: file.generatedAt, spread: w.spread,
-        status: "live", createdAt: had?.createdAt ?? nowIso, cancelledAt: null, lastKnownSide: safeSide(w.direction),
+        status: "live", ...(file.book === "paper" ? { book: "paper" as const } : {}), createdAt: had?.createdAt ?? nowIso, cancelledAt: null, lastKnownSide: safeSide(w.direction),
         fires: had?.fires ?? [],
       };
       byKey.set(w.key, stop);
@@ -252,7 +278,7 @@ export function syncSpreadStops(store: SpreadStopsStore, file: SpreadAlertsFile,
   }
 
   for (const s of byKey.values()) {
-    if (s.status !== "live" || wanted.has(s.key)) continue;
+    if (s.status !== "live" || wanted.has(s.key) || bookOf(s) !== file.book) continue;
     if (unpriced.has(s.key)) {
       result.kept.push(s);
       continue;
@@ -265,7 +291,8 @@ export function syncSpreadStops(store: SpreadStopsStore, file: SpreadAlertsFile,
   const keepAfter = now.getTime() - CANCELLED_KEEP_DAYS * 86_400_000;
   result.store = {
     schema: SPREAD_STORE_SCHEMA,
-    syncedFrom: file.generatedAt,
+    syncedFrom: file.book === "real" ? file.generatedAt : store.syncedFrom,
+    paperSyncedFrom: file.book === "paper" ? file.generatedAt : store.paperSyncedFrom,
     stops: [...byKey.values()].filter((s) => s.status === "live" || Date.parse(s.cancelledAt ?? nowIso) >= keepAfter),
   };
   return result;
@@ -279,8 +306,8 @@ export function newFire(price: number, level: number, at: string, session: Sessi
 /** The fire at the stop's current level, if it has fired there. */
 export const fireAtLevel = (s: SpreadStop): SpreadFire | null => [...s.fires].reverse().find((f) => f.level === s.level) ?? null;
 
-/** The key spread-book's report selects a spread by (?spread=): the stop's key without its episode. */
-export const reportKey = (s: Pick<SpreadStop, "key">): string => s.key.replace(/#\d+$/, "");
+/** The key spread-book's report selects a spread by (?spread=): the stop's key without its episode or paper prefix. */
+export const reportKey = (s: Pick<SpreadStop, "key">): string => s.key.replace(/#\d+$/, "").replace(/^paper:/, "");
 
 /** "CRM 260/270 call", the way the page and the log name a spread. */
 export const spreadLabel = (s: SpreadStop): string => {
@@ -291,5 +318,5 @@ export const spreadLabel = (s: SpreadStop): string => {
 /** What a fire means, in one line. Says "check", never "close": the stock price is a stand-in for the spread's. */
 export function describeSpreadFire(s: SpreadStop, f: SpreadFire): string {
   const way = s.direction === "down" ? "below" : "above";
-  return `${spreadLabel(s)}: stock ${f.price} crossed ${way} its stop level ${f.level} (spread about $${s.spread.stopDebit.toFixed(2)}). Check the spread's price.`;
+  return `${bookOf(s) === "paper" ? "Paper " : ""}${spreadLabel(s)}: stock ${f.price} crossed ${way} its stop level ${f.level} (spread about $${s.spread.stopDebit.toFixed(2)}). Check the spread's price.`;
 }

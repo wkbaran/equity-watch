@@ -137,6 +137,53 @@ describe("syncSpreadStops", () => {
   });
 });
 
+// ---- the paper book -------------------------------------------------------------
+
+const paperOf = (a: typeof CRM) => ({ ...a, key: "paper:" + a.key });
+const paperFile = (over: Record<string, unknown> = {}) => parsed({ book: "paper", generatedAt: "2026-10-26T14:08:00.000Z", alerts: [paperOf(NVDA)], unpriced: [], ...over });
+
+describe("paper stops", () => {
+  it("read the paper book's file, whose keys are all prefixed, and refuse a key in the wrong book", () => {
+    expect(paperFile().book).toBe("paper");
+    expect(parsed().book).toBe("real");
+    expect(parseSpreadFile(fileText({ book: "paper" }))).toMatchObject({ ok: false, reason: expect.stringContaining("doesn't belong to the paper book") });
+    expect(parseSpreadFile(fileText({ alerts: [paperOf(CRM)] }))).toMatchObject({ ok: false, reason: expect.stringContaining("real book") });
+    expect(parseSpreadFile(fileText({ book: "dream" }))).toMatchObject({ ok: false });
+  });
+
+  it("each file reconciles only its own book: neither cancels the other's stops", () => {
+    const real = synced().store;
+    const both = syncSpreadStops(real, paperFile(), NOW);
+    expect(both.cancelled).toEqual([]);
+    expect(both.store.stops.map((s) => [s.symbol, s.book ?? "real"])).toEqual([["CRM", "real"], ["NVDA", "real"], ["NVDA", "paper"]]);
+    expect([both.store.syncedFrom, both.store.paperSyncedFrom]).toEqual(["2026-10-26T13:45:00.000Z", "2026-10-26T14:08:00.000Z"]);
+    // the real book closes everything: the paper stop stays
+    const realGone = syncSpreadStops(both.store, parsed({ generatedAt: "2026-10-26T19:25:00.000Z", alerts: [] }), NOW);
+    expect(realGone.cancelled.map((s) => s.book ?? "real")).toEqual(["real", "real"]);
+    expect(realGone.store.stops.filter((s) => s.status === "live").map((s) => s.key)).toEqual(["paper:" + NVDA.key]);
+    // and the paper book's empty file cancels only the paper stop
+    const paperGone = syncSpreadStops(both.store, paperFile({ alerts: [] }), NOW);
+    expect(paperGone.cancelled.map((s) => s.key)).toEqual(["paper:" + NVDA.key]);
+    expect(paperGone.store.syncedFrom).toBe("2026-10-26T13:45:00.000Z");
+  });
+
+  it("say they are paper in the fire's words and on the page, and link to spread-book by the plain key", () => {
+    const store = syncSpreadStops(emptyStore(), paperFile(), NOW).store;
+    const [stop] = store.stops;
+    stop.fires.push({ id: "p1", at: NOW.toISOString(), price: 203, level: stop.level, session: "regular" });
+    const d = buildDashboard({ alerts: [], revisits: [], holdings: emptyHoldingsStore(), quotes: new Map(), now: later(1), spreadStops: store });
+    const row = d.spreadStops!.rows[0];
+    expect(row.paper).toBe(true);
+    expect(row.reportKey).toBe(NVDA.key.replace(/#1$/, ""));
+    expect(d.spreadStops!.fires[0].headline).toMatch(/^Paper NVDA 195\/200 put: /);
+    expect(d.spreadStops!.paperSyncedFrom).toBe("2026-10-26T14:08:00.000Z");
+  });
+
+  it("an old store without paperSyncedFrom loads as having synced no paper file", () => {
+    expect(emptyStore().paperSyncedFrom).toBeNull();
+  });
+});
+
 // ---- checking -----------------------------------------------------------------
 
 function bar(at: Date, close: number): PriceBar {

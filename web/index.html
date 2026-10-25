@@ -228,6 +228,8 @@
   .tag.pending { color: var(--signal); background: var(--wash); }
   .tag.link { color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); background: transparent; }
   .tag.at-stop { color: var(--on-signal); background: var(--signal); }
+  /* A paper trade's stop: dashed, like spread-book's own paper tag, so it never reads as a real position. */
+  .tag.paper { color: var(--sub); background: transparent; box-shadow: none; border: 1px dashed var(--line-strong); text-transform: uppercase; letter-spacing: 0.05em; }
   .spread-row .spread-line { display: block; }
   .spread-row .spread-tags { display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
   /* Why a queue row sits where it does. Accelerating is the loudest; a drift is the quietest. */

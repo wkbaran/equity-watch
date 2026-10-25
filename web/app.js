@@ -3137,7 +3137,8 @@
     const book = current?.site?.spreadBookUrl;
     const os = vaultData?.spreadLinks?.[r.key];
     return [
-      book ? h("a", { class: "tag link", href: `${book}/?spread=${encodeURIComponent(r.reportKey)}`, target: SPREAD_BOOK_TARGET, text: "spread-book", title: "Open this spread in spread-book" }) : null,
+      // A paper trade's spread is in spread-book's paper book, under paper/.
+      book ? h("a", { class: "tag link", href: `${book}/${r.paper ? "paper/" : ""}?spread=${encodeURIComponent(r.reportKey)}`, target: SPREAD_BOOK_TARGET, text: "spread-book", title: r.paper ? "Open this paper trade in spread-book's paper book" : "Open this spread in spread-book" }) : null,
       os ? h("a", { class: "tag link", href: os, target: OPTIONSTRAT_TARGET, text: "OptionStrat", title: "Open the saved trade in OptionStrat" }) : null,
     ].filter(Boolean);
   }
@@ -3182,7 +3183,13 @@
               r.fired === null ? "" : `. Fired at ${r.fired.price}, ${when(r.fired.at)}.`
             )
           ),
-          h("span", { class: "status spread-tags" }, ...(r.fired === null ? [] : [h("span", { class: "tag at-stop", text: "at stop" })]), ...spreadLinks(r))
+          h(
+            "span",
+            { class: "status spread-tags" },
+            ...(r.paper ? [h("span", { class: "tag paper", text: "paper", title: "A paper trade's stop: spread-book's paper book, not a real position" })] : []),
+            ...(r.fired === null ? [] : [h("span", { class: "tag at-stop", text: "at stop" })]),
+            ...spreadLinks(r)
+          )
         );
       })
     );

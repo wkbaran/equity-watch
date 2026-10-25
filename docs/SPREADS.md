@@ -33,6 +33,20 @@ rise. **It fires once per level**: chop around the level is the same event. The 
 sync's new level re-arms it, so a spread that stays past its stop is reported again after
 each spread-book run.
 
+## Paper trades
+
+spread-book also keeps a paper book: spreads opened at live quotes and never placed. It
+writes their stops to `/shared/paper-spread-alerts.json` (`SPREAD_PAPER_ALERTS_FILE`), the
+same format with `book: "paper"` and every key prefixed `paper:`. `spreads sync` reads it
+after the real file, and **each file reconciles only its own book**: the real file can't
+cancel a paper stop, nor the paper file a real one. A key in the wrong book refuses the
+file. No paper file is the usual case and is skipped quietly.
+
+A paper stop is judged like any other, and says so everywhere: a dashed *paper* tag on its
+row, "Paper" at the start of its toast and log line, and its spread-book link opens the
+paper book (`paper/?spread=`). Unlike the real book, spread-book knows when a paper trade
+closes (its ledger records it), so an empty paper file is a real "everything closed".
+
 ## Where they show
 
 - The overview's **Spread stops** section: fired stops first, then the rest by distance
@@ -66,7 +80,7 @@ contract count, the credit or the OptionStrat link: size and value stay private
 
 | | |
 |---|---|
-| `spreads sync [--file <path>]` | reconcile with spread-book's file (default `/shared/spread-alerts.json`, or `SPREAD_ALERTS_FILE`). Fetches nothing |
+| `spreads sync [--file <path>] [--paper-file <path>]` | reconcile with spread-book's files (default `/shared/spread-alerts.json`, or `SPREAD_ALERTS_FILE`, and `/shared/paper-spread-alerts.json`, or `SPREAD_PAPER_ALERTS_FILE`). Fetches nothing |
 | `spreads check` | judge live stops against quotes; skips outside market sessions like `alert check` |
 | `spreads list` | the live stops and whether each has fired at its level |
 

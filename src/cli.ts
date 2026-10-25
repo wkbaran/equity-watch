@@ -95,13 +95,16 @@ import { companyInfoFromProfiles, loadCachedProfile, listCachedProfiles, profile
 import { exchangesFromProfiles } from "./tradingview.js";
 import { checkSpreadStops } from "./spreads/spreadCheck.js";
 import {
+  bookOf,
   describeSpreadFire,
   fireAtLevel,
   loadSpreadStops,
   readSpreadFile,
   saveSpreadStops,
   spreadLabel,
+  syncedFromOf,
   syncSpreadStops,
+  type SpreadBook,
 } from "./spreads/spreadStops.js";
 import { gatherKnownSymbols } from "./profiles/universe.js";
 import { ignoredSymbols, isIgnored, loadTuningConfig, resolveParamsForSymbol, type TuningConfig } from "./tuning.js";
@@ -1213,32 +1216,50 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
 interface SpreadsOpts extends CommonOpts {
   spreadStopsFile: string;
   file: string;
+  paperFile: string;
   regularOnly?: boolean;
   ignoreHours?: boolean;
 }
 
-/** `spreads sync`: reconcile the spread stops with spread-book's file. Fetches nothing. */
+/**
+ * `spreads sync`: reconcile the spread stops with spread-book's files, the real
+ * book's and the paper book's, each against its own stops only. Fetches nothing.
+ */
 function cmdSpreadsSync(opts: SpreadsOpts): void {
-  const read = readSpreadFile(opts.file);
+  syncSpreadBook(opts, opts.file, "real");
+  syncSpreadBook(opts, opts.paperFile, "paper");
+}
+
+function syncSpreadBook(opts: SpreadsOpts, file: string, book: SpreadBook): void {
+  const name = book === "paper" ? "Paper spread stops" : "Spread stops";
+  // Paper trading is optional: no paper file is the usual case, not news.
+  if (book === "paper" && !existsSync(file)) return;
+  const read = readSpreadFile(file);
   if (!read.ok) {
-    console.log(`Spread stops unchanged: ${read.reason}.`);
+    console.log(`${name} unchanged: ${read.reason}.`);
+    return;
+  }
+  if (read.file.book !== book) {
+    console.log(`${name} unchanged: ${file} is the ${read.file.book} book's file.`);
     return;
   }
   const store = loadSpreadStops(opts.spreadStopsFile);
   // An older file than the last one synced (a republished old snapshot, or a
   // restored backup) would move the levels back. Ignore it.
-  if (store.syncedFrom !== null && read.file.generatedAt < store.syncedFrom) {
-    console.log(`Spread stops unchanged: ${opts.file} is from ${read.file.generatedAt}, older than the last sync (${store.syncedFrom}).`);
+  const last = syncedFromOf(store, book);
+  if (last !== null && read.file.generatedAt < last) {
+    console.log(`${name} unchanged: ${file} is from ${read.file.generatedAt}, older than the last sync (${last}).`);
     return;
   }
   const r = syncSpreadStops(store, read.file, new Date());
   saveSpreadStops(opts.spreadStopsFile, r.store);
-  for (const s of r.added) console.log(`  + ${spreadLabel(s)}: stop level ${s.level} (${s.direction === "down" ? "below" : "above"})`);
-  for (const { stop, from } of r.relevelled) console.log(`  ~ ${spreadLabel(stop)}: ${from} -> ${stop.level}`);
-  for (const s of r.cancelled) console.log(`  - ${spreadLabel(s)}: spread closed, stop cancelled`);
-  const live = r.store.stops.filter((s) => s.status === "live").length;
+  const tag = book === "paper" ? "paper " : "";
+  for (const s of r.added) console.log(`  + ${tag}${spreadLabel(s)}: stop level ${s.level} (${s.direction === "down" ? "below" : "above"})`);
+  for (const { stop, from } of r.relevelled) console.log(`  ~ ${tag}${spreadLabel(stop)}: ${from} -> ${stop.level}`);
+  for (const s of r.cancelled) console.log(`  - ${tag}${spreadLabel(s)}: spread closed, stop cancelled`);
+  const live = r.store.stops.filter((s) => s.status === "live" && bookOf(s) === book).length;
   console.log(
-    `Spread stops: ${live} live from spread-book's ${read.file.generatedAt} snapshot; ` +
+    `${name}: ${live} live from spread-book's ${read.file.generatedAt} snapshot; ` +
       `${r.added.length} added, ${r.relevelled.length} moved, ${r.cancelled.length} cancelled, ${r.kept.length} kept without a level today.`
   );
 }
@@ -1271,7 +1292,7 @@ function cmdSpreadsList(opts: SpreadsOpts): void {
   for (const s of live) {
     const fire = fireAtLevel(s);
     console.log(
-      `  ${spreadLabel(s).padEnd(24)} ${s.direction === "down" ? "below" : "above"} ${String(s.level).padEnd(9)} ` +
+      `  ${((bookOf(s) === "paper" ? "paper " : "") + spreadLabel(s)).padEnd(30)} ${s.direction === "down" ? "below" : "above"} ${String(s.level).padEnd(9)} ` +
         `spread $${s.spread.stopDebit.toFixed(2)}${fire === null ? "" : `  FIRED ${fire.at} at ${fire.price}`}`
     );
   }
@@ -2637,7 +2658,8 @@ function buildProgram(): Command {
   const withSpreadsCommon = (cmd: Command): Command =>
     withCommon(cmd)
       .option(...SPREAD_STOPS_FILE_OPTION)
-      .option("--file <path>", "spread-book's alerts file", process.env.SPREAD_ALERTS_FILE ?? "/shared/spread-alerts.json");
+      .option("--file <path>", "spread-book's alerts file", process.env.SPREAD_ALERTS_FILE ?? "/shared/spread-alerts.json")
+      .option("--paper-file <path>", "spread-book's alerts file for its paper trades", process.env.SPREAD_PAPER_ALERTS_FILE ?? "/shared/paper-spread-alerts.json");
   withSpreadsCommon(spreadsCmd.command("sync"))
     .description("Add, move and cancel spread stops to match spread-book's file; fetches nothing, and changes nothing if the file is missing or incomplete")
     .action((opts: SpreadsOpts) => cmdSpreadsSync(opts));

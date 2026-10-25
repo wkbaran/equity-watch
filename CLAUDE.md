@@ -1267,6 +1267,12 @@ writes to `/shared/spread-alerts.json`. Things that look simplifiable and aren't
   `playwright/tests/spreadStops.e2e.ts` check both.
 - `spreads sync` reads a file and fetches nothing, so the run scripts call it even when
   the Schwab login has expired.
+- **Two books, each reconciled only by its own file.** spread-book's paper trades come in
+  `paper-spread-alerts.json` (`book: "paper"`, keys prefixed `paper:`). `syncSpreadStops`
+  only cancels stops of the file's book, and `syncedFrom` / `paperSyncedFrom` are kept
+  apart for the "older file" guard. Don't merge the files or drop the prefix: a paper and
+  a real spread on the same strikes would then be one stop, and either file would cancel
+  the other book's stops.
 
 ## A zero volume baseline must mean "cannot evaluate", never "no threshold"
 

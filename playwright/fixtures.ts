@@ -211,9 +211,9 @@ export const FIXTURE_PROFILES = new Map<string, CompanyInfo>([
 ]);
 
 /**
- * Two spread stops from spread-book (src/spreads/): an NVDA put spread whose
- * stock has fallen through its stop (fired ten minutes ago), and an MSFT call
- * spread still a little under its level.
+ * Three spread stops from spread-book (src/spreads/): an NVDA put spread whose
+ * stock has fallen through its stop (fired ten minutes ago), an MSFT call
+ * spread still a little under its level, and a paper trade's MSFT call spread.
  */
 export const SPREAD_FIRE_ID = "sf0000n1";
 /** Stands in for SPREAD_BOOK_URL. */
@@ -221,6 +221,7 @@ export const SPREAD_BOOK_URL = "https://spread-book.example";
 export const FIXTURE_SPREAD_STOPS: SpreadStopsStore = {
   schema: "equity-watch/spread-stops@1",
   syncedFrom: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+  paperSyncedFrom: new Date(Date.now() - 3 * 3_600_000).toISOString(),
   stops: [
     {
       key: "NVDA Nov 27th 175/180 Bull Put Spread|2026-11-27|175/180#1",
@@ -251,6 +252,25 @@ export const FIXTURE_SPREAD_STOPS: SpreadStopsStore = {
         optionStratUrl: null,
       },
       status: "live",
+      createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+      cancelledAt: null,
+      lastKnownSide: "below",
+      fires: [],
+    },
+    // A paper trade's stop (spread-book's paper book), on the same stock as a real one.
+    {
+      key: "paper:MSFT Nov 20th 445/450 Bear Call Spread|2026-11-20|445/450#1",
+      symbol: "MSFT",
+      direction: "up",
+      level: 440,
+      levelAsOf: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+      spread: {
+        name: "MSFT Nov 20th 445/450 Bear Call Spread", kind: "call", expiration: "2026-11-20",
+        short: { strike: 445, type: "C" }, long: { strike: 450, type: "C" }, stopDebit: 1.52, shortDeltaAtLevel: 0.36,
+        optionStratUrl: null,
+      },
+      status: "live",
+      book: "paper",
       createdAt: new Date(Date.now() - 86_400_000).toISOString(),
       cancelledAt: null,
       lastKnownSide: "below",
