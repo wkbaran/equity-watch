@@ -138,5 +138,10 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides "${overrides[@]}"
 
+# Every output except the secret access key, which belongs in .env and nowhere
+# else: printed on every deploy, it ended up in terminal scrollback and logs.
+# On a first deploy, read it once with:
+#   aws cloudformation describe-stacks --region <region> --stack-name <stack> \
+#     --query "Stacks[0].Outputs[?OutputKey=='SecretAccessKey'].OutputValue" --output text
 aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK_NAME" \
-  --query 'Stacks[0].Outputs' --output table
+  --query "Stacks[0].Outputs[?OutputKey!='SecretAccessKey']" --output table
