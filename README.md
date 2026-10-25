@@ -254,7 +254,7 @@ applied or rejected with a reason. How that round trip works:
 | Covering new positions | `holdings cover` gives any held symbol with no live alert a starting level |
 | Polling | `alert check`: one quote batch for every live alert and position, gated on Schwab's real market hours (half days included) |
 | Firing and queueing | triggers append to `revisits.json` with a snapshot of the alert as it was |
-| Spread stops | `spreads sync` and `spreads check`: stop levels for option spreads from spread-book, watched like static levels ([docs/SPREADS.md](docs/SPREADS.md)) |
+| Spread stops | `spreads sync` and `spreads check`: stop levels for option spreads from spread-book, watched like static levels, for its real book and, kept apart and tagged *paper*, its paper trades ([docs/SPREADS.md](docs/SPREADS.md)) |
 | Publishing | `dashboard --publish --skip-unchanged`, which skips quotes entirely on a quiet run |
 | The page itself | re-fetches `dashboard.json` every minute, toasts new triggers, counts down to the next check |
 
@@ -434,7 +434,7 @@ Whichever way it arrives:
 | [`docs/HOLDINGS.md`](docs/HOLDINGS.md) | Lots and stops, `holdings cover`, the Webull import, basis-relative alerts |
 | [`docs/DASHBOARD.md`](docs/DASHBOARD.md) | Terminal and browser dashboard, views, notifications, headlines and stories, the WebMCP tools |
 | [`docs/MCP.md`](docs/MCP.md) | The MCP server: access flags, approval, running it for Claude Code and Open WebUI |
-| [`docs/SPREADS.md`](docs/SPREADS.md) | Spread stops from spread-book: the shared file, `spreads sync` and `spreads check`, what is kept apart from the main book |
+| [`docs/SPREADS.md`](docs/SPREADS.md) | Spread stops from spread-book: the shared files (real and paper), `spreads sync` and `spreads check`, what is kept apart from the main book |
 | [`docs/BETA.md`](docs/BETA.md) | `beta`: the betas file for another program, its guarantees and exit codes |
 | [`docs/ANALYSIS.md`](docs/ANALYSIS.md) | `analyze` breakout confirmation, `analysis.config.json` tuning, the FMP profile cache |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The Lambda/SQS edit round trip, the encrypted holdings vault, the Schwab login expiry, encryption and threat model |
