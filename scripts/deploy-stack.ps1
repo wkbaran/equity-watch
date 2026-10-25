@@ -83,6 +83,7 @@ $Params = [ordered]@{
     BasicAuthPassword = Resolve-Value "BasicAuthPassword" "BASIC_AUTH_PASSWORD"
     CustomDomain      = Resolve-Value "CustomDomain" "CUSTOM_DOMAIN"
     HostedZoneId      = Resolve-Value "HostedZoneId" "HOSTED_ZONE_ID"
+    PublishKeySerial  = Resolve-Value "PublishKeySerial" "PUBLISH_KEY_SERIAL" "1"
 }
 
 if (-not $Params.BucketName) {

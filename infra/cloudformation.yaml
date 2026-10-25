@@ -83,6 +83,16 @@ Parameters:
     # to go in the public one or nothing outside the VPC can resolve them.
     Description: Route 53 public Hosted Zone ID for CustomDomain. Required when CustomDomain is set.
 
+  PublishKeySerial:
+    Type: Number
+    Default: 1
+    # Changing it replaces PublishAccessKey: CloudFormation creates a new key and
+    # deletes the old one in the same update. That is how to rotate the key: bump
+    # PUBLISH_KEY_SERIAL in .env, deploy, then put the new key in .env (README,
+    # "Rotating the key") and restart whatever publishes. Publishing fails
+    # between the deploy and the restart.
+    Description: Bump to rotate the publisher's access key.
+
 Conditions:
   HasCustomDomain: !Not [!Equals [!Ref CustomDomain, '']]
   HasBasicAuth: !Equals [!Ref EnableBasicAuth, 'true']
@@ -431,6 +441,7 @@ Resources:
     Type: AWS::IAM::AccessKey
     Properties:
       UserName: !Ref PublishUser
+      Serial: !Ref PublishKeySerial
 
 Outputs:
   SiteUrl:

@@ -65,6 +65,7 @@ declare -A PARAMS=(
   [BasicAuthPassword]="$(resolve BasicAuthPassword BASIC_AUTH_PASSWORD)"
   [CustomDomain]="$(resolve CustomDomain CUSTOM_DOMAIN)"
   [HostedZoneId]="$(resolve HostedZoneId HOSTED_ZONE_ID)"
+  [PublishKeySerial]="$(resolve PublishKeySerial PUBLISH_KEY_SERIAL 1)"
 )
 
 if [ -z "${PARAMS[BucketName]}" ]; then

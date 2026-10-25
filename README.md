@@ -342,7 +342,18 @@ and a publish-only IAM user. Put the stack's settings in `.env` (see
 It reads every parameter from `.env` — bucket, region, ops token, custom domain,
 hosted zone, basic auth — and a `Key=Value` argument overrides one for that run.
 Then copy the stack outputs into `.env` (`S3_BUCKET`, `AWS_REGION`,
-`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`). The script prints every output but the
+secret key, so it never lands in scrollback or a log; read that one once with
+
+```bash
+aws cloudformation describe-stacks --stack-name <stack> \
+  --query "Stacks[0].Outputs[?OutputKey=='SecretAccessKey'].OutputValue" --output text
+```
+
+**Rotating the key:** bump `PUBLISH_KEY_SERIAL` in `.env` and deploy. CloudFormation
+creates a new key and deletes the old one in the same update, so publishing and
+`ops pull` fail until the new key is in `.env` and whatever publishes (the Docker
+container, `docker compose up -d`) has restarted with it.
 
 **Use the script rather than `aws cloudformation deploy` by hand.** Every parameter
 in the template defaults to empty or false, so a deploy that omits one *clears it on
