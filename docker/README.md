@@ -42,8 +42,8 @@ Same as outlier-caucus: compose runs here and talks to the host's Docker over
 ssh, so the repo, `.env` and `docker/.env` stay on this machine.
 
 ```sh
-export DOCKER_HOST=ssh://core@192.168.50.207
-ssh core@192.168.50.207 'mkdir -p ~/equity-watch/.equity_watch'
+export DOCKER_HOST=ssh://core@HOST
+ssh core@HOST 'mkdir -p ~/equity-watch/.equity_watch'
 ```
 
 ## First start
@@ -168,9 +168,9 @@ the home network. It is off unless `docker/.env` turns on its profile:
 
 ```sh
 COMPOSE_PROFILES=mcp
-# optional, with these defaults:
-MCP_IPV4=192.168.40.53
-MCP_HOSTNAME=equity-watch.home
+# required with the profile on: a free address on the macvlan, and its DNS name
+MCP_IPV4=192.0.2.53
+MCP_HOSTNAME=equity-watch.example
 ```
 
 Then `up -d --build` as usual starts it beside the scheduler. It needs, in `.env`:
@@ -186,7 +186,7 @@ Then `up -d --build` as usual starts it beside the scheduler. It needs, in `.env
 It joins the external macvlan network `app-network` at `MCP_IPV4`, and CoreDNS's
 docker discovery names it from the `coredns.dockerdiscovery.host` label. In Open
 WebUI, add a tool server of type **MCP (Streamable HTTP)** at
-`http://equity-watch.home:4180/mcp` with the token as its bearer. Two macvlan
+`http://<MCP_HOSTNAME>:4180/mcp` with the token as its bearer. Two macvlan
 facts to know:
 
 - **The Docker host can't reach the container's address**, as with any macvlan

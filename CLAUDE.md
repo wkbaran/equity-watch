@@ -1583,8 +1583,12 @@ checked from a machine with real network access.
 
 ## Production runs in Docker on nuc1 (since 2026-09-28), not on Windows
 
+LAN addresses and hostnames were taken out of tracked files on 2026-10-25 (the
+repo is public; they remain in older history). Don't add them back: they live in
+the gitignored `docker/.env` and `CLAUDE.local.md`.
+
 The scheduler is the container `equity-watch-equity-watch-1` on nuc1
-(`DOCKER_HOST=ssh://core@192.168.50.207`), state in `~/equity-watch/` there
+(`DOCKER_HOST=ssh://core@<nuc1>`; the address is in the gitignored `CLAUDE.local.md`), state in `~/equity-watch/` there
 (bind mount, no named volumes; `docker/README.md`). The Windows task
 `equity-watch check` is **disabled**, and the Windows checkout's state files are
 a stale snapshot from the cutover. Don't re-enable the task without stopping the
@@ -1613,7 +1617,7 @@ container: two schedulers on two copies of `alerts.json` re-fire each other's al
   start: the first run is the next quarter hour.
 - **The `mcp` service is a second container from the same image** (2026-09-30),
   behind the `mcp` compose profile (`COMPOSE_PROFILES=mcp` in `docker/.env`), on
-  the `app-network` macvlan at 192.168.40.53. It overrides the image's
+  the `app-network` macvlan at `MCP_IPV4` (set in `docker/.env`; compose has no default). It overrides the image's
   healthcheck, which watches scheduled runs and would mark it unhealthy. Its
   `--pending-file` must point into `/data`: the default sits beside `dist/`,
   which the `node` user can't write.

@@ -36,8 +36,12 @@ schwab_tokens.json
 /test-results/
 /playwright-report/
 
-# Editor backups
+# Private agent notes: LAN addresses and other things kept out of this public repo.
+/CLAUDE.local.md
+
+# Editor backups, and vim's swap files (.env.swp held .env's keys while it was open)
 *~
+*.sw[a-p]
 
 # Built browser dashboard and cron logs
 /site/

@@ -55,7 +55,7 @@ services:
         max-file: "3"
 
   # The dashboard's agent tools over MCP (Streamable HTTP), for Open WebUI and the
-  # like: http://equity-watch.home:4180/mcp. Off unless docker/.env says
+  # like: http://<MCP_HOSTNAME>:4180/mcp. Off unless docker/.env says
   #   COMPOSE_PROFILES=mcp
   # It reads the published site and queues through /api/ops like the page, so it
   # needs OPS_TOKEN, MCP_HTTP_TOKEN (the bearer clients send; the server refuses to
@@ -84,10 +84,10 @@ services:
       timeout: 10s
       start_period: 30s
     labels:
-      - "coredns.dockerdiscovery.host=${MCP_HOSTNAME:-equity-watch.home}"
+      - "coredns.dockerdiscovery.host=${MCP_HOSTNAME:-}"
     networks:
       app-network:
-        ipv4_address: ${MCP_IPV4:-192.168.40.53}
+        ipv4_address: ${MCP_IPV4:-}
     logging:
       driver: json-file
       options:
