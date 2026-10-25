@@ -42,6 +42,13 @@ export type { PlannedLot } from "./models.js";
 const SHARE_EPSILON = 1e-6;
 /** A basis this close to Webull's average cost agrees with it. */
 const BASIS_TOLERANCE = 0.001;
+/**
+ * Webull reports average cost rounded to the cent: a $2.41 stock whose fills
+ * average 2.4132 shows as 2.41, 0.13% off, which the relative tolerance alone
+ * flags (a real position, on the first production dry run, 2026-10-25). Within half a cent
+ * is that rounding, not a difference.
+ */
+const BASIS_ROUNDING = 0.005;
 
 const STOP_ORDER_TYPES = new Set(["STOP_LOSS", "STOP_LOSS_LIMIT", "TRAILING_STOP_LOSS"]);
 
@@ -185,7 +192,8 @@ function sameShares(a: number, b: number): boolean {
 }
 
 function sameBasis(a: number, b: number): boolean {
-  return b === 0 ? a === 0 : Math.abs(a - b) / b <= BASIS_TOLERANCE;
+  const diff = Math.abs(a - b);
+  return diff <= BASIS_ROUNDING + 1e-9 || (b !== 0 && diff / b <= BASIS_TOLERANCE);
 }
 
 /**

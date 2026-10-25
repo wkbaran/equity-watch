@@ -364,3 +364,13 @@ describe("order cache file", () => {
     expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 });
+
+describe("basis agreement", () => {
+  it("treats Webull's cent rounding as agreement, but not a real difference", () => {
+    const store: HoldingsStore = { lots: [lot("LOW", 167, 2.4129, "roth"), lot("OFF", 16, 40.7706, "roth")], stops: [], alertState: [] };
+    const plan = planWebullSync(store, [snapshot("roth", [position("LOW", 167, 2.41), position("OFF", 16, 40.83)])], OPTIONS);
+    const diffs = Object.fromEntries(plan.accounts[0].holdings.map((h) => [h.symbol, h.kind === "link" ? h.differences : null]));
+    expect(diffs.LOW).toEqual([]);
+    expect(diffs.OFF).toEqual(["basis: record 40.7706, Webull 40.8300"]);
+  });
+});
