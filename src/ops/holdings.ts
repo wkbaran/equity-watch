@@ -22,8 +22,9 @@ const ok = (symbol: string, message: string): Outcome => ({ symbol, alertId: nul
 const reject = (symbol: string | null, message: string): Outcome => ({ symbol, alertId: null, ok: false, message });
 
 /** The refusal for a hand edit of shares the Webull sync keeps. Public, like every message here: no digits. */
-const kept = (symbol: string, account: string | undefined): Outcome =>
-  reject(symbol, `Not changed: ${symbol} in ${account ?? "that account"} is kept by the Webull sync, so its lots follow Webull. Unlink it to edit by hand.`);
+// No account name: published, and which account holds what is private.
+const kept = (symbol: string): Outcome =>
+  reject(symbol, `Not changed: ${symbol} in that account is kept by the Webull sync, so its lots follow Webull. Unlink it to edit by hand.`);
 
 function field(value: unknown, key: string): unknown {
   return value !== null && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined;
@@ -65,7 +66,7 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       }
       const { stopPrice, stopCount, ...lotInput } = parsed.value;
       if (isWebullHolding(loadHoldingsStore(holdingsFile), lotInput.account, lotInput.symbol)) {
-        return kept(lotInput.symbol, lotInput.account);
+        return kept(lotInput.symbol);
       }
       const lot = addLot(holdingsFile, lotInput);
       if (stopPrice !== undefined) {
@@ -91,7 +92,7 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
         return reject(null, "That lot no longer exists. It may have been removed.");
       }
       if (isWebullHolding(store, lot.account, lot.symbol)) {
-        return kept(lot.symbol, lot.account);
+        return kept(lot.symbol);
       }
       if (!lotMatches(lot, op.expect)) {
         return reject(lot.symbol, `Not changed: that ${lot.symbol} lot changed since the page loaded.`);
@@ -118,7 +119,7 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       }
       // Moving a lot into an account the sync keeps would hand it shares Webull doesn't know about.
       if (typeof parsed.value.account === "string" && isWebullHolding(store, parsed.value.account, lot.symbol)) {
-        return kept(lot.symbol, parsed.value.account);
+        return kept(lot.symbol);
       }
       editLot(holdingsFile, lotId, parsed.value);
       return ok(lot.symbol, `Edited a lot of ${lot.symbol}.`);
@@ -156,7 +157,7 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       const touched = account === undefined ? lots : lots.filter((l) => (l.account ?? "") === account);
       const keptLot = touched.find((l) => isWebullHolding(store, l.account, symbol));
       if (keptLot !== undefined) {
-        return kept(symbol, keptLot.account);
+        return kept(symbol);
       }
       if (price !== undefined) {
         const inAccount = account === undefined ? lots : lots.filter((l) => (l.account ?? "") === account);

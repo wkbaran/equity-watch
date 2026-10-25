@@ -90,8 +90,9 @@ describe("holding.adopt", () => {
   it("writes the proposed lots and makes it a webull holding", async () => {
     const r = await apply({ type: "holding.adopt", target: { account: "roth", symbol: "NEW" }, expect: { count: 10 } });
     expect(r.ok).toBe(true);
-    // Public message: no share counts or prices.
+    // Public message: no share counts, prices, or which account.
     expect(r.message).not.toMatch(/\d/);
+    expect(r.message).not.toContain("roth");
     const s = loadHoldingsStore(holdingsFile);
     expect(s.lots.filter((l) => l.symbol === "NEW").map((l) => [l.count, l.orderId, l.account])).toEqual([
       [4, "ORDER-0001", "roth"],
@@ -150,6 +151,12 @@ describe("holding.unlink and holding.ignore", () => {
     s = loadHoldingsStore(holdingsFile);
     expect(s.holdings?.some((h) => h.symbol === "NEW")).toBe(false);
     expect(s.webull?.accounts[0].unmatched[0].ignored).toBe(false);
+  });
+
+  it("refuses to ignore what the sync never offered, or a malformed target", async () => {
+    expect((await apply({ type: "holding.ignore", target: { account: "roth", symbol: "ZZZ" }, params: { ignore: true } })).ok).toBe(false);
+    expect((await apply({ type: "holding.ignore", target: { account: "roth", symbol: "NEW; rm" }, params: {} })).ok).toBe(false);
+    expect(loadHoldingsStore(holdingsFile).holdings?.some((h) => h.symbol !== "KEPT")).toBe(false);
   });
 
   it("needs an account as well as a symbol", async () => {

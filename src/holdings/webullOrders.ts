@@ -37,10 +37,11 @@ export function loadOrderCache(path: string): OrderCache | null {
   return JSON.parse(readFileSync(path, "utf-8")) as OrderCache;
 }
 
+/** Every trade, with sizes and prices: as private as holdings.json, so user-readable only. */
 export function saveOrderCache(path: string, cache: OrderCache): void {
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(cache));
+  writeFileSync(tmp, JSON.stringify(cache), { mode: 0o600 });
   renameSync(tmp, path);
 }
 

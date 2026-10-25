@@ -17,7 +17,7 @@
  * On stdio, stdout is the protocol: everything else goes to stderr.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -192,7 +192,7 @@ async function serveHttp(box: Toolbox, site: SiteApi, opts: McpOptions, port: nu
     if (loopback && !allowedHosts.has(req.headers.host ?? "")) return reject(res, 403, "Unexpected Host header");
     const origin = req.headers.origin;
     if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin)) return reject(res, 403, "Cross-origin requests are not accepted");
-    if (opts.httpToken && req.headers.authorization !== `Bearer ${opts.httpToken}`) return reject(res, 401, "Missing or wrong bearer token");
+    if (opts.httpToken && !bearerMatches(req.headers.authorization, opts.httpToken)) return reject(res, 401, "Missing or wrong bearer token");
 
     const body = req.method === "POST" ? await readJson(req) : undefined;
     const sessionId = req.headers["mcp-session-id"];
@@ -223,6 +223,17 @@ async function serveHttp(box: Toolbox, site: SiteApi, opts: McpOptions, port: nu
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     },
   };
+}
+
+/**
+ * Constant-time, as the ops Lambda compares its token: both sides hashed first,
+ * so neither the token's length nor how much of a guess matches shows in the
+ * time the comparison takes. `!==` stops at the first different character.
+ */
+export function bearerMatches(header: string | undefined, token: string): boolean {
+  const given = createHash("sha256").update(header ?? "").digest();
+  const expected = createHash("sha256").update(`Bearer ${token}`).digest();
+  return timingSafeEqual(given, expected);
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {

@@ -352,3 +352,15 @@ describe("order cache", () => {
     expect(second.readFrom).toBe("2018-05-21T00:00:00.000Z");
   });
 });
+
+describe("order cache file", () => {
+  it("is written readable by its owner only", async () => {
+    const { mkdtempSync, statSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { saveOrderCache } = await import("../src/holdings/webullOrders.js");
+    const path = join(mkdtempSync(join(tmpdir(), "orders-")), "webull", "orders-margin.json");
+    saveOrderCache(path, { readThrough: "2026-10-25T00:00:00.000Z", readFrom: "2018-05-21T00:00:00.000Z", orders: [] });
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+});

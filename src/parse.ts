@@ -111,11 +111,11 @@ export function parseAlerts(csvPath: string): Alert[] {
   const content = readFileSync(csvPath, "utf-8");
   // csv-parse is typed `any`; state the row shape here rather than annotate the
   // binding, which would let anything through unchecked.
-  const records = parseCsv(content, {
+  const records = parseCsv<Record<string, string>>(content, {
     columns: true,
     bom: true,
     skip_empty_lines: true,
-  }) as Record<string, string>[];
+  });
 
   const alerts: Alert[] = [];
   for (const row of records) {

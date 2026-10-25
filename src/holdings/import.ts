@@ -103,10 +103,7 @@ export function reconcileQuantity(
 }
 
 export function parseWebullHoldings(path: string, account: string): HoldingsImportPlan {
-  const rows = parseCsv(readFileSync(path, "utf-8"), { columns: true, bom: true, skip_empty_lines: true }) as Record<
-    string,
-    string
-  >[];
+  const rows = parseCsv<Record<string, string>>(readFileSync(path, "utf-8"), { columns: true, bom: true, skip_empty_lines: true });
 
   const lots: ImportedLot[] = [];
   const skipped: ImportSkip[] = [];

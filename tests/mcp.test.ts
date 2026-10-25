@@ -11,7 +11,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { OPS_TOKEN } from "../playwright/fixtures.js";
 import { OP_TYPES } from "../src/ops/apply.js";
-import { runMcpServer, sessionServer, type McpOptions } from "../src/mcp/server.js";
+import { bearerMatches, runMcpServer, sessionServer, type McpOptions } from "../src/mcp/server.js";
 import { SiteApi } from "../src/mcp/siteApi.js";
 import { loadToolbox } from "../src/mcp/toolbox.js";
 
@@ -425,5 +425,18 @@ describe("transports", () => {
 
   it("HTTP beyond loopback refuses to start without a bearer token", async () => {
     await expect(runMcpServer(options({ http: 4192, host: "0.0.0.0" }))).rejects.toThrow(/MCP_HTTP_TOKEN/);
+  });
+});
+
+describe("the HTTP bearer check", () => {
+  it("accepts only the exact header, whatever the guess's length", () => {
+    const token = "a".repeat(64);
+    expect(bearerMatches(`Bearer ${token}`, token)).toBe(true);
+    expect(bearerMatches(undefined, token)).toBe(false);
+    expect(bearerMatches("", token)).toBe(false);
+    expect(bearerMatches(token, token)).toBe(false);
+    expect(bearerMatches(`Bearer ${token.slice(1)}`, token)).toBe(false);
+    expect(bearerMatches(`Bearer ${token}x`, token)).toBe(false);
+    expect(bearerMatches(`bearer ${token}`, token)).toBe(false);
   });
 });

@@ -131,9 +131,10 @@ export function loadWebullToken(path: string): WebullToken | null {
 }
 
 function saveWebullToken(path: string, token: WebullToken): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(token, null, 2));
-  // A bearer credential for accounts that can trade; user-readable only.
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  // A bearer credential for accounts that can trade: user-readable only, from
+  // the moment it exists (the mode applies on create, the chmod to an older file).
+  writeFileSync(path, JSON.stringify(token, null, 2), { mode: 0o600 });
   chmodSync(path, 0o600);
 }
 

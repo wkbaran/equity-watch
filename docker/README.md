@@ -30,7 +30,7 @@ Set it in `docker/.env` (gitignored; compose reads it on the machine running
 `docker compose`):
 
 ```sh
-STATE_DIR=/var/home/core/equity-watch    # absolute path on the Docker host
+STATE_DIR=/path/to/equity-watch    # absolute path on the Docker host
 ```
 
 It has no default on purpose. An unset one would mount an empty directory, and

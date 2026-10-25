@@ -158,10 +158,7 @@ export function volumeConditionFor(threshold: number, timeframe: string | null):
 }
 
 function readListRows(path: string): RawRow[] {
-  const records = parseCsv(readFileSync(path, "utf-8"), { columns: true, bom: true, skip_empty_lines: true }) as Record<
-    string,
-    string
-  >[];
+  const records = parseCsv<Record<string, string>>(readFileSync(path, "utf-8"), { columns: true, bom: true, skip_empty_lines: true });
   return records.map((r) => ({
     symbol: (r["Symbol"] ?? "").trim(),
     description: (r["Description"] ?? "").trim(),
@@ -173,10 +170,7 @@ function readListRows(path: string): RawRow[] {
 }
 
 function readLogRows(path: string): RawRow[] {
-  const records = parseCsv(readFileSync(path, "utf-8"), { columns: true, bom: true, skip_empty_lines: true }) as Record<
-    string,
-    string
-  >[];
+  const records = parseCsv<Record<string, string>>(readFileSync(path, "utf-8"), { columns: true, bom: true, skip_empty_lines: true });
   return records.map((r) => {
     const date = (r["Alert Date"] ?? "").trim();
     const time = (r["Alert Time"] ?? "").trim();

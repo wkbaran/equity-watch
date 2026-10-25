@@ -238,6 +238,8 @@ describe("WebullClient", () => {
     expect(calls[1].body).toBe('{"token":"new-tok"}');
     expect(calls[1].headers["Content-Type"]).toBe("application/json");
     expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({ token: "new-tok", expiresAt: 1900000000000, status: "NORMAL" });
+    const { statSync } = await import("node:fs");
+    expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
   it("revives a stored token without asking for a code when Webull says it is still good", async () => {
