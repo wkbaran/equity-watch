@@ -32,7 +32,8 @@ export interface VaultContents {
   holdings: HoldingRow[];
   /** createdAt breaks a same-day tie in the order a sale takes lots (saleOrder), which the page previews. */
   lots: Pick<Lot, "id" | "symbol" | "count" | "basisPerShare" | "purchaseDate" | "createdAt" | "account">[];
-  stops: Pick<Stop, "id" | "symbol" | "count" | "stopPrice">[];
+  /** `webull` on a stop that is a real Webull order (absent before phase 3). */
+  stops: Pick<Stop, "id" | "symbol" | "count" | "stopPrice" | "webull">[];
   /**
    * Stories tell when you bought and sold, so they travel here and never in
    * dashboard.json (siteDocument empties them). Absent in vaults sealed before
@@ -86,7 +87,7 @@ export function vaultContents(
       createdAt,
       ...(account !== undefined ? { account } : {}),
     })),
-    stops: store.stops.map(({ id, symbol, count, stopPrice }) => ({ id, symbol, count, stopPrice })),
+    stops: store.stops.map(({ id, symbol, count, stopPrice, webull }) => ({ id, symbol, count, stopPrice, ...(webull ? { webull } : {}) })),
     stories: dashboard.stories,
     ...(links.length > 0 ? { spreadLinks: Object.fromEntries(links) } : {}),
     ...(store.holdings !== undefined && store.holdings.length > 0

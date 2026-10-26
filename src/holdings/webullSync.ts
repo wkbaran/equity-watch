@@ -22,7 +22,7 @@
  */
 
 import { marketDate } from "../marketHours.js";
-import type { WebullBalance, WebullOrder, WebullPosition } from "../providers/webull.js";
+import { WORKING_STATUSES, type WebullBalance, type WebullOrder, type WebullPosition } from "../providers/webull.js";
 import { sellFromStore } from "./engine.js";
 import {
   holdingKey,
@@ -31,7 +31,9 @@ import {
   type Holding,
   type HoldingsStore,
   type Lot,
+  type OpenOrder,
   type PlannedLot,
+  type Stop,
   type WebullAccountState,
   type WebullState,
 } from "./models.js";
@@ -61,6 +63,8 @@ export interface WebullAccountSnapshot {
   positions: WebullPosition[];
   /** Order history over the fetched window, any status. */
   orders: WebullOrder[];
+  /** Working orders now (Webull's open-orders list). */
+  openOrders: WebullOrder[];
   /** Start of the order-history window, ISO. Fills before it are unseen. */
   historyFrom: string;
 }
@@ -119,6 +123,10 @@ export interface AccountPlan {
   holdings: HoldingPlan[];
   /** Positions the sync doesn't model (options and other non-equity). */
   skipped: { symbol: string; reason: string }[];
+  /** Working equity orders. */
+  openOrders: OpenOrder[];
+  /** Stop orders open at the last read and gone now without filling: cancelled or expired. */
+  vanished: { symbol: string; message: string }[];
 }
 
 export interface SyncPlan {
@@ -301,6 +309,52 @@ function cashSummary(snapshot: WebullAccountSnapshot, cashEquivalents: Set<strin
 }
 
 /** The never-borrow rule's verdict. Unknown cash (no balance read) is "ok": there is nothing to warn about yet. */
+export const STOP_ORDER_TYPE_SET = STOP_ORDER_TYPES;
+
+/** Working equity orders, as the state keeps them. */
+export function openOrdersOf(orders: WebullOrder[]): OpenOrder[] {
+  return orders
+    .filter((o) => (o.instrumentType === "EQUITY" || o.instrumentType === "STOCK") && WORKING_STATUSES.has(o.status))
+    .map((o) => ({
+      symbol: o.symbol,
+      orderId: o.orderId,
+      clientOrderId: o.clientOrderId,
+      side: o.side,
+      orderType: o.orderType,
+      quantity: round6((Number.isFinite(o.totalQuantity) ? o.totalQuantity : 0) - o.filledQuantity),
+      limitPrice: o.limitPrice,
+      stopPrice: o.stopPrice,
+      trailingType: o.trailingType,
+      trailingStep: o.trailingStep,
+      timeInForce: o.timeInForce,
+      comboType: o.comboType,
+      placedAt: o.placedAt,
+    }))
+    .sort((a, b) => a.symbol.localeCompare(b.symbol) || (a.placedAt ?? "").localeCompare(b.placedAt ?? ""));
+}
+
+/** A sell stop: what protects a position, and what the page's stop pills judge. */
+export function isSellStop(o: Pick<OpenOrder, "side" | "orderType">): boolean {
+  return o.side === "SELL" && STOP_ORDER_TYPES.has(o.orderType);
+}
+
+/**
+ * Sell stops open at the previous read and missing now. One that filled is a
+ * sale, which the fills already record; any other end (cancelled in the app,
+ * a GTC order Webull expired after about 60 days) leaves the position
+ * unprotected without anyone deciding so, which is worth saying.
+ */
+export function vanishedStops(previous: OpenOrder[], current: OpenOrder[], history: WebullOrder[]): { symbol: string; message: string }[] {
+  const now = new Set(current.map((o) => o.orderId));
+  const status = new Map(history.map((o) => [o.orderId, o.status]));
+  return previous
+    .filter((o) => isSellStop(o) && !now.has(o.orderId) && status.get(o.orderId) !== "FILLED")
+    .map((o) => ({
+      symbol: o.symbol,
+      message: `the stop order for ${shares(o.quantity)} at ${o.stopPrice ?? "?"} is no longer open (${status.get(o.orderId)?.toLowerCase() ?? "cancelled or expired"}), and nothing replaced it here.`,
+    }));
+}
+
 export function cashStatusOf(cash: CashSummary | null, lowCash: number | null): CashStatus {
   if (cash === null) {
     return "ok";
@@ -416,6 +470,8 @@ export function planWebullSync(store: HoldingsStore, snapshots: WebullAccountSna
     }
 
     plans.sort((a, b) => a.symbol.localeCompare(b.symbol));
+    const openOrders = openOrdersOf(snap.openOrders);
+    const previousOpen = store.webull?.accounts.find((a) => a.label === snap.label)?.openOrders ?? [];
     const cash = cashSummary(snap, options.cashEquivalents);
     const lowCash = options.lowCash?.get(snap.label) ?? null;
     accounts.push({
@@ -427,6 +483,8 @@ export function planWebullSync(store: HoldingsStore, snapshots: WebullAccountSna
       lowCash,
       holdings: plans,
       skipped,
+      openOrders,
+      vanished: vanishedStops(previousOpen, openOrders, snap.orders),
     });
   }
 
@@ -487,8 +545,10 @@ export function webullStateOf(plan: SyncPlan, readAt: string, refused: ApplyResu
       flags: [
         ...a.holdings.flatMap((h) => (h.kind === "sync" || h.kind === "notAtWebull" ? h.flags.map((message) => ({ symbol: h.symbol, message })) : [])),
         ...refused.filter((r) => r.account === a.label).map((r) => ({ symbol: r.symbol, message: r.message })),
+        ...a.vanished,
       ],
       skipped: a.skipped,
+      openOrders: a.openOrders,
     })),
   };
 }
@@ -570,6 +630,8 @@ export function applySyncPlan(store: HoldingsStore, plan: SyncPlan, now: Date): 
     }
   }
 
+  mirrorStops(store, plan, now);
+
   const previous = new Map((store.webull?.accounts ?? []).map((a) => [a.label, a.cashStatus]));
   const cashChanges: CashStatusChange[] = [];
   for (const a of plan.accounts) {
@@ -580,6 +642,52 @@ export function applySyncPlan(store: HoldingsStore, plan: SyncPlan, now: Date): 
   }
   store.webull = webullStateOf(plan, now.toISOString(), refused);
   return { applied, refused, cashChanges };
+}
+
+/**
+ * For each webull holding, its stops become exactly its open sell-stop orders
+ * at Webull: the mirrored ones are rewritten every run, so a stop moved or
+ * cancelled in the app shows here at the next sync. A record-keeping stop on
+ * the symbol goes too when every lot of the symbol is kept by the sync; with a
+ * manual holding of it in another account, it may be that one's, so it stays.
+ * A trailing stop with no stop price yet isn't mirrored (no level to show); it
+ * still appears among the account's open orders.
+ */
+export function mirrorStops(store: HoldingsStore, plan: SyncPlan, now: Date): void {
+  const kept = (account: string, symbol: string) => holdingRecord(store, account, symbol)?.source === "webull";
+  for (const account of plan.accounts) {
+    const symbols = new Set(
+      (store.holdings ?? []).filter((h) => h.account === account.label && h.source === "webull").map((h) => h.symbol.toUpperCase())
+    );
+    for (const symbol of symbols) {
+      const allKept = store.lots.filter((l) => l.symbol.toUpperCase() === symbol).every((l) => l.account !== undefined && kept(l.account, symbol));
+      store.stops = store.stops.filter(
+        (s) => s.symbol.toUpperCase() !== symbol || (s.webull !== undefined ? s.webull.account !== account.label : !allKept)
+      );
+      if (!store.lots.some((l) => l.symbol.toUpperCase() === symbol)) {
+        continue;
+      }
+      for (const o of account.openOrders.filter((x) => x.symbol === symbol && isSellStop(x) && x.stopPrice !== null)) {
+        const stop: Stop = {
+          id: `wb-${o.orderId.slice(-8)}`,
+          symbol,
+          count: o.quantity,
+          stopPrice: o.stopPrice!,
+          createdAt: o.placedAt ?? now.toISOString(),
+          webull: {
+            account: account.label,
+            orderId: o.orderId,
+            clientOrderId: o.clientOrderId,
+            orderType: o.orderType,
+            timeInForce: o.timeInForce,
+            limitPrice: o.limitPrice,
+            placedAt: o.placedAt,
+          },
+        };
+        store.stops.push(stop);
+      }
+    }
+  }
 }
 
 /**
@@ -731,6 +839,15 @@ export function renderSyncPlan(plan: SyncPlan, cashEquivalentNames: string[]): s
         h.flags.forEach((f) => out.push(`      ! ${f}`));
       }
     }
+
+    if (account.openOrders.length > 0) {
+      out.push("  Open orders");
+      for (const o of account.openOrders) {
+        const price = o.stopPrice !== null ? `stop ${o.stopPrice}${o.limitPrice !== null ? ` limit ${o.limitPrice}` : ""}` : o.limitPrice !== null ? `limit ${o.limitPrice}` : o.orderType.toLowerCase();
+        out.push(`    ${o.symbol.padEnd(6)} ${o.side.toLowerCase()} ${shares(o.quantity)} ${price} ${o.timeInForce ?? ""}${o.clientOrderId === null ? " (no client id: can't be changed from here)" : ""}`);
+      }
+    }
+    account.vanished.forEach((v) => out.push(`  ! ${v.symbol}: ${v.message}`));
 
     if (account.skipped.length > 0) {
       out.push("  Not synced");

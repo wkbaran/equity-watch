@@ -181,8 +181,15 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
         return reject(stringField(op.params, "symbol")?.trim().toUpperCase() || null, parsed.error);
       }
       const { symbol } = parsed.value;
-      if (!loadHoldingsStore(holdingsFile).lots.some((l) => l.symbol === symbol)) {
+      const store = loadHoldingsStore(holdingsFile);
+      const lots = store.lots.filter((l) => l.symbol === symbol);
+      if (lots.length === 0) {
         return reject(symbol, `Not added: there is no ${symbol} position to put a stop on.`);
+      }
+      // Every share is kept by the Webull sync, whose stops are real orders: a
+      // record-keeping stop beside them would be erased by the next sync.
+      if (lots.every((l) => isWebullHolding(store, l.account, symbol))) {
+        return reject(symbol, `Not added: ${symbol}'s stops are its Webull stop orders. Place one at Webull (stop.place) instead.`);
       }
       addStop(holdingsFile, parsed.value);
       return ok(symbol, `Added a stop for ${symbol}.`);
@@ -198,6 +205,9 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
       const stop = loadHoldingsStore(holdingsFile).stops.find((s) => s.id === stopId);
       if (stop === undefined) {
         return reject(null, "That stop no longer exists. It may have been removed.");
+      }
+      if (stop.webull !== undefined) {
+        return reject(stop.symbol, `Not changed: that ${stop.symbol} stop is a Webull order. Change it with stop.replace or stop.cancel.`);
       }
       if (field(op.expect, "stopPrice") !== stop.stopPrice) {
         return reject(stop.symbol, `Not changed: that ${stop.symbol} stop changed since the page loaded.`);

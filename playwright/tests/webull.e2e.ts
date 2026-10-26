@@ -118,3 +118,34 @@ test("a lot the sync keeps can't be edited or sold by hand, and can be unlinked"
   const ops = await queuedOps(page);
   expect(ops[0]).toMatchObject({ type: "holding.unlink", target: { account: "margin", symbol: "AA" } });
 });
+
+test("a kept position's Webull stops show as orders, flagged short and expiring", async ({ page }) => {
+  const placedAt = new Date(Date.now() - 55 * 86_400_000).toISOString();
+  await serveVault(page, {
+    webull: WEBULL,
+    holdingSources: [
+      { account: "margin", symbol: "AA", source: "webull" },
+      { account: "roth", symbol: "AA", source: "webull" },
+    ],
+    stops: [
+      {
+        id: "wb-00000001",
+        symbol: "AA",
+        count: 3,
+        stopPrice: 39,
+        webull: { account: "margin", orderId: "ORDER-0001", clientOrderId: "ewORDER0001", orderType: "STOP_LOSS", timeInForce: "GTC", limitPrice: null, placedAt },
+      },
+    ],
+  });
+  await page.goto("/#/holdings");
+  await unlockWith(page, OPS_TOKEN);
+  const row = positionRow(page, "AA");
+  await expect(row.locator(".tag.stop-short")).toHaveText("stop short");
+  await expect(row.locator(".tag.stop-short")).toHaveAttribute("title", "Webull stops cover 3 of the 15 whole shares held there.");
+  await expect(row.locator(".tag.stop-expires")).toHaveText("stop expires");
+
+  await row.locator("td").nth(2).click();
+  await expect(detail(page).locator(".stops .tag.webull")).toContainText("Webull");
+  // Every share is kept, so the record-keeping Add stop form is gone.
+  await expect(detail(page).locator("form.stop-add")).toHaveCount(0);
+});

@@ -1,6 +1,8 @@
 /**
- * Webull OpenAPI client for the Trading API: accounts, balances, positions and
- * order history. Read-only for now (docs/WEBULL_SYNC_PLAN.md, phase 1).
+ * Webull OpenAPI client for the Trading API: accounts, balances, positions,
+ * order history and open orders, and placing, changing and cancelling stock
+ * orders. Only src/orders/ sends orders, behind its kill switch, authenticator
+ * code and limits (docs/WEBULL_SYNC_PLAN.md).
  *
  * Like schwab.ts, this talks to the REST API with `fetch` rather than through
  * a client library. Webull's only official SDK is Python. Paths and fields
@@ -211,9 +213,54 @@ export interface WebullOrder {
   filledPrice: number | null;
   limitPrice: number | null;
   stopPrice: number | null;
+  /** AMOUNT or PERCENTAGE, for a trailing stop. */
+  trailingType: string | null;
+  trailingStep: number | null;
+  /** NORMAL for a simple order; MASTER, STOP_LOSS, OTO... for a leg of a combo. */
+  comboType: string | null;
   placedAt: string | null;
   /** When the last part filled (ISO, UTC); null when nothing has. */
   filledAt: string | null;
+}
+
+/** Statuses of an order that can still fill. */
+export const WORKING_STATUSES = new Set(["PENDING", "SUBMITTED", "PARTIAL_FILLED"]);
+
+/** One order as Place Order takes it (a `new_orders` entry). Prices and quantities are strings, as Webull wants. */
+export interface NewOrder {
+  client_order_id: string;
+  combo_type: "NORMAL" | "MASTER" | "STOP_LOSS";
+  symbol: string;
+  instrument_type: "EQUITY";
+  market: "US";
+  side: "BUY" | "SELL";
+  order_type: "LIMIT" | "STOP_LOSS" | "STOP_LOSS_LIMIT";
+  quantity: string;
+  time_in_force: "DAY" | "GTC";
+  support_trading_session: "CORE" | "ALL";
+  entrust_type: "QTY";
+  limit_price?: string;
+  stop_price?: string;
+}
+
+/** A change to an open order (a `modify_orders` entry): only what changes, plus the id. */
+export interface OrderChange {
+  client_order_id: string;
+  quantity?: string;
+  limit_price?: string;
+  stop_price?: string;
+  time_in_force?: "DAY" | "GTC";
+}
+
+export interface OrderPlaced {
+  orderId: string | null;
+  clientOrderId: string | null;
+  comboOrderId: string | null;
+}
+
+export interface OrderPreview {
+  estimatedCost: number;
+  estimatedFee: number;
 }
 
 /** A string field, or "" when it is missing or not a string or number. */
@@ -296,6 +343,9 @@ function normalizeOrder(raw: Raw): WebullOrder {
     filledPrice: optNum(raw.filled_price) || null,
     limitPrice: optNum(raw.limit_price),
     stopPrice: optNum(raw.stop_price),
+    trailingType: optStr(raw.trailing_type),
+    trailingStep: optNum(raw.trailing_stop_step),
+    comboType: optStr(raw.combo_type),
     placedAt: isoTime(raw.place_time_at, raw.place_time),
     filledAt: isoTime(raw.filled_time_at, raw.filled_time),
   };
@@ -405,8 +455,16 @@ export class WebullClient {
   }
 
   private async get(path: string, query: Record<string, string> = {}): Promise<unknown> {
+    return this.call("GET", path, query, undefined);
+  }
+
+  private async post(path: string, body: unknown): Promise<unknown> {
+    return this.call("POST", path, {}, body);
+  }
+
+  private async call(method: "GET" | "POST", path: string, query: Record<string, string>, body: unknown): Promise<unknown> {
     try {
-      return await this.request("GET", path, query, undefined, this.activeToken());
+      return await this.request(method, path, query, body, this.activeToken());
     } catch (err) {
       // Webull answers a dead token with 401. Record it, so the next run says
       // "log in" up front rather than failing the same way again.
@@ -487,6 +545,61 @@ export class WebullClient {
     }
     throw new WebullError("Webull order history did not stop paging after 1000 pages.", 0);
   }
+
+  /** The account's working orders (any instrument), across all pages. */
+  async openOrders(accountId: string): Promise<WebullOrder[]> {
+    const orders: WebullOrder[] = [];
+    let key: string | null = null;
+    for (let page = 0; page < 100; page++) {
+      const query: Record<string, string> = { account_id: accountId };
+      if (key !== null) {
+        query.pagination_key = key;
+      }
+      const result = normalizeOrderPage((await this.get("/trading/orders/open-orders/list", query)) as Raw);
+      orders.push(...result.orders);
+      if (result.next === null || result.next === key) {
+        return orders;
+      }
+      key = result.next;
+    }
+    throw new WebullError("Webull open orders did not stop paging after 100 pages.", 0);
+  }
+
+  /** One order (or a combo's legs) by the client id it was placed with; the current status, unlike history. */
+  async orderDetail(accountId: string, clientOrderId: string): Promise<WebullOrder[]> {
+    const raw = (await this.get("/trading/orders/get", { account_id: accountId, client_order_id: clientOrderId })) as Raw;
+    const legs = Array.isArray(raw?.orders) ? (raw.orders as Raw[]) : [raw];
+    return legs.map(normalizeOrder);
+  }
+
+  /** What an order would cost, without placing it. Simple orders only (Webull: no combos). */
+  async previewOrder(accountId: string, order: NewOrder): Promise<OrderPreview> {
+    const raw = (await this.post("/trading/orders/preview", { account_id: accountId, new_orders: [order] })) as Raw;
+    return { estimatedCost: num(raw?.estimated_cost), estimatedFee: num(raw?.estimated_transaction_fee) };
+  }
+
+  /**
+   * Places one order, or a combo (a MASTER buy with its STOP_LOSS leg) under
+   * `clientComboOrderId`. Each `client_order_id` must be new for the account:
+   * Webull refuses a repeat, which is what makes a redelivered op harmless.
+   */
+  async placeOrders(accountId: string, orders: NewOrder[], clientComboOrderId?: string): Promise<OrderPlaced> {
+    const body = { account_id: accountId, ...(clientComboOrderId !== undefined ? { client_combo_order_id: clientComboOrderId } : {}), new_orders: orders };
+    return placedOf(await this.post("/trading/orders/place", body));
+  }
+
+  async replaceOrder(accountId: string, change: OrderChange): Promise<OrderPlaced> {
+    return placedOf(await this.post("/trading/orders/replace", { account_id: accountId, modify_orders: [change] }));
+  }
+
+  async cancelOrder(accountId: string, clientOrderId: string): Promise<OrderPlaced> {
+    return placedOf(await this.post("/trading/orders/cancel", { account_id: accountId, client_order_id: clientOrderId }));
+  }
+}
+
+function placedOf(raw: unknown): OrderPlaced {
+  const r = (raw ?? {}) as Raw;
+  return { orderId: optStr(r.order_id), clientOrderId: optStr(r.client_order_id), comboOrderId: optStr(r.combo_order_id) };
 }
 
 function parseToken(raw: unknown): WebullToken {

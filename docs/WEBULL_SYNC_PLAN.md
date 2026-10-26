@@ -355,7 +355,8 @@ that fired at 10:02 shouldn't buy at 10:15. Orders get their own path:
    `TARGET_KEY`). The warnings show on the page and in the run log; equity-watch
    has no push channel.
 3. **Stop monitoring.** Mirrored stop orders, the two new pills, and stop-fill
-   sales.
+   sales. **Done 2026-10-25.** Webull's docs give GTC orders "typically 60 days",
+   so `stop expires` warns from day 53.
 4. **Stop management and Sell BIL to cover.** `stop.place`, `stop.replace`,
    `stop.cancel` and `cash.cover`, Set to suggested, and the `webull.orders` switch.
    First live use: one small position, watched in the Webull app.

@@ -154,6 +154,27 @@ applied only when they account exactly for the change in shares, and never sell
 more than is held along the way. Anything else (a split, history that hasn't
 caught up) is flagged on the page and nothing is applied to that holding.
 
+### Stops are Webull orders
+
+For a webull holding, the stops are its open sell-stop orders at Webull. Each
+sync rewrites them, so a stop placed, moved or cancelled in the Webull app shows
+here at the next sync (record-keeping stops on the symbol go, unless the symbol is
+also held by hand in another account). They show as *Webull* tags, and the
+record-keeping stop ops refuse them: `stop.add` on a symbol the sync keeps
+entirely, and `stop.edit`/`stop.remove` on a mirrored stop.
+
+Two more pills join the stop ones on a holdings row:
+
+- **`stop short`**: the Webull stops cover fewer whole shares than are held
+  there. A fractional remainder never counts, since a stop can't be placed for it.
+- **`stop expires`**: a GTC stop placed more than 53 days ago. Webull ends GTC
+  orders after about 60 days.
+
+A sell stop that was open at the last sync and is gone without filling
+(cancelled, or expired) is flagged on the Webull panel. One that filled is a sale,
+which the sync records with `stopHit`. The dry run lists each account's open
+orders, noting any without a client order id: equity-watch can't change those.
+
 ### The Webull panel
 
 The unlocked Holdings page has a **Webull** panel with what the last sync read,

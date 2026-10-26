@@ -2079,11 +2079,28 @@
     return { tag, form };
   }
 
+  /** A stop that is a real Webull order: shown as such, changed only through the order controls. */
+  function webullStopTag(s) {
+    const w = s.webull;
+    const kind = w.orderType === "STOP_LOSS_LIMIT" ? `stop-limit ${money(w.limitPrice)}` : w.orderType === "TRAILING_STOP_LOSS" ? "trailing" : "stop";
+    return {
+      tag: h("span", {
+        class: "tag webull",
+        title: `Webull ${kind} order in ${w.account}, ${w.timeInForce ?? "?"}${w.placedAt ? `, placed ${w.placedAt.slice(0, 10)}` : ""}`,
+        text: `${money(s.stopPrice)} on ${s.count === null ? "all" : s.count} · Webull`,
+      }),
+      form: null,
+    };
+  }
+
   function stopsBlock(symbol, stops) {
     const price = numberInput(null, { placeholder: "price" });
     const covered = numberInput(null, { placeholder: "all" });
     const error = h("span", { class: "form-error" });
-    const tags = stops.map((s) => stopTag(symbol, s));
+    const tags = stops.map((s) => (s.webull ? webullStopTag(s) : stopTag(symbol, s)));
+    // Every share kept by the sync: its stops are Webull orders, and a record-keeping one would be refused.
+    const lots = (vaultData?.lots ?? []).filter((l) => l.symbol === symbol);
+    const allKept = lots.length > 0 && lots.every((l) => keptByWebull(l));
     return h(
       "div",
       { class: "stops" },
@@ -2093,8 +2110,10 @@
         h("span", { class: "muted", text: stops.length ? "Stops:" : "No stops." }),
         ...tags.map((t) => t.tag)
       ),
-      ...tags.map((t) => t.form),
-      h(
+      ...tags.map((t) => t.form).filter(Boolean),
+      allKept
+        ? null
+        : h(
         "form",
         {
           class: "ops-form stop-add",
@@ -3160,8 +3179,38 @@
    * and never leaves the machine, so the browser cannot know whether a band
    * has already been reported. These two are pure functions of the row.
    */
+  /** GTC orders at Webull last about 60 days (its docs: "typically 60 days"); say so a week ahead. */
+  const GTC_DAYS = 60;
+  const GTC_WARN_DAYS = 7;
+
+  /**
+   * For shares the Webull sync keeps, the stops are real orders: `stop short`
+   * when they cover fewer whole shares than are held there (a stop can't be
+   * placed for a fraction, so the fraction is never counted), and `stop expires`
+   * when a GTC one is within a week of Webull's limit.
+   */
+  function webullStopFlags(row, now) {
+    // typeof, not !vaultData: tests/holdings.test.ts evaluates this part of the
+    // file on its own, where the vault doesn't exist at all.
+    if (row.ignored || typeof vaultData === "undefined" || !vaultData) return [];
+    const keptLots = vaultData.lots.filter((l) => l.symbol === row.symbol && keptByWebull(l));
+    if (keptLots.length === 0) return [];
+    const stops = vaultData.stops.filter((s) => s.symbol === row.symbol && s.webull);
+    const flags = [];
+    const held = Math.floor(keptLots.reduce((n, l) => n + l.count, 0) + 1e-9);
+    const covered = stops.reduce((n, s) => n + (s.count ?? held), 0);
+    if (stops.length > 0 && covered < held) {
+      flags.push({ kind: "stop-short", label: "stop short", title: `Webull stops cover ${covered} of the ${held} whole shares held there.` });
+    }
+    const expiring = stops.filter((s) => s.webull.timeInForce === "GTC" && s.webull.placedAt && now - Date.parse(s.webull.placedAt) > (GTC_DAYS - GTC_WARN_DAYS) * 86_400_000);
+    if (expiring.length > 0) {
+      flags.push({ kind: "stop-expires", label: "stop expires", title: `A GTC stop placed ${expiring[0].webull.placedAt.slice(0, 10)} nears Webull's ~${GTC_DAYS}-day limit. Replace it to keep it.` });
+    }
+    return flags;
+  }
+
   function holdingFlags(row, now = Date.now()) {
-    const flags = [...stopFlags(row)];
+    const flags = [...stopFlags(row), ...webullStopFlags(row, now)];
     if (row.pctFromBasis === null) return flags;
     if (row.pctFromBasis >= ABOVE_BASIS_THRESHOLD_PCT) {
       flags.push({ kind: "above-basis", label: `+${ABOVE_BASIS_THRESHOLD_PCT}% over basis`, title: `Up ${row.pctFromBasis.toFixed(1)}% on cost.` });

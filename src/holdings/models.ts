@@ -26,6 +26,22 @@ export interface Stop {
   count: number | null;
   stopPrice: number;
   createdAt: string;
+  /**
+   * Set on a stop that is a real Webull order, mirrored by `holdings sync` for a
+   * webull holding (docs/WEBULL_SYNC_PLAN.md, phase 3). The sync rewrites these
+   * every run; hand edits go through the order ops instead. Absent on a
+   * record-keeping stop.
+   */
+  webull?: {
+    account: string;
+    orderId: string;
+    /** What replace and cancel need; null for an order Webull gave no client id (placed in the app?). */
+    clientOrderId: string | null;
+    orderType: string;
+    timeInForce: string | null;
+    limitPrice: number | null;
+    placedAt: string | null;
+  };
 }
 
 export interface HoldingAlertState {
@@ -149,6 +165,24 @@ export interface PlannedLot {
   orderId: string | null;
 }
 
+/** A working equity order at Webull, as the last sync read it. Shares and prices: vault only. */
+export interface OpenOrder {
+  symbol: string;
+  orderId: string;
+  clientOrderId: string | null;
+  side: "BUY" | "SELL" | "SHORT";
+  orderType: string;
+  /** Shares still to fill. */
+  quantity: number;
+  limitPrice: number | null;
+  stopPrice: number | null;
+  trailingType: string | null;
+  trailingStep: number | null;
+  timeInForce: string | null;
+  comboType: string | null;
+  placedAt: string | null;
+}
+
 /** Cash and what is parked in cash equivalents, for one account, as Webull last reported it. */
 export interface CashSummary {
   /** Negative in a margin account means borrowing. */
@@ -203,6 +237,8 @@ export interface WebullAccountState {
   flags: { symbol: string; message: string }[];
   /** Positions the sync doesn't model (options). */
   skipped: { symbol: string; reason: string }[];
+  /** Working equity orders. Absent in states written before phase 3. */
+  openOrders?: OpenOrder[];
 }
 
 export interface WebullState {

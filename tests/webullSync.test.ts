@@ -29,6 +29,9 @@ function order(o: Partial<WebullOrder> & Pick<WebullOrder, "orderId" | "symbol" 
     filledPrice: null,
     limitPrice: null,
     stopPrice: null,
+    trailingType: null,
+    trailingStep: null,
+    comboType: null,
     placedAt: null,
     filledAt: null,
     ...o,
@@ -51,7 +54,7 @@ function lot(symbol: string, count: number, basisPerShare: number, account?: str
   return { id: `${symbol}-${count}`, symbol, count, basisPerShare, purchaseDate: "2026-01-02", createdAt: "2026-01-02T15:00:00.000Z", ...(account ? { account } : {}) };
 }
 
-function snapshot(label: string, positions: WebullPosition[], orders: WebullOrder[] = [], cash = 1000): WebullAccountSnapshot {
+function snapshot(label: string, positions: WebullPosition[], orders: WebullOrder[] = [], cash = 1000, openOrders: WebullOrder[] = []): WebullAccountSnapshot {
   return {
     label,
     accountId: `ID-${label}`,
@@ -59,6 +62,7 @@ function snapshot(label: string, positions: WebullPosition[], orders: WebullOrde
     balance: { cash, settledCash: cash, unsettledCash: 0, buyingPower: null, marketValue: 0, netLiquidation: 0 },
     positions,
     orders,
+    openOrders,
     historyFrom: "2018-05-21T00:00:00.000Z",
   };
 }
@@ -372,5 +376,49 @@ describe("basis agreement", () => {
     const diffs = Object.fromEntries(plan.accounts[0].holdings.map((h) => [h.symbol, h.kind === "link" ? h.differences : null]));
     expect(diffs.LOW).toEqual([]);
     expect(diffs.OFF).toEqual(["basis: record 40.7706, Webull 40.8300"]);
+  });
+});
+
+describe("stop orders (phase 3)", () => {
+  const NOW = new Date("2026-10-25T16:00:00.000Z");
+  const stopOrder = (orderId: string, symbol: string, qty: number, stop: number, over: Partial<WebullOrder> = {}) =>
+    order({ orderId, clientOrderId: `ew${orderId}`, symbol, side: "SELL", status: "SUBMITTED", orderType: "STOP_LOSS", totalQuantity: qty, stopPrice: stop, timeInForce: "GTC", placedAt: "2026-10-01T15:00:00.000Z", ...over });
+
+  function kept(): HoldingsStore {
+    return {
+      lots: [lot("AAA", 10, 50, "roth")],
+      stops: [{ id: "hand", symbol: "AAA", count: null, stopPrice: 41, createdAt: "2026-09-01T00:00:00.000Z" }],
+      alertState: [],
+      holdings: [{ account: "roth", symbol: "AAA", source: "webull", linkedAt: "2026-10-01T00:00:00.000Z" }],
+    };
+  }
+
+  it("makes a webull holding's stops exactly its open sell stops, dropping the record-keeping one", () => {
+    const store = kept();
+    const open = [stopOrder("S1", "AAA", 6, 45), order({ orderId: "L1", symbol: "AAA", side: "SELL", status: "SUBMITTED", orderType: "LIMIT", totalQuantity: 4, limitPrice: 70 })];
+    applySyncPlan(store, planWebullSync(store, [snapshot("roth", [position("AAA", 10, 50)], [], 1000, open)], OPTIONS), NOW);
+    expect(store.stops.map((s) => [s.stopPrice, s.count, s.webull?.orderId])).toEqual([[45, 6, "S1"]]);
+    expect(store.webull?.accounts[0].openOrders?.map((o) => o.orderId)).toEqual(["L1", "S1"].sort());
+  });
+
+  it("follows a stop moved in the app, and keeps a manual holding's stops", () => {
+    const store = kept();
+    store.lots.push(lot("AAA", 2, 48, "schwab"));
+    applySyncPlan(store, planWebullSync(store, [snapshot("roth", [position("AAA", 10, 50)], [], 1000, [stopOrder("S1", "AAA", 10, 45)])], OPTIONS), NOW);
+    applySyncPlan(store, planWebullSync(store, [snapshot("roth", [position("AAA", 10, 50)], [], 1000, [stopOrder("S1", "AAA", 10, 46)])], OPTIONS), NOW);
+    // The hand stop stays: AAA is also held by hand in another account.
+    expect(store.stops.map((s) => [s.id, s.stopPrice]).sort()).toEqual([["hand", 41], ["wb-S1", 46]].sort());
+  });
+
+  it("flags a stop that vanished without filling, but not one that filled", () => {
+    const store = kept();
+    const both = [stopOrder("S1", "AAA", 5, 45), stopOrder("S2", "AAA", 5, 44)];
+    applySyncPlan(store, planWebullSync(store, [snapshot("roth", [position("AAA", 10, 50)], [], 1000, both)], OPTIONS), NOW);
+    const history = [
+      stopOrder("S1", "AAA", 5, 45, { status: "CANCELLED" }),
+      stopOrder("S2", "AAA", 5, 44, { status: "FILLED", filledQuantity: 5, filledPrice: 44, filledAt: "2026-10-24T15:00:00.000Z" }),
+    ];
+    const plan = planWebullSync(store, [snapshot("roth", [position("AAA", 5, 50)], history, 1000, [])], OPTIONS);
+    expect(plan.accounts[0].vanished.map((v) => v.message)).toEqual([expect.stringContaining("(cancelled)")]);
   });
 });

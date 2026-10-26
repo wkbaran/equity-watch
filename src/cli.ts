@@ -2107,6 +2107,7 @@ async function cmdHoldingsSync(opts: HoldingsSyncOpts): Promise<void> {
         accountType: account.accountType,
         balance: await client.balance(accountId),
         positions: await client.positions(accountId),
+        openOrders: await client.openOrders(accountId),
         orders: cache.orders,
         historyFrom: cache.readFrom,
       });
