@@ -223,6 +223,8 @@ same checks on the machine before anything reaches Webull.
      BIL sale already working; sells `ceil(-cash / price)` whole shares a couple
      of cents under the price.
    - **Change or cancel**: the order must still look as the page showed it.
+     A sell stop mirrored onto a kept position is moved and cancelled from that
+     position's Stops band, and is left out of the panel's open orders.
 
 Each order's client id comes from its op id, and the watcher looks it up before
 sending, so a redelivered op never places a second order. Results come back to
@@ -332,7 +334,8 @@ Each row also shows two volatility figures and flags its stop:
   that is the initial stop, and on a winner it would hand back the gains. The
   title says which reference it used, how many ATRs of room the stop has, and
   where 2 ATR would put it. With no ATR or no quote, neither pill is judged; a
-  price at or under the stop is always `stop tight`.
+  price at or under the stop is always `stop tight`. On a Webull stop, the flagged
+  stop's Move field starts at that 2 ATR price instead of the stop's own.
 - **`past trail`**: the price is already 2 ATR or more under its high close since
   purchase, so a 2 ATR trailing stop would have exited and the stop it implies sits
   at or above the market, where no sell stop can go. Shown instead of `stop

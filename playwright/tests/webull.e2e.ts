@@ -37,10 +37,10 @@ const WEBULL: WebullState = {
   ],
 };
 
-async function serveVault(page: Page, extra: Partial<VaultContents>) {
+async function serveVault(page: Page, extra: Partial<VaultContents>, patch: (c: VaultContents) => VaultContents = (c) => c) {
   await page.route("**/vault.json", async (route) => {
     const original = (await (await route.fetch()).json()) as VaultDocument;
-    const contents = { ...openVault(original, OPS_TOKEN), ...extra };
+    const contents = patch({ ...openVault(original, OPS_TOKEN), ...extra });
     await route.fulfill({ json: sealVault(contents, OPS_TOKEN) });
   });
 }
@@ -180,7 +180,11 @@ test.describe("orders", () => {
   });
 
   test("places and moves a stop, with the code, and shows the watcher's result", async ({ page }) => {
-    await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [STOP], orders: ON });
+    // The fixture's AA row carries its own stop at 38; make it the stop served here.
+    await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [STOP], orders: ON }, (c) => ({
+      ...c,
+      holdings: c.holdings.map((r) => (r.symbol === "AA" ? { ...r, stops: [STOP.stopPrice] } : r)),
+    }));
     await openAA(page);
     const place = detail(page).locator("form.stop-place");
     // Only margin takes orders here (the fixture's Webull state has no Roth), so there is no account to pick.
@@ -196,6 +200,8 @@ test.describe("orders", () => {
     await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
 
     const move = detail(page).locator("form.stop-move");
+    // 39 is 1.6 ATR under the 47 high close, flagged tight, so the form offers the 2 ATR trail.
+    await expect(move.getByLabel(/Stop/)).toHaveValue("37.00");
     await move.getByLabel(/Stop/).fill("40");
     await move.getByLabel("Code").fill("654321");
     await move.getByRole("button", { name: "Move" }).click();
@@ -260,5 +266,27 @@ test.describe("orders", () => {
     await orders.getByRole("button", { name: "Cancel" }).click();
     await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
     expect((await queuedOps(page))[0]).toMatchObject({ type: "order.cancel", target: { account: "margin", symbol: "OPENCO", clientOrderId: "ewz9" }, params: { code: "333444" } });
+  });
+
+  test("leaves a stop mirrored onto a position out of the panel's open orders", async ({ page }) => {
+    const order = { side: "SELL" as const, trailingType: null, trailingStep: null, timeInForce: "GTC", comboType: "NORMAL", placedAt: null, limitPrice: null };
+    const withOrders = {
+      ...WEBULL,
+      accounts: [
+        {
+          ...WEBULL.accounts[0],
+          openOrders: [
+            { ...order, symbol: "AA", orderId: "ORDER-0001", clientOrderId: "ewclient0001", orderType: "STOP_LOSS", quantity: 5, stopPrice: 39 },
+            { ...order, symbol: "OPENCO", orderId: "O9", clientOrderId: "ewz9", orderType: "STOP_LOSS", quantity: 6, stopPrice: 25 },
+          ],
+        },
+      ],
+    };
+    await serveVault(page, { webull: withOrders, holdingSources: AA_KEPT, stops: [STOP], orders: ON });
+    await openAA(page);
+    const orders = page.locator("#webull-panel .open-orders");
+    await expect(orders).toContainText("OPENCO");
+    await expect(orders).not.toContainText("AA ");
+    await expect(detail(page).locator("form.stop-move")).toBeVisible();
   });
 });

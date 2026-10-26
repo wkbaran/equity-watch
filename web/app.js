@@ -1712,11 +1712,24 @@
     );
   }
 
+  /**
+   * The trail's price for a stop the position flags as tight or loose, which is
+   * always its highest stop (`stopFlags` measures that one). Null otherwise, so
+   * the form keeps the stop's own price.
+   */
+  function suggestedMove(s) {
+    const row = holdingFor(s.symbol);
+    if (!row || s.stopPrice !== Math.max(...row.stops)) return null;
+    if (!stopFlags(row).some((f) => f.kind === "stop-tight" || f.kind === "stop-loose")) return null;
+    const trail = trailFor(row);
+    return trail && trail.suggested < row.price ? trail.suggested.toFixed(2) : null;
+  }
+
   /** Move or cancel one Webull stop. Null for an order placed without a client id, which can't be changed from here. */
   function webullStopForm(s) {
     const w = s.webull;
     if (!ordersOn() || !w.clientOrderId || !orderAccounts().includes(w.account)) return null;
-    const price = numberInput(s.stopPrice, { placeholder: "price" });
+    const price = numberInput(suggestedMove(s) ?? s.stopPrice, { placeholder: "price" });
     const code = codeInput();
     const target = { account: w.account, symbol: s.symbol, clientOrderId: w.clientOrderId };
     return h(
@@ -1749,9 +1762,14 @@
     );
   }
 
-  /** The working orders in one account, each cancellable, a limit order's price changeable. */
+  /**
+   * The working orders in one account, each cancellable, a limit order's price changeable.
+   * A stop the sync mirrored onto a holding is left out: its position's Stops band
+   * shows it and moves or cancels it. A trailing stop with no price yet isn't mirrored, so it stays.
+   */
   function openOrdersBlock(account) {
-    const orders = account.openOrders ?? [];
+    const mirrored = new Set((vaultData?.stops ?? []).filter((s) => s.webull?.account === account.label).map((s) => s.webull.orderId));
+    const orders = (account.openOrders ?? []).filter((o) => !mirrored.has(o.orderId));
     if (orders.length === 0) return null;
     const canTrade = ordersOn() && orderAccounts().includes(account.label);
     const code = canTrade ? codeInput() : null;
