@@ -43,3 +43,16 @@ describe("the inline Lambda's op contract", () => {
     expect(byType["stop.add"]).toBeNull();
   });
 });
+
+describe("the Lambda's order routing", () => {
+  const template = readFileSync(new URL("../infra/cloudformation.yaml", import.meta.url), "utf-8");
+
+  it("sends exactly the order op types to the orders queue", async () => {
+    const { ORDER_OP_TYPES } = await import("../src/ops/orderTypes.js");
+    const literal = /const ORDER_TYPES = new Set\(\[([^\]]*)\]\)/.exec(template);
+    expect(literal, "ORDER_TYPES moved or changed shape in infra/cloudformation.yaml").not.toBeNull();
+    const types = [...literal![1].matchAll(/"([a-z]+\.[a-z]+)"/g)].map((m) => m[1]);
+    expect(types.sort()).toEqual([...ORDER_OP_TYPES].sort());
+    expect(template).toContain("QueueUrl: isOrder ? process.env.ORDERS_QUEUE_URL : process.env.QUEUE_URL");
+  });
+});

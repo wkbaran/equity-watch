@@ -6,7 +6,17 @@ OpenAPI. Reading positions, fills, balances and orders comes first, then stops,
 then buys and sells. Alerts track what you may want to buy, so the end state is
 buying from the alert that fired, with the Webull app as the fallback.
 
-Status: **phases 1 and 2 built** (2026-10-25), **not yet run against Webull**:
+Status: **all six phases built** (2026-10-25). Phases 1-3 have run against the
+real accounts; **no order has been sent yet** (phases 4-6), and none will be until
+`WEBULL_ORDERS=on`. As built, the order path differs from the plan below in four
+ways: every order op (stops and Sell BIL to cover included) went through the order
+watcher and the authenticator from the start, rather than phase 4 sending under
+the ops token alone; the code is per order, with no 15-minute unlock window;
+agents get no order tools at all; and the page offers plain GTC stops, not
+trailing ones (Webull allows trailing stops only as DAY orders). The original
+status line follows.
+
+Phases 1 and 2 built (2026-10-25), not yet run against Webull:
 that needs an approved API application (App Key and Secret). The signature
 reproduces Webull's worked example, and the rest is tested against response shapes
 from Webull's reference. What is assumed until the first real run is listed under
@@ -410,6 +420,20 @@ below; the rest are still open.
    show up as a share change no fill explains, which is flagged, not applied.
 10. **Fractional shares come as decimal strings** in `quantity` and
     `filled_quantity`. *Confirmed* (a fractional position).
+
+Added with the order path, still to check on the first real orders:
+
+11. **Place, replace and cancel take the documented bodies** (`new_orders`,
+    `modify_orders`, `client_order_id`), and a repeated `client_order_id` is
+    refused. Order Detail finds an order by the client id it was placed with.
+12. **A buy with a stop as `MASTER` + `STOP_LOSS` legs** under a
+    `client_combo_order_id` is accepted for a stock (the docs' example), with the
+    stop leg GTC while the buy is DAY.
+13. **Orders placed in the Webull app carry no `client_order_id`.** If so, they
+    can't be changed or cancelled from equity-watch (the page says so); if they do
+    carry one, they can.
+14. **Preview's `estimated_cost` is the order's total cost**, which the
+    `ORDERS_MAX_VALUE` and cash checks use.
 
 ## Security
 

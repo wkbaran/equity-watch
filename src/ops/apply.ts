@@ -24,6 +24,7 @@ import { applyRevisitLevel, closeRevisitsForSymbol, editClosure, loadRevisits, s
 import { loadAlerts, saveAlerts } from "../alerts/store.js";
 import type { Alert } from "../alerts/models.js";
 import { applyHoldingsOp, applyCoverOp } from "./holdings.js";
+import { ORDER_OP_TYPES } from "./orderTypes.js";
 import { applyWebullHoldingOp } from "./webullHoldings.js";
 import {
   addFieldsFromJson,
@@ -40,7 +41,7 @@ export const DEFAULT_OP_LOG = "ops.log.jsonl";
 export const DEFAULT_HOLDINGS_FILE = "holdings.json";
 export const DEFAULT_REVISITS_FILE = "revisits.json";
 
-export const OP_TYPES = ["alert.add", "alert.edit", "alert.remove", "revisit.relevel", "revisit.apply", "revisit.dismiss", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.edit", "stop.remove", "holdings.cover", "holding.adopt", "holding.link", "holding.unlink", "holding.ignore"] as const;
+export const OP_TYPES = ["alert.add", "alert.edit", "alert.remove", "revisit.relevel", "revisit.apply", "revisit.dismiss", "lot.add", "lot.edit", "lot.remove", "position.remove", "stop.add", "stop.edit", "stop.remove", "holdings.cover", "holding.adopt", "holding.link", "holding.unlink", "holding.ignore", ...ORDER_OP_TYPES] as const;
 export type OpType = (typeof OP_TYPES)[number];
 
 /**
@@ -234,6 +235,17 @@ async function applyByType(op: Op, ctx: ApplyContext): Promise<Outcome> {
       return applyDismiss(op, ctx);
     case "holdings.cover":
       return applyCover(op, ctx);
+    case "stop.place":
+    case "stop.replace":
+    case "stop.cancel":
+    case "cash.cover":
+    case "order.buy":
+    case "order.sell":
+    case "order.replace":
+    case "order.cancel":
+      // The Lambda routes these to the orders queue; one here was misrouted.
+      // Refused rather than sent: only `orders watch` checks the authenticator code.
+      return reject(null, null, `${op.type} is an order, which only the order watcher sends. It wasn't sent.`);
     case "holding.adopt":
     case "holding.link":
     case "holding.unlink":

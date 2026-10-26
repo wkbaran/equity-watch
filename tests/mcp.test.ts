@@ -11,6 +11,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { OPS_TOKEN } from "../playwright/fixtures.js";
 import { OP_TYPES } from "../src/ops/apply.js";
+import { isOrderOp } from "../src/ops/orderTypes.js";
 import { bearerMatches, runMcpServer, sessionServer, type McpOptions } from "../src/mcp/server.js";
 import { SiteApi } from "../src/mcp/siteApi.js";
 import { loadToolbox } from "../src/mcp/toolbox.js";
@@ -348,7 +349,8 @@ describe("every write tool, through the server", () => {
     const box = await loadToolbox();
     const writes = box.TOOLS.filter((t) => t.ops !== undefined).map((t) => t.name).sort();
     expect(CASES.map((c) => c.tool).sort()).toEqual(writes);
-    expect([...new Set(CASES.map((c) => c.op.type as string))].sort()).toEqual([...OP_TYPES].sort());
+    // Every op type but the orders, which no agent tool may queue (tests/webmcp.test.ts).
+    expect([...new Set(CASES.map((c) => c.op.type as string))].sort()).toEqual(OP_TYPES.filter((t) => !isOrderOp(t)).sort());
   });
 
   it.each(CASES)("$tool queues $op.type with the page's guards", async ({ tool, args, op }) => {

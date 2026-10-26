@@ -53,6 +53,12 @@ export interface VaultContents {
   holdingSources?: Pick<Holding, "account" | "symbol" | "source" | "ignored">[];
   /** The last Webull read: cash per account, unmatched and linkable positions, flags. Absent until the first sync. */
   webull?: WebullState;
+  /**
+   * Whether the order path is on, and its limits, so the page offers order
+   * controls only when they can work (src/orders/config.ts). The watcher checks
+   * everything again; this is only what to show.
+   */
+  orders?: { enabled: boolean; maxValue: number; maxPerDay: number; accounts: string[] | null };
 }
 
 export interface VaultDocument {
@@ -71,7 +77,8 @@ export function vaultKey(token: string): Buffer {
 export function vaultContents(
   dashboard: Pick<Dashboard, "holdings" | "stories">,
   store: HoldingsStore,
-  spreadStops?: SpreadStopsStore
+  spreadStops?: SpreadStopsStore,
+  orders?: VaultContents["orders"]
 ): VaultContents {
   const links: [string, string][] = (spreadStops?.stops ?? []).flatMap((s) =>
     s.status === "live" && s.spread.optionStratUrl ? [[s.key, s.spread.optionStratUrl] as [string, string]] : []
@@ -94,6 +101,7 @@ export function vaultContents(
       ? { holdingSources: store.holdings.map(({ account, symbol, source, ignored }) => ({ account, symbol, source, ...(ignored ? { ignored } : {}) })) }
       : {}),
     ...(store.webull !== undefined ? { webull: webullForPage(store.webull) } : {}),
+    ...(orders !== undefined ? { orders } : {}),
   };
 }
 
@@ -110,8 +118,13 @@ function webullForPage(state: WebullState): WebullState {
 }
 
 export function sealVault(contents: VaultContents, token: string, iv: Buffer = randomBytes(12)): VaultDocument {
+  return sealJson(contents, token, iv);
+}
+
+/** Any value, sealed the vault's way: what orders.json uses too, so the page opens both with one key. */
+export function sealJson(value: unknown, token: string, iv: Buffer = randomBytes(12)): VaultDocument {
   const cipher = createCipheriv("aes-256-gcm", vaultKey(token), iv);
-  const body = Buffer.concat([cipher.update(JSON.stringify(contents), "utf8"), cipher.final(), cipher.getAuthTag()]);
+  const body = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final(), cipher.getAuthTag()]);
   return { v: 1, alg: "AES-GCM", iv: iv.toString("base64"), data: body.toString("base64") };
 }
 

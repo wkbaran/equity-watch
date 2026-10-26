@@ -149,3 +149,116 @@ test("a kept position's Webull stops show as orders, flagged short and expiring"
   // Every share is kept, so the record-keeping Add stop form is gone.
   await expect(detail(page).locator("form.stop-add")).toHaveCount(0);
 });
+
+test.describe("orders", () => {
+  const ON = { enabled: true, maxValue: 2000, maxPerDay: 10, accounts: null };
+  const AA_KEPT = [
+    { account: "margin", symbol: "AA", source: "webull" as const },
+    { account: "roth", symbol: "AA", source: "webull" as const },
+  ];
+  const STOP = {
+    id: "wb-00000001",
+    symbol: "AA",
+    count: 5,
+    stopPrice: 39,
+    webull: { account: "margin", orderId: "ORDER-0001", clientOrderId: "ewclient0001", orderType: "STOP_LOSS", timeInForce: "GTC", limitPrice: null, placedAt: "2026-10-20T15:00:00.000Z" },
+  };
+
+  async function openAA(page: Page) {
+    await page.goto("/#/holdings");
+    await unlockWith(page, OPS_TOKEN);
+    await positionRow(page, "AA").locator("td").nth(2).click();
+    await expect(detail(page)).toBeVisible();
+  }
+
+  test("offers nothing while orders are off", async ({ page }) => {
+    await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [STOP] });
+    await openAA(page);
+    await expect(detail(page).locator("form.stop-place")).toHaveCount(0);
+    await expect(detail(page).getByRole("button", { name: "Buy at Webull" })).toHaveCount(0);
+    await expect(page.locator("#webull-panel").getByRole("button", { name: "Sell BIL to cover" })).toHaveCount(0);
+  });
+
+  test("places and moves a stop, with the code, and shows the watcher's result", async ({ page }) => {
+    await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [STOP], orders: ON });
+    await openAA(page);
+    const place = detail(page).locator("form.stop-place");
+    // Only margin takes orders here (the fixture's Webull state has no Roth), so there is no account to pick.
+    await expect(place.getByLabel("Account")).toHaveCount(0);
+    await expect(place.getByLabel("Shares")).toHaveValue("5");
+    await place.getByLabel("Stop price").fill("38.5");
+    // No code: refused on the page, nothing queued.
+    await place.getByRole("button", { name: "Place stop at Webull" }).click();
+    await expect(page.locator("#toasts .toast.bad")).toContainText("6-digit code");
+    expect(await queuedOps(page)).toEqual([]);
+    await place.getByLabel("Code").fill("123456");
+    await place.getByRole("button", { name: "Place stop at Webull" }).click();
+    await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+
+    const move = detail(page).locator("form.stop-move");
+    await move.getByLabel(/Stop/).fill("40");
+    await move.getByLabel("Code").fill("654321");
+    await move.getByRole("button", { name: "Move" }).click();
+    await expect.poll(async () => (await queuedOps(page)).length).toBe(2);
+
+    const [placed, moved] = await queuedOps(page);
+    expect(placed).toMatchObject({ type: "stop.place", target: { account: "margin", symbol: "AA" }, params: { quantity: 5, stopPrice: 38.5, code: "123456" } });
+    expect(moved).toMatchObject({ type: "stop.replace", target: { account: "margin", symbol: "AA", clientOrderId: "ewclient0001" }, expect: { stopPrice: 39, quantity: 5 }, params: { stopPrice: 40, code: "654321" } });
+
+    // The watcher's sealed result for the first one.
+    await page.route("**/orders.json", (route) =>
+      route.fulfill({ json: sealVault({ results: [{ id: placed.id, type: "stop.place", symbol: "AA", account: "margin", ok: true, message: "Placed a stop order for AA.", detail: "placed: sell 5 AA stop_loss stop 38.50 GTC CORE", at: new Date().toISOString() }] } as never, OPS_TOKEN) })
+    );
+    await expect(page.locator("#toasts .toast.ok").last()).toContainText("sell 5 AA stop_loss stop 38.50", { timeout: 15_000 });
+  });
+
+  test("Sell BIL to cover, on a margin account using margin", async ({ page }) => {
+    await serveVault(page, { webull: WEBULL, orders: ON });
+    await page.goto("/#/holdings");
+    await unlockWith(page, OPS_TOKEN);
+    const panel = page.locator("#webull-panel");
+    await panel.locator(".cover .code-input").fill("111222");
+    await panel.getByRole("button", { name: "Sell BIL to cover" }).click();
+    await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+    expect((await queuedOps(page))[0]).toMatchObject({ type: "cash.cover", target: { account: "margin" }, params: { code: "111222" } });
+  });
+
+  test("the ticket buys with an attached stop, funded from BIL when cash is short", async ({ page }) => {
+    await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [STOP], orders: ON });
+    await openAA(page);
+    await detail(page).getByRole("button", { name: "Buy at Webull" }).click();
+    const ticket = page.locator("dialog.ticket");
+    await expect(ticket).toBeVisible();
+    await ticket.getByLabel("Shares").fill("3");
+    await ticket.getByLabel("Limit price").fill("45");
+    // 135 against 82.25 cash and 448.77 with BIL: Fund from BIL ticks itself.
+    await expect(ticket.locator("p.note").first()).toContainText("tick Fund from BIL");
+    await expect(ticket.getByLabel(/Fund from BIL/)).toBeChecked();
+    await ticket.getByLabel(/Attach a GTC stop/).check();
+    await ticket.locator('input[placeholder="stop"]').fill("41");
+    await ticket.getByLabel("Authenticator code").fill("222333");
+    await ticket.getByRole("button", { name: "Send buy" }).click();
+    await expect(ticket).toBeHidden();
+    await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+    expect((await queuedOps(page))[0]).toMatchObject({
+      type: "order.buy",
+      target: { account: "margin", symbol: "AA" },
+      params: { quantity: 3, limitPrice: 45, timeInForce: "DAY", session: "CORE", fundFromBil: true, stopPrice: 41, code: "222333" },
+    });
+  });
+
+  test("cancels an open order from the panel", async ({ page }) => {
+    const withOrders = {
+      ...WEBULL,
+      accounts: [{ ...WEBULL.accounts[0], openOrders: [{ symbol: "OPENCO", orderId: "O9", clientOrderId: "ewz9", side: "BUY" as const, orderType: "LIMIT", quantity: 6, limitPrice: 30, stopPrice: null, trailingType: null, trailingStep: null, timeInForce: "DAY", comboType: "NORMAL", placedAt: null }] }],
+    };
+    await serveVault(page, { webull: withOrders, orders: ON });
+    await page.goto("/#/holdings");
+    await unlockWith(page, OPS_TOKEN);
+    const orders = page.locator("#webull-panel .open-orders");
+    await orders.locator(".code-input").fill("333444");
+    await orders.getByRole("button", { name: "Cancel" }).click();
+    await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+    expect((await queuedOps(page))[0]).toMatchObject({ type: "order.cancel", target: { account: "margin", symbol: "OPENCO", clientOrderId: "ewz9" }, params: { code: "333444" } });
+  });
+});

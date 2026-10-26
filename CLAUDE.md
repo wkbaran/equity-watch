@@ -1289,6 +1289,28 @@ measures real windows instead. Intraday baselines are matched by time of day
 because volume is U-shaped — MSFT's closing hour runs ~2.4x its early
 afternoon.
 
+## Orders (`src/orders/`, `orders watch`)
+
+Phases 4-6 of `docs/WEBULL_SYNC_PLAN.md`, built 2026-10-25 before any real
+order was sent.
+
+- **Only `src/orders/execute.ts` sends orders**, and only `orders watch` runs it.
+  `ops pull` refuses order ops (`src/ops/orderTypes.ts`); the Lambda routes them
+  to `OrdersQueue`. Keep `ORDER_OP_TYPES` in step across `orderTypes.ts`, the
+  Lambda's `ORDER_TYPES` in `infra/cloudformation.yaml` and `web/app.js`
+  (`tests/lambdaContract.test.ts` checks the first two).
+- **Agents get no order tools, deliberately.** `tests/webmcp.test.ts` and
+  `tests/mcp.test.ts` require a tool for every op type except the orders. Don't
+  "complete" the set.
+- **The gate's order matters**: kill switch, then the authenticator code (spent
+  before anything else, so a refused op still burns it), then account, then the
+  daily count. A code is good once.
+- **Client order ids are derived from the op id** (`clientOrderId`), and
+  `placeOnce` looks the id up before sending. That is what makes a redelivered op
+  safe; don't switch to random ids.
+- **Published messages carry no account, count or price.** The detail goes to
+  the sealed `orders.json` and `orders.log.jsonl` only.
+
 ## Node 26, and no dotenv
 
 Since 2026-10-25 the CLI and image run Node 26 (`engines`, `.node-version`,

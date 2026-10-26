@@ -175,6 +175,63 @@ A sell stop that was open at the last sync and is gone without filling
 which the sync records with `stopHit`. The dry run lists each account's open
 orders, noting any without a client order id: equity-watch can't change those.
 
+### Orders
+
+equity-watch can send orders to Webull from the unlocked page: GTC sell stops,
+limit buys and sells, changing and cancelling open orders, and **Sell BIL to
+cover** a margin debit. It is off until switched on, and every order passes the
+same checks on the machine before anything reaches Webull.
+
+**Setup** (once):
+
+1. Deploy the stack (`scripts/deploy-stack.sh`). It adds the orders queue; put its
+   `OrdersQueueUrl` output in `.env` as `ORDERS_QUEUE_URL`.
+2. `equity-watch orders totp-setup` prints a new authenticator secret. Add it to
+   an authenticator app, and to `.env` as `ORDERS_TOTP_SECRET`.
+3. In `.env`: `WEBULL_ORDERS=on`, and if wanted `ORDERS_MAX_VALUE` (the largest
+   buy, default $2,000), `ORDERS_MAX_PER_DAY` (default 10) and `ORDERS_ACCOUNTS`
+   (labels that may trade; default all mapped).
+4. Start the watcher: `COMPOSE_PROFILES=orders` in `docker/.env` (with `mcp` if
+   that's on too: `mcp,orders`), then `docker compose ... up -d`. Without Docker,
+   `equity-watch orders watch`.
+
+**What every order passes**, in order, refused at the first that fails:
+
+1. `WEBULL_ORDERS=on`;
+2. a valid 6-digit authenticator code, used once (the page asks for it on every
+   order; the secret is only on the machine, so the ops token alone can't trade);
+3. an allowed account;
+4. under `ORDERS_MAX_PER_DAY` orders today (cancels don't count);
+5. arriving within two minutes of being queued: a late order is refused, never
+   sent at a price nobody saw;
+6. then the order's own rules, against a fresh read of the account (not the last
+   sync's copy):
+   - **Stops**: GTC sell `STOP_LOSS`, regular session, whole shares only, no more
+     than the whole shares held less any other working sell, a stop under the last
+     price. Only on a holding the sync keeps.
+   - **Sells and buys**: limit orders only, never market; a limit more than 20%
+     the wrong side of the last price is refused as a likely typo.
+   - **Buys**: Webull previews the cost, which must be under `ORDERS_MAX_VALUE`
+     and inside cash + BIL. Orders never borrow. When cash alone is short, **Fund
+     from BIL** sells the difference first: in a margin account alongside the buy
+     (both settle T+1), in the Roth before it, waiting up to three minutes for the
+     sale to fill or cancelling it and buying nothing. A buy can carry a GTC stop,
+     placed with it as one combo order.
+   - **Sell BIL to cover**: margin account, cash below zero, regular session, no
+     BIL sale already working; sells `ceil(-cash / price)` whole shares a couple
+     of cents under the price.
+   - **Change or cancel**: the order must still look as the page showed it.
+
+Each order's client id comes from its op id, and the watcher looks it up before
+sending, so a redelivered op never places a second order. Results come back to
+the page within seconds, sealed in `orders.json`; the local `orders.log.jsonl`
+keeps every order sent and every refusal, with details. Agents (the MCP server,
+WebMCP) have no order tools, on purpose.
+
+**First use**: try one small order of each kind and watch it in the Webull app.
+Built and tested against Webull's documented API before any real order was
+sent; see the plan's assumptions.
+
 ### The Webull panel
 
 The unlocked Holdings page has a **Webull** panel with what the last sync read,

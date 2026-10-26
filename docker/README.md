@@ -79,6 +79,15 @@ for the SMS code to be entered in the Webull app:
 docker compose -f docker/docker-compose.yaml run --rm cli webull-login
 ```
 
+## The order watcher (optional)
+
+`orders`, a third service from the same image, sends orders from the page to
+Webull (docs/HOLDINGS.md#orders). Off unless `docker/.env` turns on its profile,
+alongside `mcp` if that's on: `COMPOSE_PROFILES=mcp,orders`. It needs, in `.env`,
+`ORDERS_QUEUE_URL` and `ORDERS_TOTP_SECRET`, and sends nothing until
+`WEBULL_ORDERS=on`. Its log is the record of every order it sent or refused:
+`docker compose -f docker/docker-compose.yaml logs orders`.
+
 ## Sharing betas with another container
 
 A second job, `docker/run-beta.sh`, writes Schwab's beta for a list of symbols to a

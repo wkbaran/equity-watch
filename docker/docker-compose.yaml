@@ -97,6 +97,30 @@ services:
   # One-off CLI against the same state, e.g. the weekly Schwab login:
   #   docker compose -f docker/docker-compose.yaml run --rm cli schwab-login
   # Never started by `up`: it needs the "tools" profile, which `run` turns on.
+  # The order watcher (src/orders/watch.ts): long-polls the orders queue and
+  # sends each order op to Webull, behind WEBULL_ORDERS, the authenticator code
+  # and the limits in ../.env. Opt-in like mcp: COMPOSE_PROFILES=orders (or
+  # mcp,orders) in docker/.env. It shares /data with the scheduler: it reads
+  # holdings.json, appends to ops.log.jsonl, and writes site/orders.json.
+  orders:
+    <<: *common
+    profiles: ["orders"]
+    restart: unless-stopped
+    entrypoint: ["/app/docker/entrypoint.sh", "equity-watch", "orders", "watch", "--heartbeat", "/tmp/orders-heartbeat"]
+    command: []
+    # Healthy while it is polling: each long poll lasts at most 20 seconds, and
+    # an order (a Roth buy waiting on its BIL sale) at most a few minutes.
+    healthcheck:
+      test: ["CMD-SHELL", "[ -n \"$$(find /tmp/orders-heartbeat -mmin -6 2>/dev/null)\" ]"]
+      interval: 1m
+      timeout: 10s
+      start_period: 1m
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
   cli:
     <<: *common
     profiles: ["tools"]

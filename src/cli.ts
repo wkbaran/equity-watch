@@ -65,6 +65,9 @@ import {
   renderSyncPlan,
   type WebullAccountSnapshot,
 } from "./holdings/webullSync.js";
+import { ordersConfig, DEFAULT_ORDERS_STATE_FILE } from "./orders/config.js";
+import { newTotpSecret, otpauthUri } from "./orders/totp.js";
+import { DEFAULT_ORDERS_LOG, s3Uploader, watchOrders, type WatchContext } from "./orders/watch.js";
 import { DEFAULT_ORDER_CACHE_DIR, loadOrderCache, mergeOrders, nextReadStart, orderCachePath, saveOrderCache, type OrderCache } from "./holdings/webullOrders.js";
 import { buildDashboard, renderDashboard, type HoldingDailyStats } from "./dashboard.js";
 import { errorText } from "./errorText.js";
@@ -1965,6 +1968,94 @@ interface WebullOpts {
   webullTokenPath: string;
 }
 
+/** The order path's switch and limits, for the page to decide what to offer. A bad setting reads as off. */
+function ordersForPage(): { enabled: boolean; maxValue: number; maxPerDay: number; accounts: string[] | null } {
+  try {
+    const c = ordersConfig();
+    return { enabled: c.enabled && c.totpSecret !== null && Boolean(process.env.ORDERS_QUEUE_URL), maxValue: c.maxValue, maxPerDay: c.maxPerDay, accounts: c.accounts === null ? null : [...c.accounts] };
+  } catch {
+    return { enabled: false, maxValue: 0, maxPerDay: 0, accounts: null };
+  }
+}
+
+interface OrdersWatchOpts extends WebullOpts, CommonOpts {
+  holdingsFile: string;
+  opLog: string;
+  config: string;
+  siteDir: string;
+  ordersState: string;
+  ordersLog: string;
+  heartbeat?: string;
+  cacheDir: string;
+  noCache?: boolean;
+}
+
+/** Prints a new authenticator secret to put in .env and in an authenticator app. Writes nothing. */
+function cmdOrdersTotpSetup(): void {
+  const secret = newTotpSecret();
+  console.log("A new authenticator secret for orders. Nothing was saved.\n");
+  console.log(`1. Add it to an authenticator app (Google Authenticator, 1Password, ...) as a key typed in by hand:\n     ${secret}`);
+  console.log(`   or, if the app takes a URI:\n     ${otpauthUri(secret)}`);
+  console.log(`2. Put it in .env on the machine that runs the order watcher:\n     ORDERS_TOTP_SECRET=${secret}`);
+  console.log("3. Restart the watcher. Every order from the page then asks for the app's current 6-digit code.");
+  console.log("\nKeep it out of anything shared: whoever has it and the ops token can place orders.");
+}
+
+/** The order watcher: see src/orders/watch.ts. */
+async function cmdOrdersWatch(opts: OrdersWatchOpts): Promise<void> {
+  const queueUrl = process.env.ORDERS_QUEUE_URL?.trim();
+  if (!queueUrl) {
+    console.error("ORDERS_QUEUE_URL is not set in .env (the stack's OrdersQueueUrl output), so there is nothing to watch.");
+    process.exit(1);
+  }
+  let config;
+  let mapping;
+  try {
+    config = ordersConfig();
+    mapping = parseAccountMap(process.env.WEBULL_ACCOUNTS);
+  } catch (err) {
+    console.error(errorText(err));
+    process.exit(1);
+  }
+  const region = process.env.AWS_REGION ?? "us-east-1";
+  const bucket = process.env.S3_BUCKET?.trim();
+  const market = lazyMarketData(opts);
+  const opsToken = process.env.OPS_TOKEN ?? "";
+  const ctx: WatchContext = {
+    order: {
+      client: webullClient(opts),
+      accountIds: new Map(mapping.map((m) => [m.label, m.accountId])),
+      holdingsFile: opts.holdingsFile,
+      config,
+      stateFile: opts.ordersState,
+      cashEquivalents: cashEquivalentSymbols(loadTuningConfig(opts.config)),
+      quote: async (symbol) => {
+        try {
+          return (await market.getQuotes([symbol])).get(symbol)?.lastPrice ?? null;
+        } catch {
+          return null;
+        }
+      },
+      now: () => new Date(),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    },
+    queue: sqsOpsQueue(queueUrl, region),
+    opLogFile: opts.opLog,
+    ordersLogFile: opts.ordersLog,
+    siteDir: opts.siteDir,
+    vaultToken: opsToken.length >= 32 ? opsToken : null,
+    upload: bucket ? s3Uploader(bucket, region, process.env.S3_PREFIX ?? "") : async () => undefined,
+    log: (line) => console.log(line),
+    ...(opts.heartbeat !== undefined ? { heartbeatFile: opts.heartbeat } : {}),
+  };
+  console.log(
+    `orders watch: ${config.enabled ? "orders ON" : "orders OFF (WEBULL_ORDERS)"}, ` +
+      `${config.totpSecret ? "authenticator set" : "NO authenticator (ORDERS_TOTP_SECRET)"}, ` +
+      `limit ${config.maxValue} a buy, ${config.maxPerDay} a day, accounts ${config.accounts ? [...config.accounts].join(",") : mapping.map((m) => m.label).join(",")}`
+  );
+  await watchOrders(ctx);
+}
+
 const MISSING_WEBULL_CREDENTIALS =
   "Missing Webull credentials. Set WEBULL_APP_KEY / WEBULL_APP_SECRET in .env (see docs/WEBULL_SYNC_PLAN.md).";
 
@@ -2302,7 +2393,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
     const fingerprint = siteFingerprint(
       siteDocument(quoteless, siteOptions, ops),
       buildAlertRows(alerts, new Map(), ignored, exchanges, heldSymbols),
-      vaultToken === null ? null : vaultContents(quoteless, holdings, spreadStops)
+      vaultToken === null ? null : vaultContents(quoteless, holdings, spreadStops, ordersForPage())
     );
     const decision = shouldPublish(loadPublishState(), fingerprint, new Date(), opts.maxStaleMinutes, ops.nextCheckAt);
     if (!decision.publish) {
@@ -2349,7 +2440,7 @@ async function cmdDashboard(opts: DashboardOpts): Promise<void> {
   // a publish while the holdings section is off.
   const siteDashboard = siteDocument(dashboard, siteOptions, ops);
   const alertRows = buildAlertRows(alerts, quotes, ignored, exchanges, heldSymbols);
-  const vault = vaultToken === null ? null : vaultContents(dashboard, holdings, spreadStops);
+  const vault = vaultToken === null ? null : vaultContents(dashboard, holdings, spreadStops, ordersForPage());
   if (siteDir !== undefined) {
     writeSite(siteDir, dashboard, siteOptions, alertRows, ops, vault === null ? null : sealVault(vault, vaultToken!));
     console.log(`Wrote site to ${siteDir}/${siteOptions.holdings ? "" : " (holdings excluded; set web.holdings in the config to include)"}`);
@@ -2903,6 +2994,25 @@ function buildProgram(): Command {
   withSpreadsCommon(spreadsCmd.command("list"))
     .description("List the live spread stops")
     .action((opts: SpreadsOpts) => cmdSpreadsList(opts));
+
+  const ordersCmd = program.command("orders").description("Orders to Webull from the page (docs/WEBULL_SYNC_PLAN.md): the watcher and its authenticator");
+  ordersCmd
+    .command("totp-setup")
+    .description("Print a new authenticator secret for ORDERS_TOTP_SECRET (writes nothing)")
+    .action(() => cmdOrdersTotpSetup());
+  withCommon(ordersCmd.command("watch"))
+    .description("Long-poll the orders queue and send each order op to Webull, behind WEBULL_ORDERS, the authenticator and the limits")
+    .option(...HOLDINGS_FILE_OPTION)
+    .option(...configOption("supplies cashEquivalents"))
+    .option(...WEBULL_TOKEN_OPTION)
+    .option("--op-log <path>", "The op log ops pull keeps, so an order op is applied once", DEFAULT_OP_LOG)
+    .option("--site-dir <path>", "The site directory; orders.json is written there and uploaded", "site")
+    .option("--orders-state <path>", "Spent authenticator steps and today's order count", DEFAULT_ORDERS_STATE_FILE)
+    .option("--orders-log <path>", "Every order op's result, with what was sent (private)", DEFAULT_ORDERS_LOG)
+    .option("--heartbeat <path>", "Touched on every poll, for a container healthcheck")
+    .option(...CACHE_DIR_OPTION)
+    .option(...NO_CACHE_OPTION)
+    .action((opts: OrdersWatchOpts) => cmdOrdersWatch(opts));
 
   const opsCmd = program.command("ops").description("Alert and holdings changes queued from the browser dashboard");
   const withOpsCommon = (cmd: Command): Command =>

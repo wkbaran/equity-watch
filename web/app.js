@@ -1533,8 +1533,11 @@
     return current?.site?.holdings === true ? current.holdings : null;
   }
 
-  async function openVault(token) {
-    const resp = await fetch("vault.json", { cache: "no-store" });
+  const openVault = (token) => openSealed("vault.json", token);
+
+  /** A document sealed the vault's way (vault.json, orders.json), opened with the ops token. */
+  async function openSealed(url, token) {
+    const resp = await fetch(url, { cache: "no-store" });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const doc = await resp.json();
     const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(VAULT_KEY_CONTEXT + token));
@@ -1572,6 +1575,369 @@
         rerenderOps();
       });
     return vaultLoading;
+  }
+
+  // ---- Orders at Webull (src/orders/, docs/WEBULL_SYNC_PLAN.md) --------------
+  //
+  // Every control here queues an order op carrying the authenticator code; the
+  // order watcher on the machine checks it, the limits and a fresh read of the
+  // account before anything reaches Webull. The page only offers what the vault
+  // says is switched on. Results come back sealed in orders.json, which is polled
+  // while an order is pending.
+
+  /** Keep in step with ORDER_OP_TYPES in src/ops/orderTypes.ts. */
+  const ORDER_OP_TYPES = ["stop.place", "stop.replace", "stop.cancel", "cash.cover", "order.buy", "order.sell", "order.replace", "order.cancel"];
+  const isOrderOpType = (type) => ORDER_OP_TYPES.includes(type);
+  const ordersOn = () => canEditHoldings() && vaultData?.orders?.enabled === true;
+  /** Accounts orders may go to: the Webull accounts the sync reads, narrowed by ORDERS_ACCOUNTS. */
+  function orderAccounts() {
+    const all = (vaultData?.webull?.accounts ?? []).map((a) => a.label);
+    const allowed = vaultData?.orders?.accounts;
+    return allowed ? all.filter((a) => allowed.includes(a)) : all;
+  }
+  const webullAccount = (label) => (vaultData?.webull?.accounts ?? []).find((a) => a.label === label) ?? null;
+
+  function codeInput() {
+    return h("input", {
+      type: "text",
+      class: "code-input",
+      inputmode: "numeric",
+      autocomplete: "one-time-code",
+      maxlength: "6",
+      placeholder: "code",
+      "aria-label": "Authenticator code",
+      title: "The 6-digit code from your authenticator app. Each code works once.",
+    });
+  }
+
+  /** Queues an order op with the code from `code`, then watches for its result. */
+  async function submitOrder(op, code, { symbol, summary }) {
+    const c = code.value.trim();
+    if (!/^\d{6}$/.test(c)) {
+      notice("Enter the 6-digit code from your authenticator app.", false);
+      code.focus();
+      return false;
+    }
+    const queued = await submitOp({ ...op, params: { ...(op.params ?? {}), code: c } }, { symbol, summary });
+    if (queued) {
+      code.value = "";
+      watchOrderResults();
+    }
+    return queued;
+  }
+
+  let orderWatch = null;
+  /**
+   * Polls orders.json every few seconds while an order op is pending, for up to
+   * five minutes: the watcher sends an order within seconds, and the next full
+   * publish can be a quarter of an hour off.
+   */
+  function watchOrderResults() {
+    if (orderWatch !== null) return;
+    const started = Date.now();
+    const tick = async () => {
+      syncPending();
+      const waiting = pendingOps.filter((p) => isOrderOpType(p.type));
+      if (waiting.length === 0 || Date.now() - started > 5 * 60_000 || !opsToken) {
+        orderWatch = null;
+        return;
+      }
+      try {
+        const { results } = await openSealed("orders.json", opsToken);
+        const byId = new Map(results.map((r) => [r.id, r]));
+        const done = waiting.filter((p) => byId.has(p.id));
+        if (done.length > 0) {
+          pendingOps = pendingOps.filter((p) => !byId.has(p.id));
+          savePending();
+          for (const p of done) {
+            const r = byId.get(p.id);
+            notice(r.ok ? `Sent: ${p.summary}. ${r.detail}` : `${p.summary}: ${r.message}`, r.ok);
+          }
+          rerenderOps();
+        }
+      } catch {
+        /* no orders.json yet, or mid-upload: try again */
+      }
+      orderWatch = setTimeout(tick, 3000);
+    };
+    orderWatch = setTimeout(tick, 2000);
+  }
+
+  /** Whole shares of `symbol` in `account` not already under a Webull stop or sell order. */
+  function freeShares(symbol, account) {
+    const held = (vaultData?.lots ?? []).filter((l) => l.symbol === symbol && l.account === account).reduce((n, l) => n + l.count, 0);
+    const promised = (webullAccount(account)?.openOrders ?? [])
+      .filter((o) => o.symbol === symbol && o.side === "SELL")
+      .reduce((n, o) => n + o.quantity, 0);
+    return Math.max(0, Math.floor(held + 1e-9) - Math.ceil(promised - 1e-9));
+  }
+
+  /** Place a GTC sell stop at Webull, prefilled with the 2 ATR trail and the free whole shares. */
+  function placeStopForm(symbol) {
+    const accounts = [...new Set((vaultData?.lots ?? []).filter((l) => l.symbol === symbol && keptByWebull(l)).map((l) => l.account))].filter((a) => orderAccounts().includes(a)).sort();
+    if (accounts.length === 0) return null;
+    const account = h("select", {}, ...accounts.map((a) => h("option", { value: a, text: a })));
+    const shares = numberInput(freeShares(symbol, accounts[0]), { step: "1" });
+    account.onchange = () => (shares.value = String(freeShares(symbol, account.value)));
+    const row = holdingFor(symbol);
+    const trail = row ? trailFor(row) : null;
+    const price = numberInput(trail && trail.suggested < trail.price ? trail.suggested.toFixed(2) : null, { placeholder: "price" });
+    const code = codeInput();
+    const error = h("span", { class: "form-error" });
+    return h(
+      "form",
+      {
+        class: "ops-form stop-place",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          error.textContent = "";
+          const n = Number(shares.value);
+          const p = positive(price.value);
+          if (!Number.isInteger(n) || n < 1) return (error.textContent = "Stops are for whole shares, 1 or more.");
+          if (p === null) return (error.textContent = "Enter a stop price above 0.");
+          await submitOrder(
+            { type: "stop.place", target: { account: account.value, symbol }, params: { quantity: n, stopPrice: p } },
+            code,
+            { symbol, summary: `place a ${symbol} stop at ${p} for ${n} shares (${account.value})` }
+          );
+        },
+      },
+      accounts.length > 1 ? field("Account", account) : null,
+      field("Shares", shares),
+      field("Stop price", price),
+      field("Code", code),
+      h("button", { type: "submit", text: "Place stop at Webull" }),
+      error,
+      h("div", { class: "note", text: "A GTC sell stop, regular session. The suggested price is 2 ATR under the high close since purchase." })
+    );
+  }
+
+  /** Move or cancel one Webull stop. Null for an order placed without a client id, which can't be changed from here. */
+  function webullStopForm(s) {
+    const w = s.webull;
+    if (!ordersOn() || !w.clientOrderId || !orderAccounts().includes(w.account)) return null;
+    const price = numberInput(s.stopPrice, { placeholder: "price" });
+    const code = codeInput();
+    const target = { account: w.account, symbol: s.symbol, clientOrderId: w.clientOrderId };
+    return h(
+      "form",
+      {
+        class: "ops-form stop-move",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          const p = positive(price.value);
+          if (p === null) return notice("Enter a stop price above 0.", false);
+          await submitOrder(
+            { type: "stop.replace", target, expect: { stopPrice: s.stopPrice, quantity: s.count }, params: { stopPrice: p } },
+            code,
+            { symbol: s.symbol, summary: `move the ${s.symbol} stop from ${s.stopPrice} to ${p}` }
+          );
+        },
+      },
+      field(`Stop ${money(s.stopPrice)} on ${s.count}`, price),
+      field("Code", code),
+      h("button", { type: "submit", text: "Move" }),
+      h("button", {
+        type: "button",
+        text: "Cancel order",
+        onclick: () =>
+          submitOrder({ type: "stop.cancel", target, expect: { stopPrice: s.stopPrice }, params: {} }, code, {
+            symbol: s.symbol,
+            summary: `cancel the ${s.symbol} stop at ${s.stopPrice}`,
+          }),
+      })
+    );
+  }
+
+  /** The working orders in one account, each cancellable, a limit order's price changeable. */
+  function openOrdersBlock(account) {
+    const orders = account.openOrders ?? [];
+    if (orders.length === 0) return null;
+    const canTrade = ordersOn() && orderAccounts().includes(account.label);
+    const code = canTrade ? codeInput() : null;
+    const rows = orders.map((o) => {
+      const price = o.stopPrice !== null ? `stop ${money(o.stopPrice)}${o.limitPrice !== null ? ` limit ${money(o.limitPrice)}` : ""}` : o.limitPrice !== null ? `limit ${money(o.limitPrice)}` : o.orderType.toLowerCase();
+      const changeable = canTrade && o.clientOrderId !== null;
+      const isStop = o.side === "SELL" && o.stopPrice !== null;
+      const target = { account: account.label, symbol: o.symbol, clientOrderId: o.clientOrderId };
+      const newPrice = changeable && !isStop && o.limitPrice !== null ? numberInput(o.limitPrice, { class: "price-input" }) : null;
+      return h(
+        "li",
+        {},
+        h("strong", { text: o.symbol }),
+        h("span", { text: ` ${o.side.toLowerCase()} ${o.quantity} ${price} ${o.timeInForce ?? ""}` }),
+        o.clientOrderId === null ? h("span", { class: "note", text: " placed in the app; change it there" }) : null,
+        changeable
+          ? h(
+              "span",
+              { class: "row-actions" },
+              newPrice,
+              newPrice
+                ? h("button", {
+                    type: "button",
+                    text: "Change price",
+                    onclick: () => {
+                      const p = positive(newPrice.value);
+                      if (p === null) return notice("Enter a price above 0.", false);
+                      return submitOrder({ type: "order.replace", target, expect: { limitPrice: o.limitPrice, quantity: o.quantity }, params: { limitPrice: p } }, code, {
+                        symbol: o.symbol,
+                        summary: `change the ${o.symbol} ${o.side.toLowerCase()} limit to ${p}`,
+                      });
+                    },
+                  })
+                : null,
+              h("button", {
+                type: "button",
+                text: "Cancel",
+                onclick: () =>
+                  submitOrder(
+                    isStop ? { type: "stop.cancel", target, expect: { stopPrice: o.stopPrice }, params: {} } : { type: "order.cancel", target, params: {} },
+                    code,
+                    { symbol: o.symbol, summary: `cancel the ${o.symbol} ${o.side.toLowerCase()} order (${price})` }
+                  ),
+              })
+            )
+          : null
+      );
+    });
+    return h(
+      "div",
+      { class: "open-orders" },
+      h("p", { class: "note" }, "Open orders at Webull", code ? h("span", {}, " · ", code) : null),
+      h("ul", { class: "webull-list" }, ...rows)
+    );
+  }
+
+  /** "Sell BIL to cover", on a margin account using margin. */
+  function cashCoverButton(account) {
+    if (!ordersOn() || account.cashStatus !== "usingMargin" || !orderAccounts().includes(account.label)) return null;
+    const code = codeInput();
+    return h(
+      "span",
+      { class: "cover" },
+      code,
+      h("button", {
+        type: "button",
+        text: "Sell BIL to cover",
+        title: "Sells just enough whole BIL shares, a limit a few cents under the price, to bring cash back to zero. Regular session only.",
+        onclick: () => submitOrder({ type: "cash.cover", target: { account: account.label }, params: {} }, code, { symbol: "BIL", summary: `sell BIL to cover margin in ${account.label}` }),
+      })
+    );
+  }
+
+  // The order ticket: one dialog, reused.
+  let ticket = null;
+
+  /**
+   * Buy or sell `symbol` at Webull: whole shares, a limit, DAY or GTC, the
+   * regular session or all. A buy can be funded from BIL and carry a GTC stop.
+   * What it shows (cost, cash + BIL after) is the page's estimate; the watcher
+   * previews the real cost with Webull before sending.
+   */
+  function openTicket(symbol, side, { price = null, account = null } = {}) {
+    const accounts = orderAccounts();
+    if (accounts.length === 0) return notice("No Webull account takes orders from here.", false);
+    if (ticket === null) {
+      ticket = h("dialog", { class: "modal ticket", "aria-label": "Order ticket" });
+      document.body.append(ticket);
+    }
+    const sellable = (a) => freeShares(symbol, a);
+    const choices = side === "SELL" ? accounts.filter((a) => sellable(a) > 0) : accounts;
+    if (choices.length === 0) return notice(`No ${symbol} shares the sync keeps are free to sell.`, false);
+    const acct = h("select", {}, ...choices.map((a) => h("option", { value: a, text: a })));
+    acct.value = account && choices.includes(account) ? account : choices[0];
+    const row = holdingFor(symbol);
+    const last = price ?? row?.price ?? null;
+    const shares = numberInput(side === "SELL" ? sellable(acct.value) : null, { step: "1", placeholder: "shares" });
+    const limit = numberInput(last !== null ? last.toFixed(2) : null, { placeholder: "limit" });
+    const tif = h("select", {}, h("option", { value: "DAY", text: "Day" }), h("option", { value: "GTC", text: "Good till canceled" }));
+    const session = h("select", {}, h("option", { value: "CORE", text: "Regular hours" }), h("option", { value: "ALL", text: "Including extended" }));
+    const fund = h("input", { type: "checkbox" });
+    const attach = h("input", { type: "checkbox" });
+    const trail = row ? trailFor(row) : null;
+    const atrStop = row?.atr > 0 && last !== null ? last - STOP_ATR_MULTIPLE * row.atr : trail?.suggested ?? null;
+    const stop = numberInput(atrStop !== null && atrStop > 0 ? atrStop.toFixed(2) : null, { placeholder: "stop" });
+    const code = codeInput();
+    const estimate = h("p", { class: "note", "aria-live": "polite" });
+    const error = h("span", { class: "form-error" });
+    const update = () => {
+      const n = Number(shares.value);
+      const p = Number(limit.value);
+      const a = webullAccount(acct.value);
+      if (!(n > 0) || !(p > 0)) return (estimate.textContent = "");
+      const cost = n * p;
+      if (side === "SELL") return (estimate.textContent = `About ${money(cost)} before fees.`);
+      const cash = a?.cash ? Math.max(0, a.cash.cash) : null;
+      const total = a?.cash?.total ?? null;
+      const max = vaultData?.orders?.maxValue;
+      const parts = [`About ${money(cost)}.`];
+      if (cash !== null && cost > cash) parts.push(cost > (total ?? 0) ? `More than cash + BIL (${money(total)}): it will be refused.` : `More than the cash (${money(cash)}): tick Fund from BIL.`);
+      if (total !== null && cost <= total) parts.push(`Cash + BIL after: ${money(total - cost)}.`);
+      if (max && cost > max) parts.push(`Over the ${money(max)} order limit: it will be refused.`);
+      estimate.textContent = parts.join(" ");
+      if (cash !== null && cost > cash && cost <= (total ?? 0)) fund.checked = true;
+    };
+    for (const el of [shares, limit, acct]) el.addEventListener("input", update);
+    acct.addEventListener("change", () => {
+      if (side === "SELL") shares.value = String(sellable(acct.value));
+      update();
+    });
+    const form = h(
+      "form",
+      {
+        onsubmit: async (e) => {
+          e.preventDefault();
+          error.textContent = "";
+          const n = Number(shares.value);
+          const p = positive(limit.value);
+          if (!Number.isInteger(n) || n < 1) return (error.textContent = "Orders here are for whole shares, 1 or more.");
+          if (p === null) return (error.textContent = "Enter a limit price above 0.");
+          const params = { quantity: n, limitPrice: p, timeInForce: tif.value, session: session.value };
+          if (side === "BUY") {
+            if (fund.checked) params.fundFromBil = true;
+            if (attach.checked) {
+              const sp = positive(stop.value);
+              if (sp === null || sp >= p) return (error.textContent = "The stop must be above 0 and under the limit.");
+              params.stopPrice = sp;
+            }
+          }
+          const verb = side === "BUY" ? "buy" : "sell";
+          const queued = await submitOrder({ type: side === "BUY" ? "order.buy" : "order.sell", target: { account: acct.value, symbol }, params }, code, {
+            symbol,
+            summary: `${verb} ${n} ${symbol} @ ${p} (${acct.value}${params.stopPrice ? `, stop ${params.stopPrice}` : ""}${params.fundFromBil ? ", funded from BIL" : ""})`,
+          });
+          if (queued) ticket.close();
+        },
+      },
+      h("h2", { text: `${side === "BUY" ? "Buy" : "Sell"} ${symbol} at Webull` }),
+      field("Account", acct),
+      field("Shares", shares),
+      field("Limit price", limit),
+      field("Time in force", tif),
+      field("Session", session),
+      side === "BUY" ? h("label", { class: "check" }, fund, " Fund from BIL (sells the shortfall first; never borrows)") : null,
+      side === "BUY" ? h("label", { class: "check" }, attach, " Attach a GTC stop at ") : null,
+      side === "BUY" ? stop : null,
+      estimate,
+      field("Authenticator code", code),
+      h(
+        "div",
+        { class: "modal-buttons" },
+        h("button", { type: "button", class: "link-button", text: "Cancel", onclick: () => ticket.close() }),
+        h("button", { type: "submit", text: side === "BUY" ? "Send buy" : "Send sell" })
+      ),
+      error
+    );
+    ticket.replaceChildren(form);
+    update();
+    ticket.showModal();
+    shares.focus();
+  }
+
+  /** "Buy" for any symbol, where the page has a reason to buy it (a fire, an alert, a position). */
+  function buyButton(symbol, price = null) {
+    if (!ordersOn()) return null;
+    return h("button", { type: "button", text: "Buy", title: `Buy ${symbol} at Webull`, onclick: () => openTicket(symbol, "BUY", { price }) });
   }
 
   // ---- Webull (docs/WEBULL_SYNC_PLAN.md) ---------------------------------------
@@ -1620,7 +1986,8 @@
       h("span", { text: ` · BIL ${money(c.cashEquivalents)} · cash + BIL ` }),
       h("strong", { text: money(c.total) }),
       status ? h("span", { class: `tag ${status.kind}`, text: status.label }) : null,
-      advice ? h("span", { class: "note", text: advice }) : null
+      advice ? h("span", { class: "note", text: advice }) : null,
+      cashCoverButton(account)
     );
   }
 
@@ -1723,6 +2090,7 @@
         open.length > 0 ? h("ul", { class: "webull-list" }, ...open.map((u) => unmatchedRow(a, u))) : null,
         a.links.length > 0 ? h("p", { class: "note", text: "Entered by hand, and also at Webull:" }) : null,
         a.links.length > 0 ? h("ul", { class: "webull-list" }, ...a.links.map((l) => linkRow(a, l))) : null,
+        openOrdersBlock(a),
         a.flags.length > 0 ? h("p", { class: "note", text: "Not brought in line, nothing applied:" }) : null,
         a.flags.length > 0 ? h("ul", { class: "webull-list flags" }, ...a.flags.map((f) => h("li", {}, h("strong", { text: f.symbol }), h("span", { text: ` ${f.message}` })))) : null,
         ignored.length > 0
@@ -2089,7 +2457,7 @@
         title: `Webull ${kind} order in ${w.account}, ${w.timeInForce ?? "?"}${w.placedAt ? `, placed ${w.placedAt.slice(0, 10)}` : ""}`,
         text: `${money(s.stopPrice)} on ${s.count === null ? "all" : s.count} · Webull`,
       }),
-      form: null,
+      form: webullStopForm(s),
     };
   }
 
@@ -2112,7 +2480,9 @@
       ),
       ...tags.map((t) => t.form).filter(Boolean),
       allKept
-        ? null
+        ? ordersOn()
+          ? placeStopForm(symbol)
+          : null
         : h(
         "form",
         {
@@ -2257,6 +2627,8 @@
       storyFor(symbol)?.lines ?? null,
       lots.map((l) => keptByWebull(l)),
       webullPending("holding.unlink", symbol),
+      ordersOn(),
+      stops.map((s) => s.webull?.clientOrderId ?? null),
     ]);
     const cached = detailCache.get(symbol);
     if (cached?.sig === sig) return cached.el;
@@ -2301,6 +2673,8 @@
           },
         }),
         handLots.length > 0 ? sellToggle : null,
+        ordersOn() ? h("button", { type: "button", text: "Buy at Webull", onclick: () => openTicket(symbol, "BUY") }) : null,
+        ordersOn() && keptAccounts.length > 0 ? h("button", { type: "button", text: "Sell at Webull", onclick: () => openTicket(symbol, "SELL", { account: keptAccounts[0] }) }) : null,
         ...unlinks
       )
     );
@@ -4044,6 +4418,7 @@
         h("a", { href: t.chartUrl, target: CHART_TARGET, text: "Chart" }),
         // In every drawer, not just the alert's: Overview and the queue open this one.
         addLotLink(t.symbol),
+        buyButton(t.symbol, holdingFor(t.symbol)?.price ?? t.triggerPrice ?? null),
         // Suggest and Apply, but no Dismiss: dismissing lives on the queue row,
         // where what it removes is the row you are looking at (the user's rule,
         // 2026-09-18). The condition comes from the alert book, which this
@@ -4145,6 +4520,7 @@
         { class: "actions", style: "margin-top:1.25rem" },
         h("a", { href: a.chartUrl, target: CHART_TARGET, text: "Chart" }),
         addLotLink(a.symbol),
+        buyButton(a.symbol, a.price ?? null),
         removeAlertButton(a)
       ),
       // A wrapper, because replaceChildren renders a null argument as the text "null".

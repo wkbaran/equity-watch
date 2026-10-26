@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { OP_TYPES } from "../src/ops/apply.js";
+import { isOrderOp } from "../src/ops/orderTypes.js";
 import {
   addFieldsFromJson,
   editFieldsFromJson,
@@ -119,7 +120,10 @@ describe("tools cover the ops vocabulary", () => {
     const named = webmcp.TOOLS.flatMap((t) => t.ops ?? []);
     for (const op of named) expect(OP_TYPES as readonly string[], op).toContain(op);
     // A new op type the page can send should be offered to agents too, or consciously left out here.
-    expect([...new Set(named)].sort()).toEqual([...OP_TYPES].sort());
+    // Order ops are left out on purpose: an agent must never place or change an
+    // order at Webull. They also need an authenticator code no agent has.
+    expect([...new Set(named)].sort()).toEqual(OP_TYPES.filter((t) => !isOrderOp(t)).sort());
+    expect(named.some((t) => isOrderOp(t))).toBe(false);
   });
 
   it("names are unique, public reads queue nothing, and alert writes always name an op", () => {
