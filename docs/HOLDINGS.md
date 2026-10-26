@@ -186,8 +186,10 @@ same checks on the machine before anything reaches Webull.
 
 1. Deploy the stack (`scripts/deploy-stack.sh`). It adds the orders queue; put its
    `OrdersQueueUrl` output in `.env` as `ORDERS_QUEUE_URL`.
-2. `equity-watch orders totp-setup` prints a new authenticator secret. Add it to
-   an authenticator app, and to `.env` as `ORDERS_TOTP_SECRET`.
+2. `equity-watch orders totp-setup` shows a new authenticator secret as a QR
+   code (and as text) for an authenticator app to scan; put it in `.env` as
+   `ORDERS_TOTP_SECRET`. Run it in your own terminal: the secret is half of what
+   places an order.
 3. In `.env`: `WEBULL_ORDERS=on`, and if wanted `ORDERS_MAX_VALUE` (the largest
    buy, default $2,000), `ORDERS_MAX_PER_DAY` (default 10) and `ORDERS_ACCOUNTS`
    (labels that may trade; default all mapped).

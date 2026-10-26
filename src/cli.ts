@@ -66,6 +66,7 @@ import {
   type WebullAccountSnapshot,
 } from "./holdings/webullSync.js";
 import { ordersConfig, DEFAULT_ORDERS_STATE_FILE } from "./orders/config.js";
+import { renderUnicodeCompact } from "uqr";
 import { newTotpSecret, otpauthUri } from "./orders/totp.js";
 import { DEFAULT_ORDERS_LOG, s3Uploader, watchOrders, type WatchContext } from "./orders/watch.js";
 import { DEFAULT_ORDER_CACHE_DIR, loadOrderCache, mergeOrders, nextReadStart, orderCachePath, saveOrderCache, type OrderCache } from "./holdings/webullOrders.js";
@@ -1994,8 +1995,11 @@ interface OrdersWatchOpts extends WebullOpts, CommonOpts {
 function cmdOrdersTotpSetup(): void {
   const secret = newTotpSecret();
   console.log("A new authenticator secret for orders. Nothing was saved.\n");
-  console.log(`1. Add it to an authenticator app (Google Authenticator, 1Password, ...) as a key typed in by hand:\n     ${secret}`);
-  console.log(`   or, if the app takes a URI:\n     ${otpauthUri(secret)}`);
+  console.log("1. Scan this with an authenticator app (Google Authenticator, 1Password, ...):\n");
+  // Half-block characters, two QR rows per line, with the quiet zone the
+  // scanners need. Dark text on a light terminal can scan inverted; most apps cope.
+  console.log(renderUnicodeCompact(otpauthUri(secret), { border: 2 }));
+  console.log(`\n   or type the key in by hand:\n     ${secret}`);
   console.log(`2. Put it in .env on the machine that runs the order watcher:\n     ORDERS_TOTP_SECRET=${secret}`);
   console.log("3. Restart the watcher. Every order from the page then asks for the app's current 6-digit code.");
   console.log("\nKeep it out of anything shared: whoever has it and the ops token can place orders.");
