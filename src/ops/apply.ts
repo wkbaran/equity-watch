@@ -244,6 +244,7 @@ async function applyByType(op: Op, ctx: ApplyContext): Promise<Outcome> {
     case "order.sell":
     case "order.replace":
     case "order.cancel":
+    case "quote.read":
       // The Lambda routes these to the orders queue; one here was misrouted.
       // Refused rather than sent: only `orders watch` checks the authenticator code.
       return reject(null, null, `${op.type} is an order, which only the order watcher sends. It wasn't sent.`);

@@ -16,6 +16,8 @@
  *                   next-run time, and the overdue warning
  *   GET  /__auth    publish (or clear) an expired Schwab login, so specs can
  *                   drive the banner and the "checks paused" schedule text
+ *   GET  /orders.json  the order watcher's sealed status: answers to quote.read
+ *                   (FIXTURE_QUOTE for any symbol), which are not remembered as ops
  *   GET  /__reset   forget ops, un-release, and restore the default cadence
  */
 
@@ -37,6 +39,13 @@ const TYPES: Record<string, string> = { html: "text/html", js: "text/javascript"
 
 type QueuedOp = { id: string; type: string; params: Record<string, unknown>; target?: Record<string, string> };
 let ops: QueuedOp[] = [];
+/**
+ * Quotes the fake watcher has answered (quote.read), served sealed in orders.json
+ * like the real one. Kept apart from `ops`, which specs count as queued changes.
+ */
+let watcherQuotes: Record<string, unknown>[] = [];
+/** The fixture quote, for every symbol: inside the regular session, so the ticket sets a marketable limit from it. webull.e2e.ts expects these figures. */
+const FIXTURE_QUOTE = { last: 40, bid: 39.98, ask: 40.02, session: "regular" };
 let released = false;
 /** /__release?results=none: set the watermark but publish no results, as a drain past the result cap would. */
 let suppressResults = false;
@@ -129,6 +138,11 @@ createServer(async (req, res) => {
     if (!(OP_TYPES as readonly string[]).includes(op.type)) {
       return send(400, { error: "Unknown op type" });
     }
+    if (op.type === "quote.read") {
+      // The order watcher answers these in seconds, through orders.json.
+      watcherQuotes = [{ id: op.id, symbol: String(op.target?.symbol ?? "").toUpperCase(), ok: true, message: "", ...FIXTURE_QUOTE, tradeTime: new Date().toISOString(), at: new Date().toISOString() }, ...watcherQuotes].slice(0, 10);
+      return send(202, { id: op.id, queued: true });
+    }
     ops.push(op);
     return send(202, { id: op.id, queued: true });
   }
@@ -158,12 +172,14 @@ createServer(async (req, res) => {
   if (path === "__reset") {
     authExpiredSince = null;
     ops = [];
+    watcherQuotes = [];
     released = false;
     suppressResults = false;
     cadence = { ...DEFAULT_CADENCE };
     return send(200, { reset: true });
   }
   if (path === "dashboard.json" || path === "alerts.json" || path === "vault.json") return send(200, documents()[path]);
+  if (path === "orders.json") return watcherQuotes.length > 0 ? send(200, sealVault({ results: [], quotes: watcherQuotes } as never, OPS_TOKEN)) : send(404, { error: "Not found" });
   if (SITE_ASSETS.includes(path)) {
     return send(200, await readFile(join(WEB_DIR, path)), TYPES[path.split(".").pop() ?? ""] ?? "application/octet-stream");
   }

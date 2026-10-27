@@ -1586,7 +1586,7 @@
   // while an order is pending.
 
   /** Keep in step with ORDER_OP_TYPES in src/ops/orderTypes.ts. */
-  const ORDER_OP_TYPES = ["stop.place", "stop.replace", "stop.cancel", "cash.cover", "cash.park", "order.buy", "order.sell", "order.replace", "order.cancel"];
+  const ORDER_OP_TYPES = ["stop.place", "stop.replace", "stop.cancel", "cash.cover", "cash.park", "order.buy", "order.sell", "order.replace", "order.cancel", "quote.read"];
   const isOrderOpType = (type) => ORDER_OP_TYPES.includes(type);
   const ordersOn = () => canEditHoldings() && vaultData?.orders?.enabled === true;
   /** Accounts orders may go to: the Webull accounts the sync reads, narrowed by ORDERS_ACCOUNTS. */
@@ -1661,6 +1661,123 @@
       orderWatch = setTimeout(tick, 3000);
     };
     orderWatch = setTimeout(tick, 2000);
+  }
+
+  // ---- Quotes for the ticket (quote.read) -----------------------------------
+  //
+  // The page has no market data of its own, so it asks the order watcher, which
+  // reads Schwab and answers in orders.json within seconds. Not an order: no
+  // code, no pending row, nothing sent to Webull.
+
+  /** A buy's limit this far over the last trade, a sell's this far under: it fills like a market order, but never far from the price shown. */
+  const MARKETABLE_BUFFER = 0.005;
+  /** px in src/orders/execute.ts: cents at $1 and over, four places under. */
+  const pricePx = (n) => (n >= 1 ? n.toFixed(2) : n.toFixed(4));
+  const marketableLimit = (last, side) => pricePx(last * (side === "BUY" ? 1 + MARKETABLE_BUFFER : 1 - MARKETABLE_BUFFER));
+  const QUOTE_WAIT_MS = 30_000;
+  /** Requests in flight by symbol, so a double click or two forms asking at once send one. */
+  const quoteRequests = new Map();
+
+  function quoteFor(symbol) {
+    if (!quoteRequests.has(symbol)) {
+      quoteRequests.set(
+        symbol,
+        requestQuote(symbol).finally(() => quoteRequests.delete(symbol))
+      );
+    }
+    return quoteRequests.get(symbol);
+  }
+
+  /** Resolves to the watcher's reply ({ last, bid, ask, tradeTime, session }) or { error }. */
+  async function requestQuote(symbol) {
+    const token = opsToken;
+    const body = { id: crypto.randomUUID(), type: "quote.read", target: { symbol }, params: {}, createdAt: new Date().toISOString() };
+    let resp;
+    try {
+      resp = await fetch("api/ops", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return { error: `the request failed (${err.message})` };
+    }
+    if (resp.status !== 202) return { error: resp.status === 401 ? "the ops token was rejected" : `HTTP ${resp.status}` };
+    const started = Date.now();
+    while (Date.now() - started < QUOTE_WAIT_MS && opsToken === token) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const { quotes = [] } = await openSealed("orders.json", token);
+        const q = quotes.find((x) => x.id === body.id);
+        if (q) return q.ok ? q : { error: q.message.replace(/\.$/, "") };
+      } catch {
+        /* no orders.json yet, or mid-upload: try again */
+      }
+    }
+    return { error: "the order watcher didn't answer (is it running?)" };
+  }
+
+  function quoteText(q) {
+    const time = q.tradeTime ? ` at ${new Date(q.tradeTime).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" })}` : "";
+    const book = q.bid !== undefined && q.ask !== undefined ? ` · bid ${pricePx(q.bid)} / ask ${pricePx(q.ask)}` : "";
+    return `Last ${pricePx(q.last)}${time}${book}`;
+  }
+
+  /** Outside the regular session the last trade is a hint (CLAUDE.md, 2026-10-22): say so. Null in the session, or with the hours unknown. */
+  function quoteWarning(q) {
+    if (q.session === "regular" || q.session === null || q.session === undefined) return null;
+    const state = q.session === "closed" ? "The market is closed" : `It's ${SESSION_LABEL[q.session]}`;
+    return `${state}: the last trade may be old or off-exchange. Go by the bid and ask.`;
+  }
+
+  /**
+   * A row of Chart and Get price for whatever symbol `getSymbol` returns.
+   * `onQuote` gets each quote that arrives for the current symbol. Get price is
+   * offered only with orders on, since the order watcher is what answers.
+   */
+  function quoteBar(getSymbol, { chart, onQuote = null }) {
+    const text = h("span", { class: "quote-text", "aria-live": "polite" });
+    const warn = h("span", { class: "quote-warn", hidden: true });
+    let asked = null;
+    const say = (message, warning = null) => {
+      text.textContent = message;
+      warn.textContent = warning ?? "";
+      warn.hidden = !warning;
+    };
+    const ask = async () => {
+      const symbol = getSymbol();
+      if (!symbol) return say("Enter a symbol first.");
+      asked = symbol;
+      priceButton.disabled = true;
+      say(`Asking for ${symbol}…`);
+      const q = await quoteFor(symbol);
+      if (asked !== symbol) return; // the symbol changed while it was out
+      priceButton.disabled = false;
+      if (q.error) return say(`No price: ${q.error}.`);
+      say(quoteText(q), quoteWarning(q));
+      onQuote?.(q);
+    };
+    const priceButton = h("button", { type: "button", class: "link-button", text: "Get price", title: "A fresh quote from Schwab, through the order watcher", onclick: ask });
+    const chartButton = h("button", {
+      type: "button",
+      class: "link-button",
+      text: "Chart",
+      onclick: () => {
+        const symbol = getSymbol();
+        if (!symbol) return say("Enter a symbol first.");
+        chart(symbol);
+      },
+    });
+    const el = h("div", { class: "quote-bar" }, chartButton, ordersOn() ? priceButton : null, text, warn);
+    return {
+      el,
+      ask: () => (ordersOn() ? ask() : undefined),
+      clear: () => {
+        asked = null;
+        priceButton.disabled = false;
+        say("");
+      },
+    };
   }
 
   /** Whole shares of `symbol` in `account` not already under a Webull stop or sell order. */
@@ -1877,7 +1994,7 @@
    * What it shows (cost, cash + BIL after) is the page's estimate; the watcher
    * previews the real cost with Webull before sending.
    */
-  function openTicket(symbol, side, { price = null, account = null, shares: presetShares = null, stop: presetStop = null } = {}) {
+  function openTicket(symbol, side, { price = null, account = null, shares: presetShares = null, stop: presetStop = null, priceTyped = false } = {}) {
     const accounts = orderAccounts();
     if (accounts.length === 0) return notice("No Webull account takes orders from here.", false);
     if (ticket === null) {
@@ -1893,6 +2010,30 @@
     const last = price ?? row?.price ?? null;
     const shares = numberInput(side === "SELL" ? sellable(acct.value) : presetShares, { step: "1", placeholder: "shares" });
     const limit = numberInput(last !== null ? last.toFixed(2) : null, { placeholder: "limit" });
+    // A fresh quote in the regular session sets the limit just through the last
+    // trade (a marketable limit), unless the limit has been typed here. Outside
+    // the session the last is a hint, so the limit is left alone.
+    // A price typed on the Add a lot form counts as typed here.
+    let limitTyped = priceTyped && price !== null;
+    limit.addEventListener("input", () => (limitTyped = true));
+    const limitNote = h("div", { class: "note", hidden: true });
+    const chartFrame = h("iframe", { class: "ticket-chart", title: `${symbol} chart`, hidden: true });
+    const quote = quoteBar(() => symbol, {
+      chart: () => {
+        chartFrame.hidden = !chartFrame.hidden;
+        if (!chartFrame.hidden && !chartFrame.src) chartFrame.src = chartEmbedUrl(tvUrl(symbol));
+        ticket.classList.toggle("with-chart", !chartFrame.hidden);
+      },
+      onQuote: (q) => {
+        if (!ticket.open || ticket.firstChild !== form) return;
+        if (limitTyped || q.session !== "regular") return (limitNote.hidden = true);
+        const was = limit.value;
+        limit.value = marketableLimit(q.last, side);
+        limitNote.textContent = `Limit ${limit.value}: ${MARKETABLE_BUFFER * 100}% ${side === "BUY" ? "over" : "under"} the last trade, so it fills like a market order but no ${side === "BUY" ? "higher" : "lower"}.${was && was !== limit.value ? ` (It was ${was}.)` : ""}`;
+        limitNote.hidden = false;
+        update();
+      },
+    });
     const tif = h("select", {}, h("option", { value: "DAY", text: "Day" }), h("option", { value: "GTC", text: "Good till canceled" }));
     const session = h("select", {}, h("option", { value: "CORE", text: "Regular hours" }), h("option", { value: "ALL", text: "Including extended" }));
     const fund = h("input", { type: "checkbox" });
@@ -1969,9 +2110,12 @@
         },
       },
       h("h2", { text: `${side === "BUY" ? "Buy" : "Sell"} ${symbol} at Webull` }),
+      quote.el,
+      chartFrame,
       field("Account", acct),
       field("Shares", shares),
       field("Limit price", limit),
+      limitNote,
       field("Time in force", tif),
       field("Session", session),
       side === "BUY" ? h("label", { class: "check" }, fund, " Fund from BIL (sells the shortfall first; never borrows)") : null,
@@ -1989,10 +2133,12 @@
       error
     );
     ticket.replaceChildren(form);
+    ticket.classList.remove("with-chart");
     refreshWhole();
     update();
     ticket.showModal();
     shares.focus();
+    quote.ask();
   }
 
   /** "Buy" for any symbol, where the page has a reason to buy it (a fire, an alert, a position). */
@@ -2241,6 +2387,7 @@
     renderLotAddForm();
     if (!lotAddFields) return;
     lotAddFields.symbol.value = symbol;
+    lotAddFields.symbol.dispatchEvent(new Event("change")); // fetches its price
     lotAddFields.account.value = account;
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -2287,8 +2434,22 @@
         const sym = symbol.value.trim().toUpperCase();
         if (!sym) return (error.textContent = "Enter a symbol.");
         const acct = account.value.trim();
-        openTicket(sym, "BUY", { price: positive(basis.value), account: acct || null, shares: positive(shares.value), stop: positive(stopPrice.value) });
+        openTicket(sym, "BUY", { price: positive(basis.value), priceTyped: true, account: acct || null, shares: positive(shares.value), stop: positive(stopPrice.value) });
       },
+    });
+    const typedSymbol = () => symbol.value.trim().toUpperCase();
+    const quote = quoteBar(typedSymbol, { chart: (sym) => openChart(sym, tvUrl(sym)) });
+    let quotedSymbol = "";
+    // A new symbol clears the old price, and asks for its own once typing stops.
+    symbol.addEventListener("input", () => {
+      if (typedSymbol() !== quotedSymbol) quote.clear();
+    });
+    symbol.addEventListener("change", () => {
+      const sym = typedSymbol();
+      if (sym && sym !== quotedSymbol) {
+        quotedSymbol = sym;
+        quote.ask();
+      }
     });
     lotAddFields = { symbol, account, shares };
     lotAddFormEl = h(
@@ -2327,6 +2488,8 @@
           button.disabled = false;
           if (queued) {
             symbol.value = "";
+            quotedSymbol = "";
+            quote.clear();
             shares.value = "";
             basis.value = "";
             stopPrice.value = "";
@@ -2336,6 +2499,7 @@
       },
       h("strong", { class: "form-title", text: "Add a lot" }),
       field("Symbol", symbol),
+      quote.el,
       field("Shares", shares),
       field("Basis / share", basis),
       field("Purchased", date),

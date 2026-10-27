@@ -17,7 +17,8 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { appendOpResult, loadOpLog, parseOp, type OpResult } from "../ops/apply.js";
+import type { Session } from "../marketHours.js";
+import { appendOpResult, loadOpLog, parseOp, type Op, type OpResult } from "../ops/apply.js";
 import type { OpsQueue } from "../ops/pull.js";
 import { sealJson, type VaultDocument } from "../web/vault.js";
 import { applyOrderOp, isOrderOp, settleFollowUps, type OrderContext, type OrderOutcome } from "./execute.js";
@@ -53,7 +54,41 @@ export interface WatchContext {
   upload(key: string, body: string): Promise<void>;
   log(line: string): void;
   heartbeatFile?: string;
+  /** A fresh quote for `quote.read` (Schwab); null when it has none. Absent: quotes are refused. */
+  snapshot?(symbol: string): Promise<QuoteSnapshot | null>;
+  /** The quotes answered so far, newest first; kept in memory, so a restart forgets them. */
+  quotes?: QuoteReply[];
 }
+
+/** What a quote source returns: the last trade, and the book behind it when there is one. */
+export interface QuoteSnapshot {
+  last: number;
+  bid?: number;
+  ask?: number;
+  /** When the last trade printed, epoch ms. */
+  tradeTime?: number;
+  /** The session now, so the page can say a pre-market last is a hint. Null when the hours aren't known. */
+  session: Session | null;
+}
+
+/** One answered `quote.read`, inside the sealed status document beside the order results. */
+export interface QuoteReply {
+  id: string;
+  symbol: string;
+  ok: boolean;
+  /** Why there is no quote, when `ok` is false. */
+  message: string;
+  last?: number;
+  bid?: number;
+  ask?: number;
+  tradeTime?: string;
+  session?: Session | null;
+  at: string;
+}
+
+/** How many answered quotes the status document keeps: the page waits seconds for its own. */
+const QUOTES_KEEP = 10;
+const QUOTE_SYMBOL_RE = /^[A-Z0-9$^][A-Z0-9.\/$^_-]{0,15}$/;
 
 function recentStatuses(path: string): OrderStatus[] {
   if (!existsSync(path)) {
@@ -76,7 +111,7 @@ export async function publishStatus(ctx: WatchContext): Promise<void> {
   if (ctx.vaultToken === null) {
     return;
   }
-  const doc = sealStatus(recentStatuses(ctx.ordersLogFile), ctx.vaultToken);
+  const doc = sealStatus(recentStatuses(ctx.ordersLogFile), ctx.vaultToken, ctx.quotes ?? []);
   const path = join(ctx.siteDir, ORDERS_STATUS_FILE);
   mkdirSync(dirname(path), { recursive: true });
   const body = JSON.stringify(doc);
@@ -85,8 +120,59 @@ export async function publishStatus(ctx: WatchContext): Promise<void> {
 }
 
 /** Same sealing as the vault (key from the ops token, AES-256-GCM), so the page opens it with the key it already has. */
-export function sealStatus(results: OrderStatus[], token: string): VaultDocument {
-  return sealJson({ results }, token);
+export function sealStatus(results: OrderStatus[], token: string, quotes: QuoteReply[] = []): VaultDocument {
+  return sealJson({ results, quotes }, token);
+}
+
+/**
+ * Answers a `quote.read`: a fresh Schwab quote for the order ticket, back in
+ * seconds through orders.json. It sends nothing, so it needs no authenticator
+ * code and counts toward no limit. Nor is it written to the op log, whose
+ * results are published: a duplicate only fetches the quote again.
+ */
+async function answerQuote(op: Op, ctx: WatchContext): Promise<"applied" | "rejected"> {
+  const now = ctx.order.now();
+  // Past the wait, the page has stopped looking for it.
+  if (now.getTime() - Date.parse(op.createdAt) > STALE_MS) {
+    return "rejected";
+  }
+  const raw = op.target !== null && typeof op.target === "object" ? (op.target as Record<string, unknown>).symbol : undefined;
+  const symbol = typeof raw === "string" ? raw.trim().toUpperCase() : "";
+  let reply: QuoteReply;
+  if (!QUOTE_SYMBOL_RE.test(symbol)) {
+    reply = { id: op.id, symbol, ok: false, message: "That isn't a symbol.", at: now.toISOString() };
+  } else if (ctx.snapshot === undefined) {
+    reply = { id: op.id, symbol, ok: false, message: "The order watcher has no quotes set up.", at: now.toISOString() };
+  } else {
+    let snap: QuoteSnapshot | null = null;
+    let failure: string | null = null;
+    try {
+      snap = await ctx.snapshot(symbol);
+    } catch (err) {
+      failure = err instanceof Error ? err.message : String(err);
+    }
+    const at = ctx.order.now().toISOString();
+    if (snap === null) {
+      ctx.log(`${at} quote ${symbol}: none${failure ? `: ${failure}` : ""}`);
+      reply = { id: op.id, symbol, ok: false, message: failure ? "Couldn't read a quote from Schwab (is its login current?)." : `Schwab has no quote for ${symbol}.`, at };
+    } else {
+      reply = {
+        id: op.id,
+        symbol,
+        ok: true,
+        message: "",
+        last: snap.last,
+        ...(snap.bid !== undefined ? { bid: snap.bid } : {}),
+        ...(snap.ask !== undefined ? { ask: snap.ask } : {}),
+        ...(snap.tradeTime !== undefined ? { tradeTime: new Date(snap.tradeTime).toISOString() } : {}),
+        session: snap.session,
+        at,
+      };
+    }
+  }
+  ctx.quotes = [reply, ...(ctx.quotes ?? [])].slice(0, QUOTES_KEEP);
+  await publishStatus(ctx).catch((err: unknown) => ctx.log(`status upload failed: ${String(err)}`));
+  return reply.ok ? "applied" : "rejected";
 }
 
 /** Applies one queued message. Returns what happened, for the log. Throws (leaving it queued) only on a Webull or disk failure. */
@@ -102,6 +188,9 @@ export async function handleMessage(body: string, ctx: WatchContext): Promise<"a
     return "malformed";
   }
   const op = parsed.op;
+  if (op.type === "quote.read") {
+    return answerQuote(op, ctx);
+  }
   if (loadOpLog(ctx.opLogFile).some((r) => r.id === op.id)) {
     return "duplicate";
   }

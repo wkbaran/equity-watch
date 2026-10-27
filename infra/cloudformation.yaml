@@ -306,12 +306,12 @@ Resources:
               "stop.add": null, "stop.edit": "stopId", "stop.remove": "stopId", "holdings.cover": "symbol",
               "holding.adopt": "symbol", "holding.link": "symbol", "holding.unlink": "symbol", "holding.ignore": "symbol",
               "stop.place": "account", "stop.replace": "account", "stop.cancel": "account", "cash.cover": "account", "cash.park": "account",
-              "order.buy": "account", "order.sell": "account", "order.replace": "account", "order.cancel": "account",
+              "order.buy": "account", "order.sell": "account", "order.replace": "account", "order.cancel": "account", "quote.read": "symbol",
             };
             // Orders go to their own queue and the order watcher, which checks the
             // authenticator code; everything else to `ops pull`. Keep in step with
             // ORDER_OP_TYPES in src/ops/orderTypes.ts.
-            const ORDER_TYPES = new Set(["stop.place", "stop.replace", "stop.cancel", "cash.cover", "cash.park", "order.buy", "order.sell", "order.replace", "order.cancel"]);
+            const ORDER_TYPES = new Set(["stop.place", "stop.replace", "stop.cancel", "cash.cover", "cash.park", "order.buy", "order.sell", "order.replace", "order.cancel", "quote.read"]);
             if (typeof op.type !== "string" || !Object.prototype.hasOwnProperty.call(TARGET_KEY, op.type)) return reply(400, { error: "Unknown op type" });
             if (!isObject(op.params)) return reply(400, { error: "params must be an object" });
             const key = TARGET_KEY[op.type];

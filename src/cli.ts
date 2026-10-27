@@ -2059,6 +2059,27 @@ async function cmdOrdersWatch(opts: OrdersWatchOpts): Promise<void> {
     upload: bucket ? s3Uploader(bucket, region, process.env.S3_PREFIX ?? "") : async () => undefined,
     log: (line) => console.log(line),
     ...(opts.heartbeat !== undefined ? { heartbeatFile: opts.heartbeat } : {}),
+    // The ticket's quote. Unlike the two above it throws, so a dead Schwab
+    // login reads as "couldn't read" rather than "no quote for this symbol".
+    snapshot: async (symbol) => {
+      const q = (await market.getQuotes([symbol])).get(symbol);
+      if (q === undefined) return null;
+      const now = new Date();
+      let session: Session | null = null;
+      try {
+        session = sessionAt(await getMarketHoursCached(opts, marketDate(now)), now);
+      } catch {
+        /* hours unknown: the page shows the quote without a session */
+      }
+      return {
+        last: q.lastPrice,
+        ...(q.bid !== undefined ? { bid: q.bid } : {}),
+        ...(q.ask !== undefined ? { ask: q.ask } : {}),
+        ...(q.tradeTime !== undefined ? { tradeTime: q.tradeTime } : {}),
+        session,
+      };
+    },
+    quotes: [],
   };
   console.log(
     `orders watch: ${config.enabled ? "orders ON" : "orders OFF (WEBULL_ORDERS)"}, ` +

@@ -1321,6 +1321,21 @@ order was sent.
   never verified, and a combo stop can't grow the existing stop anyway. The
   follow-up reads quantity from the account each time, so a partial fill or a
   fractional share never puts more under the stop than can be sold.
+- **`quote.read` is in `ORDER_OP_TYPES` but is not an order** (2026-10-26). It
+  rides the orders queue only because the watcher is the one always-on process
+  that can answer within seconds. `handleMessage` intercepts it before the op
+  log check: no authenticator code, no daily count, and **never written to
+  `ops.log.jsonl`**, whose results are published (a quote per ticket would
+  flood `opResults`). Answers live in the watcher's memory (`ctx.quotes`) and go
+  out sealed in `orders.json` beside the order results, so every
+  `publishStatus` must keep passing them or an order result wipes a quote the
+  page is waiting for. The page posts it directly, not through `submitOp`, so it
+  never becomes a pending row. `playwright/server.ts` answers it the same way,
+  keeping quotes out of `/__ops`, which specs count as queued changes.
+- **The ticket's marketable limit is only set from a regular-session quote,**
+  and never over a limit typed in the ticket or carried from the Add a lot form
+  (`priceTyped`). Don't extend it to pre/post: that is when the quote lies (see
+  "Outside the regular session" below).
 
 ## Node 26, and no dotenv
 

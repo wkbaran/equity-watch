@@ -522,6 +522,13 @@
   .open-orders .note { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   dialog.ticket { width: min(26rem, calc(100vw - 32px)); }
   dialog.ticket h2 { font-size: 1.05rem; margin: 0 0 0.4rem; }
+  dialog.ticket.with-chart { width: min(56rem, calc(100vw - 32px)); }
+  .ticket-chart { width: 100%; height: 340px; border: 0; border-radius: 6px; }
+  /* A display rule here would beat [hidden] (see CLAUDE.md), hence :not([hidden]). */
+  .quote-bar:not([hidden]) { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+  .ops-form .quote-bar { flex-basis: 100%; }
+  .quote-bar .quote-text { color: var(--sub); }
+  .quote-bar .quote-warn { flex-basis: 100%; color: var(--sub); font-style: italic; }
   .webull-problem .auth-detail { display: block; margin-top: 0.2rem; color: var(--sub); }
   tr.detail-row > td { background: var(--ground); padding: 0; text-align: left; white-space: normal; }
   /*

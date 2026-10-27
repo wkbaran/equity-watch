@@ -231,6 +231,20 @@ same checks on the machine before anything reaches Webull.
      position at the next sync.
    - **Buy at Webull** on the Add a lot form opens this ticket with the form's
      symbol, shares, price (as the limit), account and stop.
+   - **The ticket's price**: opening it asks the order watcher for a fresh
+     Schwab quote (a `quote.read` op, answered within seconds through
+     `orders.json`), and shows the last trade, its time, and the bid and ask. In
+     the regular session it sets the limit 0.5% through the last trade (over
+     for a buy, under for a sell): a marketable limit, which fills like a market
+     order but never far from the price shown. A limit typed in the ticket, or
+     carried from the Add a lot form, is left alone. Outside the regular session
+     the last trade may be stale or off-exchange, so the ticket says so and
+     leaves the limit to you. **Chart** opens the TradingView chart inside the
+     ticket. The Add a lot form has the same Chart and Get price, for the symbol
+     typed. Get price needs orders on, since the watcher is what answers. A quote
+     sends nothing to Webull, needs no code, and counts toward no limit. It waits
+     behind any order ahead of it on the queue, so a Roth buy that is waiting
+     for its BIL sale to fill can delay it.
    - **BIL is bought at the ask and sold at the bid**, read from Schwab when the
      order is sent: covering, funding a buy, and moving cash in. With no bid or
      ask (Schwab's login expired, or one more than 20% off the last price), the

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -494,5 +494,41 @@ describe("the watcher", () => {
     const edit = op("lot.edit", { lotId: "l1" });
     expect(await handleMessage(JSON.stringify(edit), ctx)).toBe("rejected");
     expect(client.placed).toEqual([]);
+  });
+
+  describe("quote.read", () => {
+    const sealed = () => openVault(JSON.parse(readFileSync(join(dir, "site", "orders.json"), "utf-8")), "t".repeat(64)) as unknown as { results: unknown[]; quotes: Record<string, unknown>[] };
+
+    it("answers with a quote in the status document, needing no code and leaving the op log alone", async () => {
+      const client = fakeClient({ positions: [], cash: 1000 });
+      const ctx = { ...watchContext(client), snapshot: (s: string) => Promise.resolve(s === "AAA" ? { last: 12.34, bid: 12.33, ask: 12.35, tradeTime: NOW.getTime(), session: "regular" as const } : null) };
+      expect(await handleMessage(JSON.stringify(op("quote.read", { symbol: "aaa" })), ctx)).toBe("applied");
+      expect(sealed().quotes[0]).toMatchObject({ symbol: "AAA", ok: true, last: 12.34, bid: 12.33, ask: 12.35, session: "regular", tradeTime: NOW.toISOString() });
+      expect(client.placed).toEqual([]);
+      expect(existsSync(join(dir, "ops.log.jsonl"))).toBe(false);
+      expect(existsSync(join(dir, "orders.log.jsonl"))).toBe(false);
+      expect(await handleMessage(JSON.stringify(op("quote.read", { symbol: "ZZZ" })), ctx)).toBe("rejected");
+      expect(sealed().quotes[0]).toMatchObject({ symbol: "ZZZ", ok: false, message: "Schwab has no quote for ZZZ." });
+      expect(sealed().quotes).toHaveLength(2);
+    });
+
+    it("says when Schwab fails, and ignores a request the page has stopped waiting for", async () => {
+      const client = fakeClient({ positions: [], cash: 1000 });
+      const ctx = { ...watchContext(client), snapshot: () => Promise.reject(new Error("Schwab login expired")) };
+      expect(await handleMessage(JSON.stringify(op("quote.read", { symbol: "AAA" })), ctx)).toBe("rejected");
+      expect(sealed().quotes[0]).toMatchObject({ ok: false, message: expect.stringContaining("Couldn't read a quote") });
+      const old = { ...op("quote.read", { symbol: "BBB" }), createdAt: new Date(NOW.getTime() - 5 * 60_000).toISOString() };
+      expect(await handleMessage(JSON.stringify(old), ctx)).toBe("rejected");
+      expect(sealed().quotes).toHaveLength(1);
+    });
+
+    it("keeps the quotes when an order result is published after them", async () => {
+      const client = fakeClient({ positions: [position("AAA", 10, 50)], cash: 1000 });
+      const ctx = { ...watchContext(client), snapshot: () => Promise.resolve({ last: 50, session: null }) };
+      await handleMessage(JSON.stringify(op("quote.read", { symbol: "AAA" })), ctx);
+      await handleMessage(JSON.stringify(op("stop.place", { account: "margin", symbol: "AAA" }, { quantity: 5, stopPrice: 45 })), ctx);
+      expect(sealed().results).toHaveLength(1);
+      expect(sealed().quotes).toHaveLength(1);
+    });
   });
 });

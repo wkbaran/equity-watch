@@ -14,6 +14,10 @@ export const ORDER_OP_TYPES = [
   "order.sell",
   "order.replace",
   "order.cancel",
+  // Not an order: a quote for the ticket, answered by the watcher in seconds
+  // (src/orders/watch.ts). It rides this queue because only the watcher is
+  // always on. No code, no op log, and nothing is sent to Webull.
+  "quote.read",
 ] as const;
 export type OrderOpType = (typeof ORDER_OP_TYPES)[number];
 

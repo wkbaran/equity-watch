@@ -367,6 +367,69 @@ test.describe("orders", () => {
     await expect(orders).not.toContainText("AA ");
     await expect(detail(page).locator("form.stop-move")).toBeVisible();
   });
+
+  // The fake watcher answers every quote.read with the server's FIXTURE_QUOTE:
+  // last 40, bid 39.98, ask 40.02, in the regular session.
+  test("the ticket fetches a quote and sets a marketable limit from it, and shows the chart", async ({ page }) => {
+    await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [STOP], orders: ON });
+    await openAA(page);
+    await detail(page).getByRole("button", { name: "Buy at Webull" }).click();
+    const ticket = page.locator("dialog.ticket");
+    await expect(ticket.locator(".quote-text")).toContainText(/Last 40\.00 at .* · bid 39\.98 \/ ask 40\.02/, { timeout: 10_000 });
+    await expect(ticket.getByLabel("Limit price")).toHaveValue("40.20");
+    await expect(ticket.getByText("0.5% over the last trade")).toBeVisible();
+    await expect(ticket.locator(".quote-warn")).toBeHidden();
+    // A quote is not a queued change.
+    expect(await queuedOps(page)).toEqual([]);
+
+    await ticket.getByRole("button", { name: "Chart" }).click();
+    await expect(ticket.locator("iframe.ticket-chart")).toBeVisible();
+    await expect(ticket.locator("iframe.ticket-chart")).toHaveAttribute("src", /tradingview\.com\/embed-widget\/advanced-chart\/#.*AA/);
+    await ticket.getByRole("button", { name: "Chart" }).click();
+    await expect(ticket.locator("iframe.ticket-chart")).toBeHidden();
+  });
+
+  test("a sell's limit goes under the last trade, and a typed limit is never overwritten", async ({ page }) => {
+    await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [], orders: ON });
+    await openAA(page);
+    await detail(page).getByRole("button", { name: "Sell at Webull" }).click();
+    const ticket = page.locator("dialog.ticket");
+    await expect(ticket.getByLabel("Limit price")).toHaveValue("39.80", { timeout: 10_000 });
+    await ticket.getByLabel("Limit price").fill("41");
+    await ticket.getByRole("button", { name: "Get price" }).click();
+    await expect(ticket.locator(".quote-text")).toContainText("Last 40.00");
+    await expect(ticket.getByLabel("Limit price")).toHaveValue("41");
+  });
+
+  test("the Add a lot form shows the chart and price for the symbol typed, and its basis stays the ticket's limit", async ({ page }) => {
+    await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [STOP], orders: ON });
+    await page.goto("/#/holdings");
+    await unlockWith(page, OPS_TOKEN);
+    const form = page.locator("#lot-add form");
+    await form.getByLabel("Symbol").fill("newco");
+    await form.getByLabel("Shares", { exact: true }).click();
+    await expect(form.locator(".quote-text")).toContainText("Last 40.00", { timeout: 10_000 });
+    await form.getByRole("button", { name: "Chart" }).click();
+    await expect(page.locator("#chart-panel")).toBeVisible();
+    await expect(page.locator("#chart-title")).toHaveText("NEWCO");
+    await page.keyboard.press("Escape");
+
+    await form.getByLabel("Basis / share").fill("45");
+    await form.getByLabel("Account").fill("margin");
+    await form.getByRole("button", { name: "Buy at Webull" }).click();
+    const ticket = page.locator("dialog.ticket");
+    await expect(ticket.locator(".quote-text")).toContainText("Last 40.00", { timeout: 10_000 });
+    await expect(ticket.getByLabel("Limit price")).toHaveValue("45.00");
+    expect(await queuedOps(page)).toEqual([]);
+  });
+});
+
+test("with orders off, the Add a lot form offers the chart but no price", async ({ page }) => {
+  await page.goto("/#/holdings");
+  await unlockWith(page, OPS_TOKEN);
+  const form = page.locator("#lot-add form");
+  await expect(form.getByRole("button", { name: "Chart" })).toBeVisible();
+  await expect(form.getByRole("button", { name: "Get price" })).toHaveCount(0);
 });
 
 test("a cash-parking position shows its lots and story, but no Stop or Alert band", async ({ page }) => {
