@@ -864,8 +864,14 @@
    * alert, so the op never names one. It is part of the reuse key, so the same
    * alert's form is rebuilt when it is opened from the other drawer.
    */
-  function editSection(a, revisitId = null, slot = "drawer") {
+  /**
+   * `remove` puts the alert's Remove in the form's foot, beside Queue edit
+   * (the alert drawer, 2026-10-27): up among Chart, Add lot and Buy it read
+   * as removing the holding.
+   */
+  function editSection(a, revisitId = null, slot = "drawer", { remove = false } = {}) {
     if (!canEdit()) return null;
+    const removeButton = remove ? removeAlertButton(a) : null;
     // In a trigger's panel, a queued dismiss or re-level of that fire too: they
     // don't change the alert, but the rail's pending drawer links them here.
     const queued = pendingOps.filter(
@@ -880,7 +886,11 @@
     // An MA alert is editable now that AlertRow carries its parameters to
     // prefill from; without them the form would rewrite the spec on save.
     if (a.kind === "ma" && !a.ma) {
-      return [...pending, h("p", { class: "note", text: "This alert was published before the page could edit moving averages. Use alert edit in the CLI, or wait for the next publish." })];
+      return [
+        ...pending,
+        h("p", { class: "note", text: "This alert was published before the page could edit moving averages. Use alert edit in the CLI, or wait for the next publish." }),
+        ...(removeButton ? [h("div", { class: "actions" }, removeButton)] : []),
+      ];
     }
     // Reuse the form while the alert is unchanged; rebuild it once an edit has landed.
     let form = editForms.get(slot);
@@ -888,6 +898,8 @@
       form = { alertId: a.id, condition: a.condition, revisitId, el: buildEditForm(a, revisitId) };
       editForms.set(slot, form);
     }
+    // The form is kept between renders, so the button is set each time: it goes once a remove is pending.
+    form.el.querySelector(".remove-slot").replaceChildren(...(removeButton ? [removeButton] : []));
     // Any edit takes the symbol's open fires off the queue (closeRevisitsForSymbol
     // in the worker), wherever it is made. Say so before it happens.
     const open = (current?.revisitQueue ?? []).filter((r) => r.symbol === a.symbol).length;
@@ -1495,7 +1507,7 @@
       },
       h("strong", { class: "form-title", text: revisitId === null ? "Edit" : "Edit this alert" }),
       ...fields,
-      h("div", { class: "form-foot" }, button, preview, error),
+      h("div", { class: "form-foot" }, button, preview, error, h("span", { class: "remove-slot" })),
       h("div", {
         class: "note",
         text:
@@ -4809,11 +4821,10 @@
         { class: "actions", style: "margin-top:1.25rem" },
         h("a", { href: a.chartUrl, target: CHART_TARGET, text: "Chart" }),
         addLotLink(a.symbol),
-        buyButton(a.symbol, a.price ?? null),
-        removeAlertButton(a)
+        buyButton(a.symbol, a.price ?? null)
       ),
       // A wrapper, because replaceChildren renders a null argument as the text "null".
-      h("div", {}, editSection(a)),
+      h("div", {}, editSection(a, null, "drawer", { remove: true })),
     ];
   }
 
@@ -4836,7 +4847,7 @@
    */
   function removeAlertButton(a) {
     if (!canEdit() || pendingFor(a.id).some((p) => p.type === "alert.remove")) return null;
-    return confirmButton("Remove", () =>
+    return confirmButton("Remove alert", () =>
       submitOp(
         { type: "alert.remove", target: { alertId: a.id }, expect: { condition: a.condition }, params: {} },
         { symbol: a.symbol, alertId: a.id, summary: `${a.symbol}: remove alert "${a.condition}"` }

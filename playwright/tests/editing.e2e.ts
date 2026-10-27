@@ -1088,8 +1088,11 @@ test.describe("suggesting and applying a level from the revisit queue", () => {
 });
 
 // The alert panel's Remove replaced a "Copy remove" button that copied the CLI command.
+// It sits in the edit form's foot beside Queue edit: up among Chart, Add lot and
+// Buy, it read as removing the holding (2026-10-27).
 test.describe("removing an alert from its panel", () => {
   const actions = (page: Page) => page.locator("#drawer-body .actions");
+  const foot = (page: Page) => page.locator("#drawer-body .edit-form .form-foot");
 
   test("offers nothing to copy, and no Remove while locked", async ({ page }) => {
     await page.goto(`/#/alert/${STATIC.id}`);
@@ -1100,11 +1103,13 @@ test.describe("removing an alert from its panel", () => {
   test("takes a second click, queues a guarded remove, and marks the alert pending", async ({ page }) => {
     await storeToken(page);
     await page.goto(`/#/alert/${STATIC.id}`);
-    await actions(page).getByRole("button", { name: "Remove" }).click();
-    expect(await queuedOps(page)).toEqual([]);
-    await actions(page).getByRole("button", { name: "Click again to confirm" }).click();
-
     await expect(actions(page).getByRole("button", { name: "Remove" })).toHaveCount(0);
+    await expect(foot(page).getByRole("button", { name: "Queue edit" })).toBeVisible();
+    await foot(page).getByRole("button", { name: "Remove alert" }).click();
+    expect(await queuedOps(page)).toEqual([]);
+    await foot(page).getByRole("button", { name: "Click again to confirm" }).click();
+
+    await expect(foot(page).getByRole("button", { name: "Remove alert" })).toHaveCount(0);
     const [op] = await queuedOps(page);
     expect(op).toMatchObject({ type: "alert.remove", target: { alertId: STATIC.id }, expect: { condition: "price crosses above 55" }, params: {} });
 
