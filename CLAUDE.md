@@ -1375,6 +1375,12 @@ has confirmed yet.
   flagged "no fills to explain it" instead of recorded as sales. The read now
   reaches back to the oldest cached order still working. `--full-history` is the
   manual repair.
+- **Positions are read before order history, and fills after `positionsAt` wait
+  a run.** The other way round, a fill landing between the two reads was in the
+  positions but in no booked order, and the adopt's `linkedAt` predated it, so the
+  next sync counted it again (PNR, 2026-10-27: 6 held, "make 12", flagged). The
+  plan only judges fills the positions could reflect, and `readAt` is the
+  earliest account's `positionsAt`, since adopt and link date from it.
 - **`applySyncPlan` applies each holding's changes on a copy** and keeps them
   only if every one succeeds, so a sale the store refuses leaves that holding
   untouched and becomes a flag. It uses `sellFromStore`, the in-memory core of

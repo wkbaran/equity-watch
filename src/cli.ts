@@ -2245,21 +2245,28 @@ async function cmdHoldingsSync(opts: HoldingsSyncOpts): Promise<void> {
       if (account === undefined) {
         throw new WebullError(`WEBULL_ACCOUNTS maps ${label} to an account this key can't see. Run \`equity-watch webull accounts\`.`, 0);
       }
+      // Positions and open orders before the history, so the history holds
+      // every fill they reflect (see WebullAccountSnapshot.positionsAt).
+      const balance = await client.balance(accountId);
+      const positionsAt = new Date().toISOString();
+      const positions = await client.positions(accountId);
+      const openOrders = await client.openOrders(accountId);
       const path = orderCachePath(opts.orderCacheDir, label);
       const cached = opts.fullHistory ? null : loadOrderCache(path);
       const start = nextReadStart(cached, fullFrom);
-      const end = now.toISOString();
+      const end = new Date().toISOString();
       const cache = mergeOrders(cached, await client.orderHistory(accountId, start, end), start, end);
       caches.push({ path, cache });
       snapshots.push({
         label,
         accountId,
         accountType: account.accountType,
-        balance: await client.balance(accountId),
-        positions: await client.positions(accountId),
-        openOrders: await client.openOrders(accountId),
+        balance,
+        positions,
+        openOrders,
         orders: cache.orders,
         historyFrom: cache.readFrom,
+        positionsAt,
       });
     }
   } catch (err) {

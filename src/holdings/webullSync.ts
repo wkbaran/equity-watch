@@ -67,6 +67,14 @@ export interface WebullAccountSnapshot {
   openOrders: WebullOrder[];
   /** Start of the order-history window, ISO. Fills before it are unseen. */
   historyFrom: string;
+  /**
+   * When the positions were asked for, ISO. Fills after it are left for the
+   * next run, and it is what an adopt or link dates from. Order history is
+   * read after the positions, so every fill the positions show is in it; read
+   * the other way round, a fill landing between the two reads was in the
+   * positions but not booked, and was counted again as new (PNR, 2026-10-27).
+   */
+  positionsAt: string;
 }
 
 /** One order's filled part, as a trade. */
@@ -134,6 +142,8 @@ export interface AccountPlan {
 }
 
 export interface SyncPlan {
+  /** The earliest account's `positionsAt`: no account's adopt or link may date from after its own read. Null with no accounts. */
+  readAt: string | null;
   accounts: AccountPlan[];
   /** Symbols Webull holds that also have lots with no account label, which can't be matched to an account. */
   unlabelled: { symbol: string; count: number }[];
@@ -399,7 +409,7 @@ export function planWebullSync(store: HoldingsStore, snapshots: WebullAccountSna
   const webullSymbols = new Set<string>();
 
   for (const snap of snapshots) {
-    const fills = fillsOf(snap.orders);
+    const fills = fillsOf(snap.orders).filter((f) => f.at <= snap.positionsAt);
     const fillsFor = (symbol: string) => fills.filter((f) => f.symbol === symbol);
     const accountLots = store.lots.filter((l) => l.account === snap.label);
     const plans: HoldingPlan[] = [];
@@ -501,7 +511,8 @@ export function planWebullSync(store: HoldingsStore, snapshots: WebullAccountSna
       unlabelled.set(symbol, (unlabelled.get(symbol) ?? 0) + lot.count);
     }
   }
-  return { accounts, unlabelled: [...unlabelled].map(([symbol, count]) => ({ symbol, count })).sort((a, b) => a.symbol.localeCompare(b.symbol)) };
+  const readAt = snapshots.reduce<string | null>((min, s) => (min === null || s.positionsAt < min ? s.positionsAt : min), null);
+  return { readAt, accounts, unlabelled: [...unlabelled].map(([symbol, count]) => ({ symbol, count })).sort((a, b) => a.symbol.localeCompare(b.symbol)) };
 }
 
 // --- applying ---------------------------------------------------------------
@@ -655,7 +666,7 @@ export function applySyncPlan(store: HoldingsStore, plan: SyncPlan, now: Date): 
       cashChanges.push({ label: a.label, from, to: a.cashStatus, cash: a.cash });
     }
   }
-  store.webull = webullStateOf(plan, now.toISOString(), refused);
+  store.webull = webullStateOf(plan, plan.readAt ?? now.toISOString(), refused);
   return { applied, refused, cashChanges };
 }
 

@@ -64,6 +64,7 @@ function snapshot(label: string, positions: WebullPosition[], orders: WebullOrde
     orders,
     openOrders,
     historyFrom: "2018-05-21T00:00:00.000Z",
+    positionsAt: "2026-10-25T20:00:00.000Z",
   };
 }
 
@@ -182,6 +183,28 @@ describe("planWebullSync", () => {
     const plan = planWebullSync(store, [snapshot("roth", [position("AAA", 12, 50.83)], orders)], OPTIONS);
     const h = plan.accounts[0].holdings[0];
     expect(h.kind).toBe("sync");
+    expect(h.kind === "sync" && h.changes.map((c) => c.type === "buy" && c.lot.orderId)).toEqual(["B2"]);
+  });
+
+  it("leaves a fill after the positions were read for the next run, and books one before it", () => {
+    // History is read after the positions, so it can hold a fill they don't show yet.
+    const at = (t: string) => ({ ...snapshot("roth", [position("PNR", 6, 62.34)], [buy("B1", "PNR", 6, 62.34, "2026-10-27T17:15:09.000Z"), buy("B2", "PNR", 2, 63, t)]), positionsAt: "2026-10-27T17:15:10.000Z" });
+    const empty: HoldingsStore = { lots: [], stops: [], alertState: [] };
+    const plan = planWebullSync(empty, [at("2026-10-27T17:15:11.000Z")], OPTIONS);
+    expect(plan.readAt).toBe("2026-10-27T17:15:10.000Z");
+    const offer = plan.accounts[0].holdings[0];
+    expect(offer).toMatchObject({ kind: "unmatched", booked: { B1: 6 }, fallback: null });
+
+    // Adopted as offered: the late fill is new at the next run, B1 is not counted again.
+    const adopted: HoldingsStore = {
+      lots: [lot("PNR", 6, 62.34, "roth")],
+      stops: [],
+      alertState: [],
+      holdings: [{ account: "roth", symbol: "PNR", source: "webull", linkedAt: plan.readAt!, booked: { B1: 6 } }],
+    };
+    const next = { ...at("2026-10-27T17:15:11.000Z"), positions: [position("PNR", 8, 62.5)], positionsAt: "2026-10-27T17:30:00.000Z" };
+    const h = planWebullSync(adopted, [next], OPTIONS).accounts[0].holdings[0];
+    expect(h).toMatchObject({ kind: "sync", flags: [] });
     expect(h.kind === "sync" && h.changes.map((c) => c.type === "buy" && c.lot.orderId)).toEqual(["B2"]);
   });
 
@@ -307,7 +330,7 @@ describe("applySyncPlan", () => {
     expect(store.lots.find((l) => l.orderId === "B2")).toMatchObject({ account: "roth", purchaseDate: "2026-10-21" });
     expect(store.sales?.[0]).toMatchObject({ orderId: "S1", count: 6, price: 60 });
     expect(store.holdings?.[0].booked).toEqual({ B2: 4, S1: 6 });
-    expect(store.webull?.readAt).toBe(NOW.toISOString());
+    expect(store.webull?.readAt).toBe("2026-10-25T20:00:00.000Z");
 
     const second = applySyncPlan(store, planWebullSync(store, snaps, OPTIONS), NOW);
     expect(second.applied).toEqual([]);
