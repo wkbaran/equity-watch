@@ -390,6 +390,27 @@ function saleText(sales: SaleSummary[]): string {
   return `${shares} at ${price}, ${result}`;
 }
 
+/**
+ * What a stop sale adds, for judging whether stops sit too tight: where the
+ * stop was against what the shares cost, and how far the fill landed from it.
+ * "The stop was 7.80, 1.4% over cost; it filled 0.1% under it." Empty unless
+ * every sale in the beat was a stop with a recorded price, and they agree.
+ */
+function stopText(sales: SaleSummary[]): string {
+  const stops = new Set(sales.map((s) => s.stop?.price ?? null));
+  const [stop] = [...stops];
+  if (stops.size !== 1 || stop === null || stop === undefined || !(stop > 0)) return "";
+  const count = sales.reduce((sum, s) => sum + s.count, 0);
+  const costPerShare = sales.reduce((sum, s) => sum + s.cost, 0) / count;
+  const price = sales.reduce((sum, s) => sum + s.count * s.price, 0) / count;
+  const vsCost = costPerShare > 0 ? ((stop - costPerShare) / costPerShare) * 100 : null;
+  const where =
+    vsCost === null ? "" : Math.abs(vsCost) < 0.05 ? ", at cost" : `, ${Math.abs(vsCost).toFixed(1)}% ${vsCost > 0 ? "over" : "under"} cost`;
+  const slip = ((price - stop) / stop) * 100;
+  const fill = Math.abs(slip) < 0.05 ? "it filled at the stop" : `it filled ${Math.abs(slip).toFixed(1)}% ${slip > 0 ? "over" : "under"} it`;
+  return ` The stop was ${stop.toFixed(2)}${where}; ${fill}`;
+}
+
 /** "5 shares at 100.00", at the average price when several lots are bought at once. */
 function buyText(buys: BuySummary[]): string {
   const count = buys.reduce((sum, b) => sum + b.count, 0);
@@ -419,6 +440,12 @@ function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
     }
     // Said only when every lot in the beat knows its size; a removed lot keeps none.
     const buyDetail = type === "lot.add" && buys.length === beat ? `: ${buyText(buys)}` : "";
+    const sold = [...sales.values()];
+    // A beat is told as a stop's only when every sale in it was one.
+    const byStop = sold.length > 0 && sold.every((s) => s.stop !== undefined);
+    const seller = byStop ? "a stop sold" : "you sold";
+    const stopLine = byStop ? stopText(sold) : "";
+    const stopDetail = stopLine === "" ? "" : `.${stopLine}`;
     const text =
       type === "lot.add"
         ? wasEmpty
@@ -426,10 +453,10 @@ function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
           : `you added to your ${symbol} position${buyDetail}`
         : lots.size === 0
           ? sales.size > 0
-            ? `you sold your ${symbol} position: ${saleText([...sales.values()])}`
+            ? `${seller} your ${symbol} position: ${saleText(sold)}${stopDetail}`
             : `you closed your ${symbol} position`
           : sales.size > 0
-            ? `you sold part of your ${symbol} position: ${saleText([...sales.values()])}`
+            ? `${seller} part of your ${symbol} position: ${saleText(sold)}${stopDetail}`
             : `you trimmed your ${symbol} position`;
     everHeld = true;
     lines.push({ at, text: `${shortDate(at)}: ${text}.` });

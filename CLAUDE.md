@@ -1077,7 +1077,9 @@ Since 2026-10-07 the page's position panel sells shares instead of removing lots
   doesn't list past sales (the user's call: they are for later analysis and the
   story). The story line is the one place they travel, and it states the shares,
   price and result: "you sold part of your X position: 12 shares at 46.34, up
-  14.0% on what they cost". A buy states its shares and price too (2026-10-14; `HoldingEvent.buy`, a removal records its shares and basis on `RemovedLot` from that date; older removals get them only from the sale that emptied them). Those lines are safe only
+  14.0% on what they cost". A stop sale also states the stop, against cost, and the
+  fill against the stop (`stopText`, 2026-10-27), for judging whether stops sit too
+  tight. A buy states its shares and price too (2026-10-14; `HoldingEvent.buy`, a removal records its shares and basis on `RemovedLot` from that date; older removals get them only from the sale that emptied them). Those lines are safe only
   because stories leave the machine solely inside the vault; if stories ever go
   back into `dashboard.json`, the sale and buy text has to come out first. A test in
   `tests/holdingsOps.test.ts` checks the published document for it.

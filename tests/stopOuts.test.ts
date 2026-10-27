@@ -3,7 +3,7 @@ import type { Alert, StaticAlert } from "../src/alerts/models.js";
 import { applyQueueRules, queueRank } from "../src/alerts/queueRules.js";
 import { newRevisitEntry } from "../src/alerts/revisit.js";
 import { stopOutEntries } from "../src/alerts/stopOuts.js";
-import type { Sale } from "../src/holdings/models.js";
+import { saleSummary, type Sale } from "../src/holdings/models.js";
 import { triggerAction, triggerHeadline } from "../src/narrative.js";
 
 const NOW = new Date("2026-10-27T16:00:00.000Z");
@@ -93,5 +93,14 @@ describe("a stop-out in the queue", () => {
     const quiet = alert({ createdAt: "2026-08-01T15:00:00.000Z" });
     const result = applyQueueRules([entry()], [quiet], new Map([["VYX", 7]]), NOW);
     expect(result.created.map((e) => e.reason)).toEqual(["drift"]);
+  });
+});
+
+describe("saleSummary", () => {
+  it("names the stop nearest the fill as the one that sold, and marks a stop with none recorded", () => {
+    const two = { atr: null, stops: [{ stopPrice: 7.2, count: 20, createdAt: "x" }, { stopPrice: 7.8, count: 30, createdAt: "y" }] };
+    expect(saleSummary(sale({ stopHit: two })).stop).toEqual({ price: 7.8 });
+    expect(saleSummary(sale({ stopHit: { atr: null, stops: [] } })).stop).toEqual({ price: null });
+    expect(saleSummary(sale({ stopHit: undefined }))).not.toHaveProperty("stop");
   });
 });

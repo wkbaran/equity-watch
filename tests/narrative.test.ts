@@ -657,6 +657,26 @@ describe("holdings in the story", () => {
     expect(lines.filter((l) => l.includes("sold"))).toEqual(["Sep 16: you sold part of your TGT position: 12 shares at 46.34, up 14.0% on what they cost."]);
   });
 
+  it("tells a stop's sale as the stop's, with where it sat against cost and how it filled", () => {
+    const at = "2026-10-27T15:15:00.000Z";
+    const stopSale = (id: string, count: number, price: number, cost: number, stop: number | null) => ({ id, count, price, cost, stop: { price: stop } });
+    const lines = (s: ReturnType<typeof stopSale>, partial = false) =>
+      texts([add("l1", "2026-10-15T15:00:00.000Z"), { type: "lot.remove", at, symbol: "TGT", lotId: "l1", sale: s, ...(partial ? { partial } : {}) }]).filter((l) =>
+        l.includes("sold")
+      );
+    expect(lines(stopSale("s1", 50, 7.79, 384.5, 7.8))).toEqual([
+      "Oct 27: a stop sold your TGT position: 50 shares at 7.79, up 1.3% on what they cost. The stop was 7.80, 1.4% over cost; it filled 0.1% under it.",
+    ]);
+    expect(lines(stopSale("s1", 1, 337.1, 360, 347.3), true)).toEqual([
+      "Oct 27: a stop sold part of your TGT position: 1 share at 337.10, down 6.4% on what they cost. The stop was 347.30, 3.5% under cost; it filled 2.9% under it.",
+    ]);
+    expect(lines(stopSale("s1", 2, 92.9, 200, 92.9))).toEqual([
+      "Oct 27: a stop sold your TGT position: 2 shares at 92.90, down 7.1% on what they cost. The stop was 92.90, 7.1% under cost; it filled at the stop.",
+    ]);
+    // Marked as a stop with no stop recorded (before the sync kept the filled order's).
+    expect(lines(stopSale("s1", 2, 92.9, 200, null))).toEqual(["Oct 27: a stop sold your TGT position: 2 shares at 92.90, down 7.1% on what they cost."]);
+  });
+
   it("states a buy's shares and price, averaged when lots are bought together", () => {
     const buy = (lotId: string, at: string, count: number, price: number): HoldingEvent => ({ ...add(lotId, at), buy: { count, price } });
     const at = "2026-09-14T15:00:00.000Z";

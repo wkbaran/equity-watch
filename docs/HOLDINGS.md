@@ -435,7 +435,11 @@ arrives a run or more after the fill. A stop sale also puts the symbol in the
 revisit queue ([ALERTS.md](ALERTS.md#what-is-in-the-queue-and-in-what-order)). `atr` is the ATR(14) the page showed when
 the sale was queued (`null` if it had none). Together with the sale's price and
 lots that is enough to compute the stop's distance in ATRs, the slippage past
-the stop, and the result against basis. A sale without `stopHit` is *not marked*,
+the stop, and the result against basis. The story tells a marked sale as the
+stop's, with those numbers: "a stop sold your VYX position: 50 shares at 7.79, up
+1.3% on what they cost. The stop was 7.80, 1.4% over cost; it filled 0.1% under
+it." Of several stops, the one nearest the sale price is taken as the one that
+filled. A sale without `stopHit` is *not marked*,
 not known to be a discretionary exit; sales before 2026-10-08 can't be told.
 
 **Remove without a sale** in the same band deletes the chosen lot, or the whole

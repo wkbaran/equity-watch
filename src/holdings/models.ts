@@ -329,10 +329,21 @@ export interface SaleSummary {
   price: number;
   /** What the shares sold had cost, from the lots they came out of. */
   cost: number;
+  /**
+   * Set on a sale marked as a stop. `price` is the stop that filled: of the
+   * stops recorded, the one nearest the sale price (Webull sales record the
+   * filled order's). Null when none was recorded.
+   */
+  stop?: { price: number | null };
 }
 
 export function saleSummary(sale: Sale): SaleSummary {
-  return { id: sale.id, count: sale.count, price: sale.price, cost: sale.lots.reduce((sum, l) => sum + l.count * l.basisPerShare, 0) };
+  const summary: SaleSummary = { id: sale.id, count: sale.count, price: sale.price, cost: sale.lots.reduce((sum, l) => sum + l.count * l.basisPerShare, 0) };
+  if (sale.stopHit !== undefined) {
+    const nearest = [...sale.stopHit.stops].sort((a, b) => Math.abs(a.stopPrice - sale.price) - Math.abs(b.stopPrice - sale.price))[0];
+    summary.stop = { price: nearest?.stopPrice ?? null };
+  }
+  return summary;
 }
 
 /** Every lot bought and removed, oldest first, from current lots plus the removal and sale records. */
