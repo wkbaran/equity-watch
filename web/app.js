@@ -1586,7 +1586,7 @@
   // while an order is pending.
 
   /** Keep in step with ORDER_OP_TYPES in src/ops/orderTypes.ts. */
-  const ORDER_OP_TYPES = ["stop.place", "stop.replace", "stop.cancel", "cash.cover", "order.buy", "order.sell", "order.replace", "order.cancel"];
+  const ORDER_OP_TYPES = ["stop.place", "stop.replace", "stop.cancel", "cash.cover", "cash.park", "order.buy", "order.sell", "order.replace", "order.cancel"];
   const isOrderOpType = (type) => ORDER_OP_TYPES.includes(type);
   const ordersOn = () => canEditHoldings() && vaultData?.orders?.enabled === true;
   /** Accounts orders may go to: the Webull accounts the sync reads, narrowed by ORDERS_ACCOUNTS. */
@@ -1837,8 +1837,33 @@
       h("button", {
         type: "button",
         text: "Sell BIL to cover",
-        title: "Sells just enough whole BIL shares, a limit a few cents under the price, to bring cash back to zero. Regular session only.",
+        title: "Sells just enough whole BIL shares, a limit at the bid, to bring cash back to zero. Regular session only.",
         onclick: () => submitOrder({ type: "cash.cover", target: { account: account.label }, params: {} }, code, { symbol: "BIL", summary: `sell BIL to cover margin in ${account.label}` }),
+      })
+    );
+  }
+
+  /**
+   * "Move to BIL", when the cash not already in buy orders buys at least one
+   * share. The page has only BIL's last price, so that stands in for the ask;
+   * the watcher reads the real ask and buys as many whole shares as it allows.
+   */
+  function cashParkButton(account) {
+    if (!ordersOn() || account.cash === null || !orderAccounts().includes(account.label)) return null;
+    const price = account.cash.cashEquivalentPrice ?? holdingFor("BIL")?.price ?? null;
+    const committed = (account.openOrders ?? []).filter((o) => o.side === "BUY").reduce((sum, o) => sum + o.quantity * (o.limitPrice ?? 0), 0);
+    const spare = account.cash.cash - committed;
+    if (price === null || !(price > 0) || spare < price) return null;
+    const code = codeInput();
+    return h(
+      "span",
+      { class: "cover" },
+      code,
+      h("button", {
+        type: "button",
+        text: "Move to BIL",
+        title: "Buys as many whole BIL shares as the spare cash allows, a limit at the ask, up to the largest order allowed. Regular session only.",
+        onclick: () => submitOrder({ type: "cash.park", target: { account: account.label }, params: {} }, code, { symbol: "BIL", summary: `move spare cash in ${account.label} to BIL` }),
       })
     );
   }
@@ -2005,7 +2030,8 @@
       h("strong", { text: money(c.total) }),
       status ? h("span", { class: `tag ${status.kind}`, text: status.label }) : null,
       advice ? h("span", { class: "note", text: advice }) : null,
-      cashCoverButton(account)
+      cashCoverButton(account),
+      cashParkButton(account)
     );
   }
 
@@ -2630,6 +2656,7 @@
     const lots = vaultData.lots.filter((l) => l.symbol === symbol);
     const stops = vaultData.stops.filter((s) => s.symbol === symbol);
     const alerts = alertsForSymbol(symbol);
+    const parked = holdingFor(symbol)?.ignored === true;
     // Coverage is in the signature because Cover appears and disappears with
     // it, and the alert book arrives after the first render of this panel. So
     // are the alerts themselves and anything queued against them: the edit form
@@ -2679,7 +2706,8 @@
           h("tbody", {}, ...saleOrder(lots).reverse().flatMap((lot) => lotRows(lot, sell)))
         )
       ),
-      h("div", { class: "detail-cols" }, sell.el, stopsBlock(symbol, stops), alertColumn(symbol), storyColumn(symbol)),
+      // Cash parking (ignoreSymbols) needs no stop and no alert, so it gets neither band.
+      h("div", { class: "detail-cols" }, sell.el, parked ? null : stopsBlock(symbol, stops), parked ? null : alertColumn(symbol), storyColumn(symbol)),
       h(
         "div",
         { class: "actions" },

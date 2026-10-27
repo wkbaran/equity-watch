@@ -103,7 +103,7 @@ four that decide who keeps a holding (docs/HOLDINGS.md#syncing-from-webull):
 `holding.adopt`, `holding.link`, `holding.unlink` and `holding.ignore`, each aimed at
 `target.symbol` plus `target.account`. Then the order ops, which the Lambda sends to
 a second queue, `OrdersQueue`, read only by the always-on `orders watch` service:
-`stop.place`, `stop.replace`, `stop.cancel`, `cash.cover`, `order.buy`, `order.sell`,
+`stop.place`, `stop.replace`, `stop.cancel`, `cash.cover`, `cash.park`, `order.buy`, `order.sell`,
 `order.replace` and `order.cancel`, each aimed at `target.account`. `ops pull`
 refuses one that reaches it. They need an authenticator code the Lambda never
 checks: only the watcher has the secret (docs/HOLDINGS.md#orders).

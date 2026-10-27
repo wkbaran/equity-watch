@@ -2040,6 +2040,14 @@ async function cmdOrdersWatch(opts: OrdersWatchOpts): Promise<void> {
           return null;
         }
       },
+      bidAsk: async (symbol) => {
+        try {
+          const q = (await market.getQuotes([symbol])).get(symbol);
+          return q?.bid !== undefined && q.ask !== undefined ? { bid: q.bid, ask: q.ask } : null;
+        } catch {
+          return null;
+        }
+      },
       now: () => new Date(),
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     },

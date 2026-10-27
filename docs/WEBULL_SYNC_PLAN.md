@@ -244,8 +244,8 @@ Trading), and it does exactly one thing:
 - **One at a time.** If an open sell order for BIL already exists in that account,
   the op is refused, so two clicks or a redelivered op can't sell twice. The op id
   is the idempotency key, as for stops.
-- **Limit order, regular session, `DAY`.** A limit a few cents under the last price
-  rather than a market order. BIL trades in a narrow band, so it fills, and a bad
+- **Limit order, regular session, `DAY`.** A limit at the bid (since 2026-10-26;
+  it was a few cents under the last price) rather than a market order. BIL trades in a narrow band, so it fills, and a bad
   print can't sell it cheap. Outside the regular session the button is disabled,
   and an op that arrives after the close is refused rather than sent for the next
   day.

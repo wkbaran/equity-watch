@@ -63,6 +63,8 @@ export interface OrderContext {
   cashEquivalents: string[];
   /** A last price for a symbol Webull doesn't hold here (Schwab); null when there is none. */
   quote(symbol: string): Promise<number | null>;
+  /** The current bid and ask (Schwab), which BIL is bought and sold at; null when either is missing. */
+  bidAsk(symbol: string): Promise<{ bid: number; ask: number } | null>;
   now(): Date;
   sleep(ms: number): Promise<void>;
 }
@@ -74,8 +76,6 @@ export interface OrderOutcome extends Outcome {
 
 /** A buy or sell limit this far from the last price is refused as a likely typo. */
 export const FAT_FINGER = 0.2;
-/** BIL sold to fund a buy or cover margin goes this far under its last price, so it fills. */
-export const BIL_SELL_DISCOUNT = 0.02;
 /** How long a Roth buy waits for the BIL sale funding it to fill. */
 export const FUNDING_WAIT_MS = 3 * 60 * 1000;
 const FUNDING_POLL_MS = 5000;
@@ -202,6 +202,19 @@ function parking(ctx: OrderContext, account: Account): WebullPosition | undefine
   return undefined;
 }
 
+/**
+ * The price a cash equivalent trades at here: bought at the ask, sold at the
+ * bid (the user's rule, 2026-10-26), so it fills without paying past the
+ * spread. Null with no quote, or one too far from the last price to trust.
+ */
+async function bilPrice(ctx: OrderContext, symbol: string, side: "BUY" | "SELL", last: number | null): Promise<number | null> {
+  const quote = await ctx.bidAsk(symbol);
+  const price = quote === null ? null : side === "BUY" ? quote.ask : quote.bid;
+  if (price === null || !(price > 0)) return null;
+  if (last !== null && last > 0 && Math.abs(price - last) > last * FAT_FINGER) return null;
+  return tick(price);
+}
+
 export async function applyOrderOp(op: Op, ctx: OrderContext): Promise<OrderOutcome> {
   const symbol = stringField(op.target, "symbol")?.trim().toUpperCase() || null;
   if (!ctx.config.enabled) {
@@ -267,6 +280,8 @@ async function byType(op: Op, ctx: OrderContext, account: Account, store: Holdin
       return cancel(op, ctx, account, symbol);
     case "cash.cover":
       return cover(op, ctx, account);
+    case "cash.park":
+      return park(op, ctx, account);
     case "order.sell":
       return sell(op, ctx, account, symbol);
     case "order.buy":
@@ -430,11 +445,51 @@ async function cover(op: Op, ctx: OrderContext, account: Account): Promise<Order
   if (!inRegularSession(ctx.now())) {
     return no(bil.symbol, "Not sent: the regular session is closed. Try again during market hours.");
   }
-  const quantity = Math.min(Math.ceil(-cash / bil.lastPrice), Math.floor(bil.quantity + 1e-9));
-  const order = newOrder(clientOrderId(op.id, "cover"), bil.symbol, "SELL", "LIMIT", quantity, { limit: tick(bil.lastPrice - BIL_SELL_DISCOUNT) }, "DAY", "CORE");
+  const bid = await bilPrice(ctx, bil.symbol, "SELL", bil.lastPrice);
+  if (bid === null) {
+    return no(bil.symbol, `Not sent: there is no usable ${bil.symbol} bid to sell at.`);
+  }
+  const quantity = Math.min(Math.ceil(-cash / bid), Math.floor(bil.quantity + 1e-9));
+  const order = newOrder(clientOrderId(op.id, "cover"), bil.symbol, "SELL", "LIMIT", quantity, { limit: bid }, "DAY", "CORE");
   const { placed, already } = await placeOnce(ctx, account, [order]);
-  const short = quantity * bil.lastPrice < -cash ? ` That is all of it, and still short ${(-cash - quantity * bil.lastPrice).toFixed(2)}.` : "";
+  const short = quantity * bid < -cash ? ` That is all of it, and still short ${(-cash - quantity * bid).toFixed(2)}.` : "";
   return ok(bil.symbol, `Selling ${bil.symbol} to cover the margin debit.`, `${sentText([order], placed, already)}; cash ${cash}.${short}`);
+}
+
+/**
+ * "Move to BIL": as many whole shares of the cash equivalent as the cash buys
+ * at the ask, less what working buy orders already have, and no more than
+ * ORDERS_MAX_VALUE. Never borrows: whole shares at the ask fit inside the cash.
+ */
+async function park(op: Op, ctx: OrderContext, account: Account): Promise<OrderOutcome> {
+  const symbol = parking(ctx, account)?.symbol ?? ctx.cashEquivalents[0];
+  if (symbol === undefined) {
+    return no(null, "Not sent: no cash equivalent is configured (cashEquivalents).");
+  }
+  if (account.open.some((o) => o.symbol === symbol && o.side === "BUY")) {
+    return no(symbol, `Not sent: a ${symbol} buy order is already working.`);
+  }
+  if (!inRegularSession(ctx.now())) {
+    return no(symbol, "Not sent: the regular session is closed. Try again during market hours.");
+  }
+  const ask = await bilPrice(ctx, symbol, "BUY", held(account, symbol)?.lastPrice ?? null);
+  if (ask === null) {
+    return no(symbol, `Not sent: there is no usable ${symbol} ask to buy at.`);
+  }
+  const committed = account.open
+    .filter((o) => o.side === "BUY")
+    .reduce((sum, o) => sum + Math.max(0, o.totalQuantity - o.filledQuantity) * (o.limitPrice ?? 0), 0);
+  const spare = account.balance.cash - committed;
+  const affordable = Math.floor(spare / ask + 1e-9);
+  const allowed = Math.floor(ctx.config.maxValue / ask + 1e-9);
+  const quantity = Math.min(affordable, allowed);
+  if (quantity < 1) {
+    return no(symbol, `Not sent: the spare cash doesn't buy a whole ${symbol} share.`, `cash ${account.balance.cash}, in buy orders ${committed.toFixed(2)}, ask ${ask}`);
+  }
+  const order = newOrder(clientOrderId(op.id, "park"), symbol, "BUY", "LIMIT", quantity, { limit: ask }, "DAY", "CORE");
+  const { placed, already } = await placeOnce(ctx, account, [order]);
+  const capped = allowed < affordable ? " (capped at the largest order allowed)" : "";
+  return ok(symbol, `Buying ${symbol} with the spare cash${capped}.`, `${sentText([order], placed, already)}; cash ${account.balance.cash}, in buy orders ${committed.toFixed(2)}`);
 }
 
 async function sell(op: Op, ctx: OrderContext, account: Account, symbol: string | null): Promise<OrderOutcome> {
@@ -522,8 +577,15 @@ async function buy(op: Op, ctx: OrderContext, account: Account, symbol: string |
     if (account.open.some((o) => o.symbol === bil!.symbol && o.side === "SELL")) {
       return no(symbol, `Not sent: a ${bil!.symbol} sell order is already working; let it finish first.`);
     }
-    const bilShares = Math.ceil(shortfall / bil!.lastPrice);
-    const sale = newOrder(clientOrderId(op.id, "fund"), bil!.symbol, "SELL", "LIMIT", bilShares, { limit: tick(bil!.lastPrice - BIL_SELL_DISCOUNT) }, "DAY", "CORE");
+    const bid = await bilPrice(ctx, bil!.symbol, "SELL", bil!.lastPrice);
+    if (bid === null) {
+      return no(symbol, `Not sent: there is no usable ${bil!.symbol} bid to sell at, so it can't be funded.`);
+    }
+    const bilShares = Math.min(Math.ceil(shortfall / bid), Math.floor(bil!.quantity + 1e-9));
+    if (bilShares * bid < shortfall) {
+      return no(symbol, "Not sent: it costs more than the account's cash and BIL together, and orders here never borrow.", `cost ${cost.toFixed(2)}, cash ${cash}, BIL at the bid ${(bilShares * bid).toFixed(2)}`);
+    }
+    const sale = newOrder(clientOrderId(op.id, "fund"), bil!.symbol, "SELL", "LIMIT", bilShares, { limit: bid }, "DAY", "CORE");
     const sold = await placeOnce(ctx, account, [sale]);
     funding = `${sentText([sale], sold.placed, sold.already)}; `;
     if (account.type !== "MARGIN") {

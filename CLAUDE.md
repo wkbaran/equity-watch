@@ -1310,6 +1310,9 @@ order was sent.
   safe; don't switch to random ids.
 - **Published messages carry no account, count or price.** The detail goes to
   the sealed `orders.json` and `orders.log.jsonl` only.
+- **BIL is bought at the ask and sold at the bid** (the user's rule, 2026-10-26),
+  read from Schwab as the order is sent (`bilPrice`). With no quote it refuses;
+  don't fall back to the last price, which is what that rule replaced.
 
 ## Node 26, and no dotenv
 
@@ -1687,6 +1690,12 @@ container: two schedulers on two copies of `alerts.json` re-fire each other's al
   equity-watch sh -c 'cd "${EQUITY_WATCH_STATE_DIR:-/data}" && node /app/dist/cli.js
   dashboard --site site --publish --quiet'`. The `cd` matters: from `/app` the
   `site` directory can't be created (EACCES).
+- **nuc1 has its own `analysis.config.json`, in `STATE_DIR`, and it does not
+  follow the repo's.** The container runs from `/data`, so the committed root file
+  never reaches it. Found 2026-10-26: nuc1's had `ignoreSymbols` but no
+  `cashEquivalents`, so every account's BIL read as $0 and the order watcher would
+  have refused Fund from BIL and Sell BIL to cover. A new config key has to be
+  added there by hand.
 - **`STATE_DIR` (in gitignored `docker/.env`) is required and has no default.**
   Starting the container against an empty directory publishes an empty dashboard
   over the live one. Put state there first.

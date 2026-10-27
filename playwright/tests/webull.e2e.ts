@@ -268,6 +268,28 @@ test.describe("orders", () => {
     expect((await queuedOps(page))[0]).toMatchObject({ type: "order.cancel", target: { account: "margin", symbol: "OPENCO", clientOrderId: "ewz9" }, params: { code: "333444" } });
   });
 
+  test("Move to BIL, beside spare cash", async ({ page }) => {
+    const spare = { ...WEBULL, accounts: [{ ...WEBULL.accounts[0], cash: { ...WEBULL.accounts[0].cash!, cash: 1249.4, total: 10399.4 }, cashStatus: "ok" as const }] };
+    await serveVault(page, { webull: spare, orders: ON });
+    await page.goto("/#/holdings");
+    await unlockWith(page, OPS_TOKEN);
+    const cash = page.locator("#webull-panel .webull-cash");
+    await expect(cash.getByRole("button", { name: "Sell BIL to cover" })).toHaveCount(0);
+    await cash.locator(".code-input").fill("444555");
+    await cash.getByRole("button", { name: "Move to BIL" }).click();
+    await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+    expect((await queuedOps(page))[0]).toMatchObject({ type: "cash.park", target: { account: "margin" }, params: { code: "444555" } });
+  });
+
+  test("no Move to BIL when the cash doesn't buy a share", async ({ page }) => {
+    const little = { ...WEBULL, accounts: [{ ...WEBULL.accounts[0], cash: { ...WEBULL.accounts[0].cash!, cash: 50, total: 9200 }, cashStatus: "ok" as const }] };
+    await serveVault(page, { webull: little, orders: ON });
+    await page.goto("/#/holdings");
+    await unlockWith(page, OPS_TOKEN);
+    await expect(page.locator("#webull-panel .webull-cash")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Move to BIL" })).toHaveCount(0);
+  });
+
   test("leaves a stop mirrored onto a position out of the panel's open orders", async ({ page }) => {
     const order = { side: "SELL" as const, trailingType: null, trailingStep: null, timeInForce: "GTC", comboType: "NORMAL", placedAt: null, limitPrice: null };
     const withOrders = {
@@ -289,4 +311,14 @@ test.describe("orders", () => {
     await expect(orders).not.toContainText("AA ");
     await expect(detail(page).locator("form.stop-move")).toBeVisible();
   });
+});
+
+test("a cash-parking position shows its lots and story, but no Stop or Alert band", async ({ page }) => {
+  await serveVault(page, { webull: WEBULL }, (c) => ({ ...c, holdings: c.holdings.map((r) => (r.symbol === "TSLA" ? { ...r, ignored: true } : r)) }));
+  await page.goto("/#/holdings");
+  await unlockWith(page, OPS_TOKEN);
+  await positionRow(page, "TSLA").locator("td").nth(2).click();
+  await expect(detail(page).locator("table.lots")).toBeVisible();
+  await expect(detail(page).locator(".stops")).toHaveCount(0);
+  await expect(detail(page).locator(".alert-col")).toHaveCount(0);
 });

@@ -178,8 +178,8 @@ orders, noting any without a client order id: equity-watch can't change those.
 ### Orders
 
 equity-watch can send orders to Webull from the unlocked page: GTC sell stops,
-limit buys and sells, changing and cancelling open orders, and **Sell BIL to
-cover** a margin debit. It is off until switched on, and every order passes the
+limit buys and sells, changing and cancelling open orders, **Sell BIL to
+cover** a margin debit, and **Move to BIL** for spare cash. It is off until switched on, and every order passes the
 same checks on the machine before anything reaches Webull.
 
 **Setup** (once):
@@ -219,9 +219,16 @@ same checks on the machine before anything reaches Webull.
      (both settle T+1), in the Roth before it, waiting up to three minutes for the
      sale to fill or cancelling it and buying nothing. A buy can carry a GTC stop,
      placed with it as one combo order.
+   - **BIL is bought at the ask and sold at the bid**, read from Schwab when the
+     order is sent: covering, funding a buy, and moving cash in. With no bid or
+     ask (Schwab's login expired, or one more than 20% off the last price), the
+     order is refused rather than priced another way.
    - **Sell BIL to cover**: margin account, cash below zero, regular session, no
-     BIL sale already working; sells `ceil(-cash / price)` whole shares a couple
-     of cents under the price.
+     BIL sale already working; sells `ceil(-cash / bid)` whole shares.
+   - **Move to BIL**: shown beside an account's cash when the cash not already in
+     buy orders buys a share at BIL's last price. Regular session, no BIL buy
+     already working; buys as many whole shares as that cash covers at the ask, up
+     to `ORDERS_MAX_VALUE` (the result says when it was capped).
    - **Change or cancel**: the order must still look as the page showed it.
      A sell stop mirrored onto a kept position is moved and cancelled from that
      position's Stops band, and is left out of the panel's open orders.

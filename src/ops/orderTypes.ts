@@ -9,6 +9,7 @@ export const ORDER_OP_TYPES = [
   "stop.replace",
   "stop.cancel",
   "cash.cover",
+  "cash.park",
   "order.buy",
   "order.sell",
   "order.replace",

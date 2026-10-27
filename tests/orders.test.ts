@@ -147,6 +147,7 @@ function context(client: Fake, over: Partial<OrdersConfig> = {}, label = "margin
     stateFile: join(dir, "orders-state.json"),
     cashEquivalents: ["BIL"],
     quote: () => Promise.resolve(50),
+    bidAsk: () => Promise.resolve({ bid: 91.49, ask: 91.51 }),
     now: () => NOW,
     sleep: () => Promise.resolve(),
   };
@@ -257,8 +258,44 @@ describe("Sell BIL to cover", () => {
     const client = fakeClient({ positions: [position("BIL", 100, 91.5)], cash: -450 });
     const r = await applyOrderOp(op("cash.cover", { account: "margin" }), context(client));
     expect(r.ok).toBe(true);
-    // 450 / 91.50 = 4.92, so 5 shares, a little under the last price.
-    expect(client.placed[0].orders[0]).toMatchObject({ symbol: "BIL", side: "SELL", order_type: "LIMIT", quantity: "5", limit_price: "91.48", time_in_force: "DAY" });
+    // 450 / 91.49 = 4.92, so 5 shares, at the bid.
+    expect(client.placed[0].orders[0]).toMatchObject({ symbol: "BIL", side: "SELL", order_type: "LIMIT", quantity: "5", limit_price: "91.49", time_in_force: "DAY" });
+  });
+
+  it("refuses with no bid, or one far from the last price, rather than pricing it another way", async () => {
+    const client = fakeClient({ positions: [position("BIL", 100, 91.5)], cash: -450 });
+    const none = { ...context(client), bidAsk: () => Promise.resolve(null) };
+    expect(await applyOrderOp(op("cash.cover", { account: "margin" }), none)).toMatchObject({ ok: false, message: expect.stringContaining("no usable BIL bid") });
+    const wild = { ...context(client), bidAsk: () => Promise.resolve({ bid: 0.01, ask: 91.51 }) };
+    expect(await applyOrderOp(op("cash.cover", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(NOW) + 1)), wild)).toMatchObject({ ok: false });
+    expect(client.placed).toEqual([]);
+  });
+});
+
+describe("Move to BIL", () => {
+  it("buys the whole shares the spare cash covers at the ask, less working buys", async () => {
+    const client = fakeClient({ positions: [position("BIL", 4, 91.5)], cash: 1249.4, open: [working("ewbuy", "NEW", "BUY", "LIMIT", 2, { limit: 100 })] });
+    const r = await applyOrderOp(op("cash.park", { account: "margin" }), context(client));
+    expect(r).toMatchObject({ ok: true, symbol: "BIL" });
+    // (1249.40 - 200) / 91.51 = 11.47, so 11 shares at the ask.
+    expect(client.placed[0].orders[0]).toMatchObject({ symbol: "BIL", side: "BUY", order_type: "LIMIT", quantity: "11", limit_price: "91.51", time_in_force: "DAY", support_trading_session: "CORE" });
+  });
+
+  it("caps at ORDERS_MAX_VALUE, and buys BIL in an account that holds none", async () => {
+    const client = fakeClient({ positions: [], cash: 10_000 });
+    const r = await applyOrderOp(op("cash.park", { account: "margin" }), context(client));
+    expect(r).toMatchObject({ ok: true, message: expect.stringContaining("capped") });
+    // 2000 / 91.51 = 21.9.
+    expect(client.placed[0].orders[0]).toMatchObject({ symbol: "BIL", quantity: "21" });
+  });
+
+  it("refuses under a share of spare cash, with a BIL buy working, or outside the session", async () => {
+    expect(await applyOrderOp(op("cash.park", { account: "margin" }), context(fakeClient({ positions: [], cash: 50 })))).toMatchObject({ ok: false, message: expect.stringContaining("whole BIL share") });
+    const busy = fakeClient({ positions: [], cash: 1000, open: [working("ewbil", "BIL", "BUY", "LIMIT", 1, { limit: 91.5 })] });
+    expect(await applyOrderOp(op("cash.park", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(NOW) + 1)), context(busy))).toMatchObject({ ok: false, message: expect.stringContaining("already working") });
+    const late = new Date("2026-10-26T23:00:00.000Z");
+    const evening = { ...context(fakeClient({ positions: [], cash: 1000 })), now: () => late };
+    expect(await applyOrderOp(op("cash.park", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(late))), evening)).toMatchObject({ ok: false, message: expect.stringContaining("session") });
   });
 
   it("refuses with nothing to cover, outside the session, or in a cash account", async () => {
