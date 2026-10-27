@@ -1313,6 +1313,14 @@ order was sent.
 - **BIL is bought at the ask and sold at the bid** (the user's rule, 2026-10-26),
   read from Schwab as the order is sent (`bilPrice`). With no quote it refuses;
   don't fall back to the last price, which is what that rule replaced.
+- **A buy's stop is never a combo leg** (the user's call, 2026-10-26). The buy
+  goes out alone and a `StopFollowUp` in `orders-state.json` waits for the fill;
+  `settleFollowUps` (every 30s in the watcher loop) places the stop, or with
+  `stopWhole` moves the account's one existing stop over every whole share. Don't
+  "save a round trip" by going back to `MASTER`/`STOP_LOSS` combos: they were
+  never verified, and a combo stop can't grow the existing stop anyway. The
+  follow-up reads quantity from the account each time, so a partial fill or a
+  fractional share never puts more under the stop than can be sold.
 
 ## Node 26, and no dotenv
 

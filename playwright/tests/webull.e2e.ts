@@ -145,7 +145,7 @@ test("a kept position's Webull stops show as orders, flagged short and expiring"
   await expect(row.locator(".tag.stop-expires")).toHaveText("stop expires");
 
   await row.locator("td").nth(2).click();
-  await expect(detail(page).locator(".stops .tag.webull")).toContainText("Webull");
+  await expect(detail(page).locator(".stops .tag.webull")).toHaveText("39.00 on 3 · Webull margin");
   // Every share is kept, so the record-keeping Add stop form is gone.
   await expect(detail(page).locator("form.stop-add")).toHaveCount(0);
 });
@@ -201,8 +201,8 @@ test.describe("orders", () => {
 
     const move = detail(page).locator("form.stop-move");
     // 39 is 1.6 ATR under the 47 high close, flagged tight, so the form offers the 2 ATR trail.
-    await expect(move.getByLabel(/Stop/)).toHaveValue("37.00");
-    await move.getByLabel(/Stop/).fill("40");
+    await expect(move.getByLabel(/stop/)).toHaveValue("37.00");
+    await move.getByLabel(/stop/).fill("40");
     await move.getByLabel("Code").fill("654321");
     await move.getByRole("button", { name: "Move" }).click();
     await expect.poll(async () => (await queuedOps(page)).length).toBe(2);
@@ -240,7 +240,7 @@ test.describe("orders", () => {
     // 135 against 82.25 cash and 448.77 with BIL: Fund from BIL ticks itself.
     await expect(ticket.locator("p.note").first()).toContainText("tick Fund from BIL");
     await expect(ticket.getByLabel(/Fund from BIL/)).toBeChecked();
-    await ticket.getByLabel(/Attach a GTC stop/).check();
+    await ticket.getByLabel(/set a GTC stop/).check();
     await ticket.locator('input[placeholder="stop"]').fill("41");
     await ticket.getByLabel("Authenticator code").fill("222333");
     await ticket.getByRole("button", { name: "Send buy" }).click();
@@ -288,6 +288,62 @@ test.describe("orders", () => {
     await unlockWith(page, OPS_TOKEN);
     await expect(page.locator("#webull-panel .webull-cash")).toBeVisible();
     await expect(page.getByRole("button", { name: "Move to BIL" })).toHaveCount(0);
+  });
+
+  test("a position in two accounts can move or cancel each account's stop, and says whose each is", async ({ page }) => {
+    const roth = { ...WEBULL.accounts[0], label: "roth", accountType: "CASH", cash: null, cashStatus: "ok" as const, unmatched: [], links: [], flags: [] };
+    const ROTH_STOP = { ...STOP, id: "wb-00000002", count: 3, stopPrice: 40, webull: { ...STOP.webull, account: "roth", orderId: "ORDER-0002", clientOrderId: "ewclient0002" } };
+    await serveVault(page, {
+      webull: { ...WEBULL, accounts: [WEBULL.accounts[0], roth] },
+      holdingSources: AA_KEPT,
+      stops: [STOP, ROTH_STOP],
+      orders: ON,
+    });
+    await openAA(page);
+    await expect(detail(page).locator(".stops .tag.webull")).toHaveText(["39.00 on 5 · Webull margin", "40.00 on 3 · Webull roth"]);
+    const rothForm = detail(page).locator("form.stop-move", { has: page.getByLabel("roth stop 40.00 on 3") });
+    await rothForm.getByLabel("Code").fill("777888");
+    await rothForm.getByRole("button", { name: "Cancel order" }).click();
+    await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+    expect((await queuedOps(page))[0]).toMatchObject({ type: "stop.cancel", target: { account: "roth", symbol: "AA", clientOrderId: "ewclient0002" }, expect: { stopPrice: 40 } });
+  });
+
+  test("Buy at Webull from the Add a lot form, applying the stop to the whole position", async ({ page }) => {
+    await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [STOP], orders: ON });
+    await page.goto("/#/holdings");
+    await unlockWith(page, OPS_TOKEN);
+    const form = page.locator("#lot-add form");
+    await form.getByLabel("Symbol").fill("aa");
+    await form.getByLabel("Shares", { exact: true }).fill("4");
+    await form.getByLabel("Basis / share").fill("45");
+    await form.getByLabel("Account").fill("margin");
+    await form.getByLabel("Stop price").fill("41");
+    await form.getByRole("button", { name: "Buy at Webull" }).click();
+    const ticket = page.locator("dialog.ticket");
+    await expect(ticket.getByRole("heading")).toHaveText("Buy AA at Webull");
+    await expect(ticket.getByLabel("Shares")).toHaveValue("4");
+    await expect(ticket.getByLabel("Limit price")).toHaveValue("45.00");
+    await expect(ticket.getByLabel(/set a GTC stop/)).toBeChecked();
+    await expect(ticket.locator('input[placeholder="stop"]')).toHaveValue("41");
+    await ticket.getByLabel("Apply it to the whole position (moves the 39.00 stop on 5 to cover every whole share)").check();
+    await ticket.getByLabel("Authenticator code").fill("121212");
+    await ticket.getByRole("button", { name: "Send buy" }).click();
+    await expect(ticket).toBeHidden();
+    await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+    expect((await queuedOps(page))[0]).toMatchObject({
+      type: "order.buy",
+      target: { account: "margin", symbol: "AA" },
+      params: { quantity: 4, limitPrice: 45, stopPrice: 41, stopWhole: true, code: "121212" },
+    });
+  });
+
+  test("no whole-position option without exactly one stop to move", async ({ page }) => {
+    await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [], orders: ON });
+    await openAA(page);
+    await detail(page).getByRole("button", { name: "Buy at Webull" }).click();
+    const ticket = page.locator("dialog.ticket");
+    await expect(ticket.getByLabel(/set a GTC stop/)).toBeVisible();
+    await expect(ticket.getByLabel(/whole position/)).toBeHidden();
   });
 
   test("leaves a stop mirrored onto a position out of the panel's open orders", async ({ page }) => {

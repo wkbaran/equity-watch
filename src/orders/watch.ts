@@ -20,7 +20,7 @@ import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { appendOpResult, loadOpLog, parseOp, type OpResult } from "../ops/apply.js";
 import type { OpsQueue } from "../ops/pull.js";
 import { sealJson, type VaultDocument } from "../web/vault.js";
-import { applyOrderOp, isOrderOp, type OrderContext, type OrderOutcome } from "./execute.js";
+import { applyOrderOp, isOrderOp, settleFollowUps, type OrderContext, type OrderOutcome } from "./execute.js";
 
 /** An order op older than this when it arrives is refused: never act late on a decision made at another price. */
 export const STALE_MS = 2 * 60 * 1000;
@@ -136,11 +136,35 @@ export async function handleMessage(body: string, ctx: WatchContext): Promise<"a
   return outcome.ok ? "applied" : "rejected";
 }
 
+/** How often pending stop follow-ups read their buys: Webull rate-limits, and a stop a minute late is fine. */
+export const FOLLOW_UP_POLL_MS = 30_000;
+
+/** Sets any stops whose buys have filled, and logs each like an order (id `<op id>:stop`). */
+export async function runFollowUps(ctx: WatchContext): Promise<number> {
+  const outcomes = await settleFollowUps(ctx.order);
+  for (const o of outcomes) {
+    const at = ctx.order.now().toISOString();
+    const status: OrderStatus = { id: `${o.id}:stop`, type: "stop.followup", symbol: o.symbol, account: o.account, ok: o.ok, message: o.message, detail: o.detail, at };
+    mkdirSync(dirname(ctx.ordersLogFile), { recursive: true });
+    appendFileSync(ctx.ordersLogFile, `${JSON.stringify(status)}\n`, { mode: 0o600 });
+    ctx.log(`${at} stop follow-up ${o.symbol ?? ""}: ${o.ok ? "ok" : "refused"}: ${o.message} ${o.detail}`);
+  }
+  if (outcomes.length > 0) {
+    await publishStatus(ctx).catch((err: unknown) => ctx.log(`status upload failed: ${String(err)}`));
+  }
+  return outcomes.length;
+}
+
 /** The loop. Never returns unless `shouldStop` says so (tests); a failure waits and polls again. */
 export async function watchOrders(ctx: WatchContext, shouldStop: () => boolean = () => false): Promise<void> {
+  let followUpsAt = 0;
   while (!shouldStop()) {
     if (ctx.heartbeatFile !== undefined) {
       writeFileSync(ctx.heartbeatFile, new Date().toISOString());
+    }
+    if (ctx.order.now().getTime() - followUpsAt >= FOLLOW_UP_POLL_MS) {
+      followUpsAt = ctx.order.now().getTime();
+      await runFollowUps(ctx).catch((err: unknown) => ctx.log(`stop follow-ups failed: ${String(err)}`));
     }
     let messages;
     try {

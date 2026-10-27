@@ -217,8 +217,20 @@ same checks on the machine before anything reaches Webull.
      and inside cash + BIL. Orders never borrow. When cash alone is short, **Fund
      from BIL** sells the difference first: in a margin account alongside the buy
      (both settle T+1), in the Roth before it, waiting up to three minutes for the
-     sale to fill or cancelling it and buying nothing. A buy can carry a GTC stop,
-     placed with it as one combo order.
+     sale to fill or cancelling it and buying nothing.
+   - **A buy's stop goes out after the fill**, as its own GTC order: a sell stop
+     can't cover shares not yet held, and separate orders don't depend on Webull's
+     combo orders. The watcher checks pending buys every 30 seconds; when shares
+     fill it places the stop for them, growing it as a partial fill completes. With
+     **Apply it to the whole position** (offered when the account has exactly one
+     Webull stop on the symbol that equity-watch can change), it instead moves that
+     stop to the new price and grows it to every whole share held there; a
+     fractional share can't be under a stop. A buy that ends unfilled sets nothing,
+     and a stop the price has already fallen through is refused rather than placed.
+     The results are in `orders.log.jsonl` (`stop.followup`); the stop shows on the
+     position at the next sync.
+   - **Buy at Webull** on the Add a lot form opens this ticket with the form's
+     symbol, shares, price (as the limit), account and stop.
    - **BIL is bought at the ask and sold at the bid**, read from Schwab when the
      order is sent: covering, funding a buy, and moving cash in. With no bid or
      ask (Schwab's login expired, or one more than 20% off the last price), the

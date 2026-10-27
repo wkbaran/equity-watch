@@ -35,7 +35,7 @@ import {
   type WebullPosition,
 } from "../providers/webull.js";
 import { MARKET_TIME_ZONE, wallClock } from "../timezone.js";
-import { loadOrdersState, saveOrdersState, type OrdersConfig } from "./config.js";
+import { loadOrdersState, saveOrdersState, type OrdersConfig, type StopFollowUp } from "./config.js";
 import { verifyTotp } from "./totp.js";
 
 export { ORDER_OP_TYPES, isOrderOp, type OrderOpType } from "../ops/orderTypes.js";
@@ -552,12 +552,23 @@ async function buy(op: Op, ctx: OrderContext, account: Account, symbol: string |
   const bad = fatFinger("BUY", limit, last);
   if (bad !== null) return no(symbol, bad);
   if (stopRaw !== null && !(tick(stopRaw) < limit)) {
-    return no(symbol, "Not sent: the attached stop must be under the buy's limit.");
+    return no(symbol, "Not sent: the stop must be under the buy's limit.");
+  }
+  // "Apply it to the whole position": the account's one stop on the symbol is
+  // moved and grown once the buy fills, rather than a second stop placed.
+  const whole = stopRaw !== null && field(op.params, "stopWhole") === true;
+  let replacing: WebullOrder | null = null;
+  if (whole) {
+    const stops = account.open.filter((o) => o.symbol === symbol && o.side === "SELL" && ["STOP_LOSS", "STOP_LOSS_LIMIT"].includes(o.orderType));
+    if (stops.length !== 1 || stops[0].clientOrderId === null) {
+      return no(symbol, `Not sent: applying the stop to the whole position needs exactly one ${symbol} stop in that account that equity-watch can change.`, `stops: ${stops.length}`);
+    }
+    replacing = stops[0];
   }
   const { tif, session } = timing(op.params);
-  const main = newOrder(clientOrderId(op.id, "buy"), symbol, "BUY", "LIMIT", quantity, { limit }, tif, session, stopRaw !== null ? "MASTER" : "NORMAL");
+  const main = newOrder(clientOrderId(op.id, "buy"), symbol, "BUY", "LIMIT", quantity, { limit }, tif, session);
 
-  const preview = await ctx.client.previewOrder(account.id, { ...main, combo_type: "NORMAL" });
+  const preview = await ctx.client.previewOrder(account.id, main);
   const cost = Number.isFinite(preview.estimatedCost) && preview.estimatedCost > 0 ? preview.estimatedCost : quantity * limit;
   if (cost > ctx.config.maxValue) {
     return no(symbol, "Not sent: it costs more than the largest order allowed (ORDERS_MAX_VALUE).", `cost ${cost.toFixed(2)}, limit ${ctx.config.maxValue}`);
@@ -598,14 +609,142 @@ async function buy(op: Op, ctx: OrderContext, account: Account, symbol: string |
     }
   }
 
-  const orders = [main];
-  let combo: string | undefined;
+  const { placed, already } = await placeOnce(ctx, account, [main]);
+  let then = "";
   if (stopRaw !== null) {
-    orders.push(newOrder(clientOrderId(op.id, "stop"), symbol, "SELL", "STOP_LOSS", quantity, { stop: tick(stopRaw) }, "GTC", "CORE", "STOP_LOSS"));
-    combo = clientOrderId(op.id, "combo");
+    // Separate orders, never a combo: the stop goes out once shares are held.
+    addFollowUp(ctx, {
+      id: op.id,
+      account: account.label,
+      symbol,
+      buyClientOrderId: main.client_order_id,
+      stopPrice: tick(stopRaw),
+      replaceClientOrderId: replacing?.clientOrderId ?? null,
+      stopClientOrderId: null,
+      covered: 0,
+      createdAt: ctx.now().toISOString(),
+    });
+    then = replacing !== null ? `; its ${symbol} stop moves to cover the whole position once it fills` : "; its stop goes on once it fills";
   }
-  const { placed, already } = await placeOnce(ctx, account, orders, combo);
-  return ok(symbol, `Placed a buy order for ${symbol}${stopRaw !== null ? " with a stop" : ""}.`, `${funding}${sentText(orders, placed, already)}; est. cost ${cost.toFixed(2)}`);
+  return ok(
+    symbol,
+    `Placed a buy order for ${symbol}${then}.`,
+    `${funding}${sentText([main], placed, already)}; est. cost ${cost.toFixed(2)}${stopRaw !== null ? `; stop ${tick(stopRaw)}${replacing !== null ? ` replacing ${replacing.clientOrderId} (stop ${replacing.stopPrice} on ${replacing.totalQuantity - replacing.filledQuantity})` : ""} after the fill` : ""}`
+  );
+}
+
+/** Records a follow-up once: a redelivered op finds it already there. */
+function addFollowUp(ctx: OrderContext, f: StopFollowUp): void {
+  const state = loadOrdersState(ctx.stateFile);
+  const pending = state.followUps ?? [];
+  if (!pending.some((p) => p.id === f.id)) {
+    saveOrdersState(ctx.stateFile, { ...state, followUps: [...pending, f] });
+  }
+}
+
+/** A follow-up's result, for the orders log and status document. */
+export interface FollowUpOutcome extends OrderOutcome {
+  id: string;
+  account: string;
+}
+
+/** A follow-up whose buy is still unknown to Webull this long after it was queued is dropped. */
+export const FOLLOW_UP_DAYS = 70;
+
+/**
+ * Sets the stops buys are waiting on. For each pending follow-up, reads its
+ * buy; when more whole shares have filled than are under the stop, places
+ * the stop (or grows the one it placed), or moves the one existing stop to the
+ * new price over every whole share held. A buy that ends drops its follow-up.
+ * Returns what it did, for the log. A Webull failure leaves the follow-up for
+ * the next pass.
+ */
+export async function settleFollowUps(ctx: OrderContext): Promise<FollowUpOutcome[]> {
+  const pending = loadOrdersState(ctx.stateFile).followUps ?? [];
+  if (pending.length === 0) {
+    return [];
+  }
+  const store = loadHoldingsStore(ctx.holdingsFile);
+  const out: FollowUpOutcome[] = [];
+  const keep: StopFollowUp[] = [];
+  const done = new Set<string>();
+  for (const f of pending) {
+    const say = (ok: boolean, message: string, detail = ""): FollowUpOutcome => ({ id: f.id, account: f.account, symbol: f.symbol, alertId: null, ok, message, detail: detail || message });
+    const accountId = ctx.accountIds.get(f.account);
+    if (accountId === undefined) {
+      out.push(say(false, `No stop set for ${f.symbol}: that account isn't mapped any more.`));
+      done.add(f.id);
+      continue;
+    }
+    try {
+      const legs = await ctx.client.orderDetail(accountId, f.buyClientOrderId);
+      const buyLeg = legs.find((o) => o.side === "BUY") ?? legs[0];
+      if (buyLeg === undefined) {
+        throw new Error("no such order yet");
+      }
+      const filled = Math.floor(buyLeg.filledQuantity + 1e-9);
+      let next: StopFollowUp | null = f;
+      if (filled > f.covered) {
+        const result = await applyFollowUp(ctx, f, accountId, store, filled);
+        out.push({ ...say(result.ok, result.message, result.detail) });
+        next = result.next;
+      }
+      if (next !== null && WORKING_STATUSES.has(buyLeg.status)) {
+        keep.push(next);
+        continue;
+      }
+      if (next !== null && next.covered === 0) {
+        out.push(say(true, `The ${f.symbol} buy ended without filling, so no stop was set.`, `buy ${f.buyClientOrderId} ${buyLeg.status}`));
+      }
+      done.add(f.id);
+    } catch (err) {
+      if (ctx.now().getTime() - Date.parse(f.createdAt) > FOLLOW_UP_DAYS * 86_400_000) {
+        out.push(say(false, `No stop set for ${f.symbol}: its buy couldn't be read for ${FOLLOW_UP_DAYS} days.`, String(err)));
+        done.add(f.id);
+      } else {
+        keep.push(f);
+      }
+    }
+  }
+  // Re-read before saving: a buy applied meanwhile may have added one.
+  const latest = loadOrdersState(ctx.stateFile);
+  const kept = new Map(keep.map((f) => [f.id, f]));
+  const followUps = (latest.followUps ?? []).filter((f) => !done.has(f.id)).map((f) => kept.get(f.id) ?? f);
+  saveOrdersState(ctx.stateFile, { ...latest, followUps });
+  return out;
+}
+
+async function applyFollowUp(
+  ctx: OrderContext,
+  f: StopFollowUp,
+  accountId: string,
+  store: HoldingsStore,
+  filled: number
+): Promise<{ ok: boolean; message: string; detail: string; next: StopFollowUp | null }> {
+  const account = await readAccount(ctx, f.account, accountId, store);
+  const last = held(account, f.symbol)?.lastPrice ?? (await ctx.quote(f.symbol));
+  if (last !== null && f.stopPrice >= last) {
+    return { ok: false, message: `No stop set for ${f.symbol}: the price is at or under the stop now, so it would sell at once. Set one by hand.`, detail: `stop ${f.stopPrice}, last ${last}`, next: null };
+  }
+  // The stop to change: the one this follow-up placed, else the one it was asked to move, if that is still open.
+  const target = [f.stopClientOrderId, f.replaceClientOrderId].find((id) => id !== null && account.open.some((o) => o.clientOrderId === id)) ?? null;
+  const free = sellable(account, f.symbol, target ?? undefined);
+  // Whole position: every whole share not in another sell. Otherwise the bought shares.
+  const quantity = f.replaceClientOrderId !== null ? free : Math.min(filled, free);
+  if (quantity < 1) {
+    return { ok: false, message: `No stop set for ${f.symbol}: no whole shares are free of other sell orders.`, detail: `filled ${filled}, free ${free}`, next: null };
+  }
+  const next = { ...f, covered: filled };
+  if (target !== null) {
+    const change: OrderChange = { client_order_id: target, quantity: String(quantity), stop_price: px(f.stopPrice) };
+    await ctx.client.replaceOrder(account.id, change);
+    const moved = target === f.replaceClientOrderId;
+    return { ok: true, message: moved ? `Moved the ${f.symbol} stop to cover the whole position.` : `Grew the ${f.symbol} stop with the buy's fills.`, detail: `replaced ${target}: ${JSON.stringify(change)}`, next };
+  }
+  const order = newOrder(clientOrderId(f.id, "stop"), f.symbol, "SELL", "STOP_LOSS", quantity, { stop: f.stopPrice }, "GTC", "CORE");
+  const { placed, already } = await placeOnce(ctx, account, [order]);
+  const gone = f.replaceClientOrderId !== null ? ` The stop it was to move is gone, so this one covers the whole position.` : "";
+  return { ok: true, message: `Placed a stop order for ${f.symbol}.${gone}`, detail: sentText([order], placed, already), next: { ...next, stopClientOrderId: order.client_order_id } };
 }
 
 async function waitForFill(ctx: OrderContext, account: Account, clientOrderIdValue: string): Promise<boolean> {

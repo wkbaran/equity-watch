@@ -299,11 +299,11 @@ symbol, the last price as the limit, and the account. The ticket shows:
 
 - size, typed as shares or dollars, converted to whole shares;
 - the cost, and the account's cash + BIL left after it;
-- a suggested starting stop at 2 ATR under the price, with a tick box to attach
-  it to the buy. Webull takes a buy with an attached stop-loss as one combo order
-  (the SDK's samples show one; verify for US stocks). An attached stop leaves no
-  gap between the fill and the stop. Without combo support, the watcher places
-  the stop as soon as the buy fills.
+- a suggested starting stop at 2 ATR under the price, with a tick box to set it
+  once the buy fills. Since 2026-10-26 the stop is never a combo leg: the watcher
+  places it as its own order after the fill (or moves the one existing stop over
+  the whole position), so nothing depends on Webull's unverified combo support.
+  The gap between a fill and its stop is at most one 30-second pass.
 
 **Preview.** The browser never talks to Webull, so it can't call Webull's
 preview endpoint. The machine previews each order just before placing it, and an
@@ -426,9 +426,10 @@ Added with the order path, still to check on the first real orders:
 11. **Place, replace and cancel take the documented bodies** (`new_orders`,
     `modify_orders`, `client_order_id`), and a repeated `client_order_id` is
     refused. Order Detail finds an order by the client id it was placed with.
-12. **A buy with a stop as `MASTER` + `STOP_LOSS` legs** under a
-    `client_combo_order_id` is accepted for a stock (the docs' example), with the
-    stop leg GTC while the buy is DAY.
+12. ~~A buy with a stop as `MASTER` + `STOP_LOSS` legs~~ is no longer sent
+    (2026-10-26): the stop follows the fill as a separate order. Still to check:
+    that Replace Order can raise a stop's quantity, which "apply it to the whole
+    position" relies on.
 13. **Orders placed in the Webull app carry no `client_order_id`.** If so, they
     can't be changed or cancelled from equity-watch (the page says so); if they do
     carry one, they can.

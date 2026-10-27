@@ -5,8 +5,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { HoldingsStore } from "../src/holdings/models.js";
 import { saveHoldingsStore } from "../src/holdings/store.js";
 import { parseOp, type Op } from "../src/ops/apply.js";
-import { ordersConfig, type OrdersConfig } from "../src/orders/config.js";
-import { applyOrderOp, clientOrderId, inRegularSession, type OrderClient, type OrderContext } from "../src/orders/execute.js";
+import { loadOrdersState, ordersConfig, type OrdersConfig } from "../src/orders/config.js";
+import { applyOrderOp, clientOrderId, inRegularSession, settleFollowUps, type OrderClient, type OrderContext } from "../src/orders/execute.js";
 import { base32Decode, base32Encode, stepOf, totpAt, verifyTotp } from "../src/orders/totp.js";
 import { handleMessage, type WatchContext } from "../src/orders/watch.js";
 import type { NewOrder, OrderChange, WebullBalance, WebullOrder, WebullPosition } from "../src/providers/webull.js";
@@ -90,6 +90,8 @@ interface Fake extends OrderClient {
   replaced: OrderChange[];
   cancelled: string[];
   /** Status orderDetail reports for a client id, in order of calls; absent: unknown order. */
+  /** Shares orderDetail reports filled for a client id; absent: none. */
+  filled: Map<string, number>;
   detail: Map<string, string[]>;
 }
 
@@ -99,6 +101,7 @@ function fakeClient(state: { positions: WebullPosition[]; cash: number; open?: W
     replaced: [],
     cancelled: [],
     detail: new Map(),
+    filled: new Map(),
     positions: () => Promise.resolve(state.positions),
     balance: () => Promise.resolve({ cash: state.cash, settledCash: state.cash, unsettledCash: 0, buyingPower: null, marketValue: 0, netLiquidation: 0 } satisfies WebullBalance),
     openOrders: () => Promise.resolve(state.open ?? []),
@@ -107,7 +110,7 @@ function fakeClient(state: { positions: WebullPosition[]; cash: number; open?: W
       if (statuses === undefined || statuses.length === 0) return Promise.reject(new Error("not found"));
       const status = statuses.length > 1 ? statuses.shift()! : statuses[0];
       if (status === "NONE") return Promise.reject(new Error("not found"));
-      return Promise.resolve([{ ...working(id, "X", "SELL", "LIMIT", 1), status }]);
+      return Promise.resolve([{ ...working(id, "X", "SELL", "LIMIT", 1), status, filledQuantity: fake.filled.get(id) ?? 0 }]);
     },
     previewOrder: (_a, o) => Promise.resolve({ estimatedCost: state.previewCost ?? Number(o.quantity) * Number(o.limit_price), estimatedFee: 0 }),
     placeOrders: async (_a, orders, combo) => {
@@ -312,15 +315,98 @@ describe("Move to BIL", () => {
 describe("buying", () => {
   const buy = (params: Record<string, unknown>, code?: string, account = "margin") => op("order.buy", { account, symbol: "NEW" }, { quantity: 10, limitPrice: 50, ...params }, undefined, code);
 
-  it("buys with cash, and attaches a GTC stop as one combo", async () => {
-    const client = fakeClient({ positions: [], cash: 1000 });
-    const r = await applyOrderOp(buy({ stopPrice: 46 }), context(client));
-    expect(r.ok).toBe(true);
+  it("buys alone, and places the stop as its own order once the buy fills", async () => {
+    const positions: WebullPosition[] = [];
+    const client = fakeClient({ positions, cash: 1000 });
+    const ctx = context(client);
+    const o = buy({ stopPrice: 46 });
+    const r = await applyOrderOp(o, ctx);
+    expect(r).toMatchObject({ ok: true, message: "Placed a buy order for NEW; its stop goes on once it fills." });
     expect(client.placed).toHaveLength(1);
-    const [main, stop] = client.placed[0].orders;
-    expect(main).toMatchObject({ side: "BUY", order_type: "LIMIT", combo_type: "MASTER", quantity: "10", limit_price: "50.00" });
-    expect(stop).toMatchObject({ side: "SELL", order_type: "STOP_LOSS", combo_type: "STOP_LOSS", stop_price: "46.00", time_in_force: "GTC" });
-    expect(client.placed[0].combo).toMatch(/^ew/);
+    expect(client.placed[0].orders).toMatchObject([{ side: "BUY", order_type: "LIMIT", combo_type: "NORMAL", quantity: "10", limit_price: "50.00" }]);
+    expect(client.placed[0].combo).toBeUndefined();
+
+    // Not filled yet: nothing to do, and it keeps waiting.
+    const buyId = clientOrderId(o.id, "buy");
+    client.detail.set(buyId, ["SUBMITTED"]);
+    expect(await settleFollowUps(ctx)).toEqual([]);
+    expect(loadOrdersState(ctx.stateFile).followUps).toHaveLength(1);
+
+    positions.push(position("NEW", 10, 50));
+    client.detail.set(buyId, ["FILLED"]);
+    client.filled.set(buyId, 10);
+    expect(await settleFollowUps(ctx)).toMatchObject([{ ok: true, symbol: "NEW", message: "Placed a stop order for NEW." }]);
+    expect(client.placed[1].orders).toMatchObject([{ client_order_id: clientOrderId(o.id, "stop"), side: "SELL", order_type: "STOP_LOSS", quantity: "10", stop_price: "46.00", time_in_force: "GTC" }]);
+    expect(loadOrdersState(ctx.stateFile).followUps).toEqual([]);
+  });
+
+  it("grows its stop as a buy fills in parts", async () => {
+    const positions: WebullPosition[] = [];
+    const open: WebullOrder[] = [];
+    const client = fakeClient({ positions, cash: 1000, open });
+    const ctx = context(client);
+    const o = buy({ stopPrice: 46 });
+    await applyOrderOp(o, ctx);
+    const buyId = clientOrderId(o.id, "buy");
+    positions.push(position("NEW", 4, 50));
+    client.detail.set(buyId, ["PARTIAL_FILLED"]);
+    client.filled.set(buyId, 4);
+    await settleFollowUps(ctx);
+    expect(client.placed[1].orders[0]).toMatchObject({ quantity: "4" });
+
+    const stopId = clientOrderId(o.id, "stop");
+    open.push(working(stopId, "NEW", "SELL", "STOP_LOSS", 4, { stop: 46 }));
+    positions[0] = position("NEW", 10, 50);
+    client.detail.set(buyId, ["FILLED"]);
+    client.filled.set(buyId, 10);
+    expect(await settleFollowUps(ctx)).toMatchObject([{ ok: true, message: "Grew the NEW stop with the buy's fills." }]);
+    expect(client.replaced).toEqual([{ client_order_id: stopId, quantity: "10", stop_price: "46.00" }]);
+    expect(loadOrdersState(ctx.stateFile).followUps).toEqual([]);
+  });
+
+  it("applied to the whole position, moves the one existing stop over every whole share once the buy fills", async () => {
+    const positions = [position("NEW", 5.4, 48)];
+    const old = working("ewold", "NEW", "SELL", "STOP_LOSS", 5, { stop: 44 });
+    const client = fakeClient({ positions, cash: 1000, open: [old] });
+    const ctx = context(client);
+    const o = buy({ stopPrice: 46, stopWhole: true });
+    expect(await applyOrderOp(o, ctx)).toMatchObject({ ok: true, message: "Placed a buy order for NEW; its NEW stop moves to cover the whole position once it fills." });
+    expect(client.placed).toHaveLength(1);
+
+    const buyId = clientOrderId(o.id, "buy");
+    positions[0] = position("NEW", 15.4, 49);
+    client.detail.set(buyId, ["FILLED"]);
+    client.filled.set(buyId, 10);
+    expect(await settleFollowUps(ctx)).toMatchObject([{ ok: true, message: "Moved the NEW stop to cover the whole position." }]);
+    // 15.4 held: the stop covers the 15 whole shares, never the fraction.
+    expect(client.replaced).toEqual([{ client_order_id: "ewold", quantity: "15", stop_price: "46.00" }]);
+    expect(client.placed).toHaveLength(1);
+  });
+
+  it("refuses to apply the stop to the whole position without exactly one stop to move", async () => {
+    const two = fakeClient({ positions: [position("NEW", 5, 48)], cash: 1000, open: [working("ewa", "NEW", "SELL", "STOP_LOSS", 2, { stop: 44 }), working("ewb", "NEW", "SELL", "STOP_LOSS", 3, { stop: 43 })] });
+    expect(await applyOrderOp(buy({ stopPrice: 46, stopWhole: true }), context(two))).toMatchObject({ ok: false, message: expect.stringContaining("exactly one NEW stop") });
+    expect(two.placed).toEqual([]);
+  });
+
+  it("sets no stop when the buy ends unfilled, or when the price is already under the stop", async () => {
+    const positions: WebullPosition[] = [];
+    const client = fakeClient({ positions, cash: 1000 });
+    const ctx = context(client);
+    const o = buy({ stopPrice: 46 });
+    await applyOrderOp(o, ctx);
+    client.detail.set(clientOrderId(o.id, "buy"), ["CANCELLED"]);
+    expect(await settleFollowUps(ctx)).toMatchObject([{ ok: true, message: "The NEW buy ended without filling, so no stop was set." }]);
+    expect(loadOrdersState(ctx.stateFile).followUps).toEqual([]);
+
+    const o2 = buy({ stopPrice: 46 }, totpAt(SECRET, stepOf(NOW) + 1));
+    await applyOrderOp(o2, ctx);
+    positions.push(position("NEW", 10, 45.5));
+    client.detail.set(clientOrderId(o2.id, "buy"), ["FILLED"]);
+    client.filled.set(clientOrderId(o2.id, "buy"), 10);
+    expect(await settleFollowUps(ctx)).toMatchObject([{ ok: false, message: expect.stringContaining("at or under the stop") }]);
+    expect(client.placed).toHaveLength(2);
+    expect(loadOrdersState(ctx.stateFile).followUps).toEqual([]);
   });
 
   it("never borrows: refuses past cash + BIL, and without Fund from BIL when cash is short", async () => {

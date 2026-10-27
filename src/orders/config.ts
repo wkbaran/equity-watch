@@ -51,11 +51,32 @@ export function ordersConfig(env: NodeJS.ProcessEnv = process.env): OrdersConfig
   };
 }
 
-/** What the watcher remembers between orders: spent authenticator steps, and today's count. */
+/**
+ * A stop to set once a buy fills (`settleFollowUps` in execute.ts). A sell stop
+ * can't be placed for shares not held yet, so a buy's stop waits here.
+ */
+export interface StopFollowUp {
+  /** The buy op's id; the stop's client order id derives from it. */
+  id: string;
+  account: string;
+  symbol: string;
+  buyClientOrderId: string;
+  stopPrice: number;
+  /** The one existing stop to move to `stopPrice` and grow over every whole share; null places a stop for the bought shares. */
+  replaceClientOrderId: string | null;
+  /** The stop this follow-up placed itself, once it has. */
+  stopClientOrderId: string | null;
+  /** Whole shares of the buy already put under the stop. */
+  covered: number;
+  createdAt: string;
+}
+
+/** What the watcher remembers between orders: spent authenticator steps, today's count, and stops waiting on a fill. */
 export interface OrdersState {
   usedTotpSteps: number[];
   day: string;
   sentToday: number;
+  followUps?: StopFollowUp[];
 }
 
 export const DEFAULT_ORDERS_STATE_FILE = "orders-state.json";

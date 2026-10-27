@@ -1747,7 +1747,7 @@
           );
         },
       },
-      field(`Stop ${money(s.stopPrice)} on ${s.count}`, price),
+      field(`${w.account} stop ${money(s.stopPrice)} on ${s.count}`, price),
       field("Code", code),
       h("button", { type: "submit", text: "Move" }),
       h("button", {
@@ -1877,7 +1877,7 @@
    * What it shows (cost, cash + BIL after) is the page's estimate; the watcher
    * previews the real cost with Webull before sending.
    */
-  function openTicket(symbol, side, { price = null, account = null } = {}) {
+  function openTicket(symbol, side, { price = null, account = null, shares: presetShares = null, stop: presetStop = null } = {}) {
     const accounts = orderAccounts();
     if (accounts.length === 0) return notice("No Webull account takes orders from here.", false);
     if (ticket === null) {
@@ -1891,7 +1891,7 @@
     acct.value = account && choices.includes(account) ? account : choices[0];
     const row = holdingFor(symbol);
     const last = price ?? row?.price ?? null;
-    const shares = numberInput(side === "SELL" ? sellable(acct.value) : null, { step: "1", placeholder: "shares" });
+    const shares = numberInput(side === "SELL" ? sellable(acct.value) : presetShares, { step: "1", placeholder: "shares" });
     const limit = numberInput(last !== null ? last.toFixed(2) : null, { placeholder: "limit" });
     const tif = h("select", {}, h("option", { value: "DAY", text: "Day" }), h("option", { value: "GTC", text: "Good till canceled" }));
     const session = h("select", {}, h("option", { value: "CORE", text: "Regular hours" }), h("option", { value: "ALL", text: "Including extended" }));
@@ -1899,7 +1899,20 @@
     const attach = h("input", { type: "checkbox" });
     const trail = row ? trailFor(row) : null;
     const atrStop = row?.atr > 0 && last !== null ? last - STOP_ATR_MULTIPLE * row.atr : trail?.suggested ?? null;
-    const stop = numberInput(atrStop !== null && atrStop > 0 ? atrStop.toFixed(2) : null, { placeholder: "stop" });
+    const stop = numberInput(presetStop ?? (atrStop !== null && atrStop > 0 ? atrStop.toFixed(2) : null), { placeholder: "stop" });
+    if (presetStop !== null) attach.checked = true;
+    // "Apply it to the whole position": offered when the account has exactly one
+    // Webull stop on the symbol that can be changed from here. Once the buy fills,
+    // that stop moves to the new price and covers every whole share held.
+    const whole = h("input", { type: "checkbox" });
+    const wholeText = h("span");
+    const wholeLabel = h("label", { class: "check", hidden: true }, whole, wholeText);
+    const refreshWhole = () => {
+      const stops = (vaultData?.stops ?? []).filter((s) => s.symbol === symbol && s.webull?.account === acct.value && s.webull.clientOrderId && s.webull.orderType !== "TRAILING_STOP_LOSS");
+      wholeLabel.hidden = side !== "BUY" || stops.length !== 1;
+      if (wholeLabel.hidden) whole.checked = false;
+      else wholeText.textContent = ` Apply it to the whole position (moves the ${money(stops[0].stopPrice)} stop on ${stops[0].count} to cover every whole share)`;
+    };
     const code = codeInput();
     const estimate = h("p", { class: "note", "aria-live": "polite" });
     const error = h("span", { class: "form-error" });
@@ -1923,6 +1936,7 @@
     for (const el of [shares, limit, acct]) el.addEventListener("input", update);
     acct.addEventListener("change", () => {
       if (side === "SELL") shares.value = String(sellable(acct.value));
+      refreshWhole();
       update();
     });
     const form = h(
@@ -1942,12 +1956,14 @@
               const sp = positive(stop.value);
               if (sp === null || sp >= p) return (error.textContent = "The stop must be above 0 and under the limit.");
               params.stopPrice = sp;
+              if (whole.checked) params.stopWhole = true;
             }
           }
           const verb = side === "BUY" ? "buy" : "sell";
+          const stopNote = params.stopPrice ? `, then ${params.stopWhole ? "move the stop" : "a stop"} to ${params.stopPrice}${params.stopWhole ? " for the whole position" : ""}` : "";
           const queued = await submitOrder({ type: side === "BUY" ? "order.buy" : "order.sell", target: { account: acct.value, symbol }, params }, code, {
             symbol,
-            summary: `${verb} ${n} ${symbol} @ ${p} (${acct.value}${params.stopPrice ? `, stop ${params.stopPrice}` : ""}${params.fundFromBil ? ", funded from BIL" : ""})`,
+            summary: `${verb} ${n} ${symbol} @ ${p} (${acct.value}${stopNote}${params.fundFromBil ? ", funded from BIL" : ""})`,
           });
           if (queued) ticket.close();
         },
@@ -1959,8 +1975,9 @@
       field("Time in force", tif),
       field("Session", session),
       side === "BUY" ? h("label", { class: "check" }, fund, " Fund from BIL (sells the shortfall first; never borrows)") : null,
-      side === "BUY" ? h("label", { class: "check" }, attach, " Attach a GTC stop at ") : null,
+      side === "BUY" ? h("label", { class: "check" }, attach, " Once it fills, set a GTC stop at ") : null,
       side === "BUY" ? stop : null,
+      wholeLabel,
       estimate,
       field("Authenticator code", code),
       h(
@@ -1972,6 +1989,7 @@
       error
     );
     ticket.replaceChildren(form);
+    refreshWhole();
     update();
     ticket.showModal();
     shares.focus();
@@ -2261,6 +2279,17 @@
     const stopCovered = numberInput(null, { placeholder: "all" });
     const error = h("span", { class: "form-error" });
     const button = h("button", { type: "submit", text: "Add lot" });
+    const buyAtWebull = h("button", {
+      type: "button",
+      text: "Buy at Webull",
+      title: "Send a real buy instead of recording one: opens the order ticket with these values.",
+      onclick: () => {
+        const sym = symbol.value.trim().toUpperCase();
+        if (!sym) return (error.textContent = "Enter a symbol.");
+        const acct = account.value.trim();
+        openTicket(sym, "BUY", { price: positive(basis.value), account: acct || null, shares: positive(shares.value), stop: positive(stopPrice.value) });
+      },
+    });
     lotAddFields = { symbol, account, shares };
     lotAddFormEl = h(
       "form",
@@ -2314,6 +2343,7 @@
       field("Stop price", stopPrice),
       field("Stop shares covered", stopCovered),
       button,
+      ordersOn() ? buyAtWebull : null,
       error,
       h("datalist", { id: "account-options" }),
       h("div", {
@@ -2499,7 +2529,7 @@
       tag: h("span", {
         class: "tag webull",
         title: `Webull ${kind} order in ${w.account}, ${w.timeInForce ?? "?"}${w.placedAt ? `, placed ${w.placedAt.slice(0, 10)}` : ""}`,
-        text: `${money(s.stopPrice)} on ${s.count === null ? "all" : s.count} · Webull`,
+        text: `${money(s.stopPrice)} on ${s.count === null ? "all" : s.count} · Webull ${w.account}`,
       }),
       form: webullStopForm(s),
     };
