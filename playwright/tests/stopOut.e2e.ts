@@ -14,15 +14,45 @@ test.afterEach(async ({ request }) => {
   await request.get("/__reset");
 });
 
-const row = (page: import("@playwright/test").Page) => page.locator("#queue .queue-row", { hasText: "Stopped out of MSFT" });
+const row = (page: import("@playwright/test").Page) => page.locator("#stopouts .queue-row", { hasText: "Stopped out of MSFT" });
 
-test("a stop-out leads the queue and the strip, with no price on the public page", async ({ page }) => {
+test("a stop-out has its own section above the queue, and none without one", async ({ page, request }) => {
   await page.goto("/#/queue");
-  await expect(page.locator("#queue .queue-row").first()).toContainText("Stopped out of MSFT");
+  await expect(page.locator("#stopouts-section")).toBeVisible();
+  await expect(page.locator("#stopouts-count")).toHaveText("1");
+  await expect(row(page)).toBeVisible();
+  await expect(page.locator("#queue .queue-row", { hasText: "Stopped out" })).toHaveCount(0);
+  const above = await page.evaluate(
+    () => document.getElementById("stopouts-section")!.compareDocumentPosition(document.getElementById("queue")!) & Node.DOCUMENT_POSITION_FOLLOWING
+  );
+  expect(above).toBeTruthy();
+
+  await request.get("/__stopout?on=false");
+  await page.reload();
+  await expect(page.locator("#queue .queue-row").first()).toBeVisible();
+  await expect(page.locator("#stopouts-section")).toBeHidden();
+});
+
+test("the overview's button leads to them, and is gone when there are none", async ({ page, request }) => {
+  await page.goto("/");
+  const button = page.locator("#stopouts-button");
+  await expect(button).toHaveText("1 stop to review");
+  await button.click();
+  await expect(page).toHaveURL(/#\/queue$/);
+  await expect(row(page)).toBeVisible();
+
+  await request.get("/__stopout?on=false");
+  await page.goto("/");
+  await expect(page.locator("#tiles .tile").first()).toBeVisible();
+  await expect(button).toBeHidden();
+});
+
+test("a stop-out row and the strip carry no price on the public page", async ({ page }) => {
+  await page.goto("/#/queue");
   await expect(row(page).locator(".tag.reason.stopped")).toHaveText("stopped out");
   await expect(row(page)).toContainText("Update or remove its alerts");
   await expect(row(page)).not.toContainText("401");
-  await expect(page.locator("#tape li").first()).toContainText("stopped");
+  await expect(page.locator("#tape li", { hasText: "MSFT" }).first()).toContainText("stopped");
 
   const dashboard = await (await page.request.get("/dashboard.json")).text();
   expect(dashboard).not.toContain("401.25");

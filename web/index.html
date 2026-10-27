@@ -241,6 +241,11 @@
   .tag.reason.reminder { color: var(--ink); background: var(--wash); }
   .tag.reason.drift { color: var(--sub); background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
   .tag.reason.stopped { color: var(--ground); background: var(--ink); }
+  .stopouts-button:not([hidden]) {
+    display: inline-block; margin-bottom: 1rem; padding: 0.55rem 1rem; border-radius: var(--radius-s);
+    color: var(--on-signal); background: var(--signal); font-weight: 600; text-decoration: none;
+  }
+  .stopouts-button:hover { filter: brightness(1.1); }
   .dismiss-control { display: inline-flex; gap: 4px; align-items: center; }
   .dismiss-wait { font: inherit; font-size: 0.8rem; }
   /* Primed: price is there, volume isn't yet. Half-lit, so it reads as armed rather than fired. */
@@ -746,6 +751,7 @@
   <div id="auth-banner" hidden></div>
 
   <section id="view-overview">
+    <a id="stopouts-button" class="stopouts-button" href="#/queue" hidden></a>
     <section id="tiles" class="tiles"></section>
 
     <div id="spreads-section" hidden>
@@ -769,6 +775,11 @@
   </section>
 
   <section id="view-queue" hidden>
+    <div id="stopouts-section" hidden>
+      <div class="section-header"><h2 class="section-title">Stopped out</h2><span id="stopouts-count" class="section-count"></span></div>
+      <p class="note">Their alerts were set while you held them. Update or remove each, or dismiss it if it still stands.</p>
+      <div id="stopouts" class="card"></div>
+    </div>
     <div class="section-header"><h2 class="section-title">Revisit queue</h2><span id="queue-count" class="section-count"></span></div>
     <div id="queue" class="card"></div>
   </section>

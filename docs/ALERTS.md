@@ -416,6 +416,9 @@ regular-session prices only:
   dismissal of it doesn't come back. The published row carries no price, since a
   sale price with its time would give the stop away. Unlocked, the row and its
   drawer show the shares, price, stop and result from the vault (`stopSales`).
+  On the page they sit in their own "Stopped out" section above the rest of the
+  Revisit queue, and the overview shows a "N stops to review" button while there
+  are any.
   `alert revisit stop-outs --since <date>` queues stop sales recorded before this
   existed, or ones that never got queued.
 - **Fires.** A fire is **new** for `accelerationDays` trading days (default 2), and new

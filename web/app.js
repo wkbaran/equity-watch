@@ -3302,80 +3302,99 @@
     $("tape").replaceChildren(...cells);
   }
 
-  function renderQueue(rows) {
+  /**
+   * Stop-outs get their own section above the queue (the user's call,
+   * 2026-10-27): they ask for a different decision, about the alerts of a
+   * position that is gone, and ranked among the fires they sank under a
+   * busy day's accelerating ones. Same rows, same buttons, just grouped.
+   */
+  function renderQueue(allRows) {
+    const stopped = allRows.filter((r) => r.reason === "stopped");
+    const rows = allRows.filter((r) => r.reason !== "stopped");
+    $("stopouts-section").hidden = stopped.length === 0;
+    $("stopouts-count").textContent = stopped.length === 0 ? "" : String(stopped.length);
+    $("stopouts").replaceChildren(...stopped.map(queueRow));
     // With --limit the document carries only the top rows, so say when more
     // are open than shown rather than undercount them.
-    const open = current?.summary.openRevisits ?? rows.length;
+    const open = (current?.summary.openRevisits ?? allRows.length) - stopped.length;
     $("queue-count").textContent = rows.length === 0 ? "" : rows.length < open ? `${rows.length} of ${open}` : String(rows.length);
     if (rows.length === 0) {
       $("queue").replaceChildren(h("div", { class: "empty", text: "Nothing waiting on a decision." }));
       return;
     }
-    $("queue").replaceChildren(
-      ...rows.map((r) => {
-        const focused = r.id === focusedRevisit;
-        const row = h(
+    $("queue").replaceChildren(...rows.map(queueRow));
+  }
+
+  /** The overview's way in to the stop-outs section, shown only while there are some. */
+  function renderStopOutsButton(rows) {
+    const n = rows.filter((r) => r.reason === "stopped").length;
+    const button = $("stopouts-button");
+    button.hidden = n === 0;
+    button.textContent = n === 1 ? "1 stop to review" : `${n} stops to review`;
+  }
+
+  function queueRow(r) {
+    const focused = r.id === focusedRevisit;
+    const row = h(
+      "div",
+      { class: focused ? "queue-row focused" : "queue-row", id: `queue-${r.id}` },
+      h("div", { class: `priority${r.priority === null ? " none" : ""}`, text: r.priority === null ? "–" : r.priority.toFixed(0) }),
+      h(
+        "div",
+        {},
+        h(
           "div",
-          { class: focused ? "queue-row focused" : "queue-row", id: `queue-${r.id}` },
-          h("div", { class: `priority${r.priority === null ? " none" : ""}`, text: r.priority === null ? "–" : r.priority.toFixed(0) }),
-          h(
-            "div",
-            {},
-            h(
-              "div",
-              { class: "headline" },
-              symbolLink(r.symbol, r.chartUrl),
-              " ",
-              h("a", { class: "plain", href: triggerHash(r.id), text: bareHeadline(r) }),
-              reasonTag(r),
-              heldTag(r),
-              reversedTag(r),
-              // A queued edit from the details panel closes this entry, but not
-              // until the next check runs; say so rather than leave the row
-              // looking like nothing happened.
-              pendingTag(r.alertId),
-              dismissPending(r.id) ? h("span", { class: "tag pending", text: "dismiss pending" }) : null,
-              relevelPending(r.id) ? h("span", { class: "tag pending", text: "suggestion pending" }) : null
-            ),
-            h(
-              "div",
-              { class: "sub" },
-              r.reason === "stopped"
-                ? `Recorded ${when(r.triggeredAt)}, alert at ${r.levelAtTrigger ?? "–"}`
-                : r.reason === "drift"
-                ? `Noticed at ${money(r.triggerPrice)}, against ${r.levelAtTrigger ?? "–"} · ${when(r.triggeredAt)}`
-                : `Fired ${r.direction ? `${SIDE_OF[r.direction]} ` : ""}${r.levelAtTrigger ?? "–"} @ ${money(r.triggerPrice)} · ${when(r.triggeredAt)}`,
-              r.session && r.session !== "regular" && SESSION_LABEL[r.session] ? ` · ${SESSION_LABEL[r.session]}` : "",
-              r.action ? `. ${r.action}` : ""
-            ),
-            r.reversal ? h("div", { class: "sub reversal-note", text: `Reversed: ${reversalText(r)}` }) : null,
-            // What has changed since this fire joined the queue. Read straight
-            // off the document: the builder writes the sentence, the page only
-            // decides it goes here (src/narrative.ts's rule).
-            ...(r.updates ?? []).map((text) => h("div", { class: "sub update-note", text })),
-            r.sinceTrigger ? h("div", { class: "sub", text: r.sinceTrigger }) : null,
-            stopSaleNote(r.saleId),
-            positionNote(r.symbol),
-            r.sinceWatching ? h("div", { class: "sub", text: r.sinceWatching }) : null,
-            suggestionNote(r),
-            r.why ? h("div", { class: "why", text: r.why }) : null,
-            h(
-              "div",
-              { class: "actions" },
-              h("a", { href: triggerHash(r.id), text: "Details" }),
-              h("a", { href: r.chartUrl, target: CHART_TARGET, text: "Chart" }),
-              ...revisitActions(r, r.alertCondition)
-            )
-          )
-        );
-        if (focused && scrollToRevisit) {
-          scrollToRevisit = false;
-          // After this batch is in the document, not while it is still detached.
-          requestAnimationFrame(() => row.scrollIntoView({ block: "center" }));
-        }
-        return row;
-      })
+          { class: "headline" },
+          symbolLink(r.symbol, r.chartUrl),
+          " ",
+          h("a", { class: "plain", href: triggerHash(r.id), text: bareHeadline(r) }),
+          reasonTag(r),
+          heldTag(r),
+          reversedTag(r),
+          // A queued edit from the details panel closes this entry, but not
+          // until the next check runs; say so rather than leave the row
+          // looking like nothing happened.
+          pendingTag(r.alertId),
+          dismissPending(r.id) ? h("span", { class: "tag pending", text: "dismiss pending" }) : null,
+          relevelPending(r.id) ? h("span", { class: "tag pending", text: "suggestion pending" }) : null
+        ),
+        h(
+          "div",
+          { class: "sub" },
+          r.reason === "stopped"
+            ? `Recorded ${when(r.triggeredAt)}, alert at ${r.levelAtTrigger ?? "–"}`
+            : r.reason === "drift"
+            ? `Noticed at ${money(r.triggerPrice)}, against ${r.levelAtTrigger ?? "–"} · ${when(r.triggeredAt)}`
+            : `Fired ${r.direction ? `${SIDE_OF[r.direction]} ` : ""}${r.levelAtTrigger ?? "–"} @ ${money(r.triggerPrice)} · ${when(r.triggeredAt)}`,
+          r.session && r.session !== "regular" && SESSION_LABEL[r.session] ? ` · ${SESSION_LABEL[r.session]}` : "",
+          r.action ? `. ${r.action}` : ""
+        ),
+        r.reversal ? h("div", { class: "sub reversal-note", text: `Reversed: ${reversalText(r)}` }) : null,
+        // What has changed since this fire joined the queue. Read straight
+        // off the document: the builder writes the sentence, the page only
+        // decides it goes here (src/narrative.ts's rule).
+        ...(r.updates ?? []).map((text) => h("div", { class: "sub update-note", text })),
+        r.sinceTrigger ? h("div", { class: "sub", text: r.sinceTrigger }) : null,
+        stopSaleNote(r.saleId),
+        positionNote(r.symbol),
+        r.sinceWatching ? h("div", { class: "sub", text: r.sinceWatching }) : null,
+        suggestionNote(r),
+        r.why ? h("div", { class: "why", text: r.why }) : null,
+        h(
+          "div",
+          { class: "actions" },
+          h("a", { href: triggerHash(r.id), text: "Details" }),
+          h("a", { href: r.chartUrl, target: CHART_TARGET, text: "Chart" }),
+          ...revisitActions(r, r.alertCondition)
+        )
+      )
     );
+    if (focused && scrollToRevisit) {
+      scrollToRevisit = false;
+      // After this batch is in the document, not while it is still detached.
+      requestAnimationFrame(() => row.scrollIntoView({ block: "center" }));
+    }
+    return row;
   }
 
   /**
@@ -4200,6 +4219,7 @@
     renderTiles(d.summary, holdingRows() !== null);
     renderStrip(d);
     renderQueue(d.revisitQueue);
+    renderStopOutsButton(d.revisitQueue);
     renderSpreadStops(d.spreadStops);
     renderTriggers(d.recentTriggers ?? [], d.summary.windowDays);
     renderApproaching(d.approaching ?? [], d.approachingTotal ?? 0);
