@@ -132,7 +132,7 @@ describe("syncChanges", () => {
     expect(flags).toEqual([]);
     expect(changes).toEqual([
       { type: "buy", lot: { count: 3, basisPerShare: 11, purchaseDate: "2026-10-21", orderId: "B1" } },
-      { type: "sell", count: 5, price: 13, soldOn: "2026-10-22", orderId: "S1", stopHit: true },
+      { type: "sell", count: 5, price: 13, soldOn: "2026-10-22", orderId: "S1", stopHit: true, stopPrice: null, placedAt: null },
     ]);
   });
 
@@ -195,7 +195,7 @@ describe("planWebullSync", () => {
     const plan = planWebullSync(store, [snapshot("roth", [], [sell("S1", "AAA", 10, 45, "2026-10-21T15:00:00.000Z", "STOP_LOSS")])], OPTIONS);
     const h = plan.accounts[0].holdings[0];
     expect(h).toMatchObject({ kind: "notAtWebull", source: "webull", flags: [] });
-    expect(h.kind === "notAtWebull" && h.changes).toEqual([{ type: "sell", count: 10, price: 45, soldOn: "2026-10-21", orderId: "S1", stopHit: true }]);
+    expect(h.kind === "notAtWebull" && h.changes).toEqual([{ type: "sell", count: 10, price: 45, soldOn: "2026-10-21", orderId: "S1", stopHit: true, stopPrice: null, placedAt: null }]);
   });
 
   it("adds cash equivalents to cash, and lists lots with no account label", () => {
@@ -323,6 +323,14 @@ describe("applySyncPlan", () => {
     expect(store.sales?.[0].stopHit?.stops.map((s) => s.stopPrice)).toEqual([40]);
   });
 
+  it("keeps the stop that filled when the record had already dropped it", () => {
+    // The fill reached the sync runs late, after the stop mirror removed the vanished order (2026-10-27).
+    const store = { ...webullStore(), stops: [] };
+    const filled = { ...sell("S1", "AAA", 10, 39.9, "2026-10-22T15:00:00.000Z", "STOP_LOSS"), stopPrice: 39.95, placedAt: "2026-10-15T15:00:00.000Z" };
+    applySyncPlan(store, planWebullSync(store, [snapshot("roth", [], [filled])], OPTIONS), NOW);
+    expect(store.sales?.[0].stopHit?.stops).toEqual([{ stopPrice: 39.95, count: 10, createdAt: "2026-10-15T15:00:00.000Z" }]);
+  });
+
   it("leaves unmatched and manual holdings alone, but records them in the state", () => {
     const store: HoldingsStore = { lots: [lot("MAN", 3, 7, "roth")], stops: [], alertState: [] };
     const snaps = [snapshot("roth", [position("MAN", 3, 7), position("NEW", 2, 30)])];
@@ -354,6 +362,16 @@ describe("order cache", () => {
     expect(second.orders).toHaveLength(1);
     expect(second.orders[0]).toMatchObject({ status: "FILLED", filledQuantity: 5 });
     expect(second.readFrom).toBe("2018-05-21T00:00:00.000Z");
+  });
+
+  it("reaches back to the oldest order still working, so a GTC stop that fills late is re-read", async () => {
+    const { mergeOrders, nextReadStart } = await import("../src/holdings/webullOrders.js");
+    const stop = order({ orderId: "S", symbol: "VYX", side: "SELL", status: "SUBMITTED", orderType: "STOP_LOSS", placedAt: "2026-10-20T20:22:01.582Z" });
+    const cancelled = order({ orderId: "C", symbol: "VYX", side: "SELL", status: "CANCELLED", orderType: "STOP_LOSS", placedAt: "2026-10-16T15:05:45.568Z" });
+    const cache = mergeOrders(null, [stop, cancelled], "2018-05-21T00:00:00.000Z", "2026-10-27T00:00:00.000Z");
+    expect(nextReadStart(cache)).toBe("2026-10-20T20:22:01.582Z");
+    const filled = mergeOrders(cache, [{ ...stop, status: "FILLED", filledQuantity: 50, filledPrice: 7.79 }], "2026-10-20T20:22:01.582Z", "2026-10-28T00:00:00.000Z");
+    expect(nextReadStart(filled)).toBe("2026-10-25T00:00:00.000Z");
   });
 });
 

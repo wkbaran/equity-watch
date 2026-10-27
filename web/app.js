@@ -298,7 +298,7 @@
 
   // Why a queue row sits where it does (src/alerts/queueRules.ts), in a word.
   // An older fire still waiting gets none: that is the ordinary case.
-  const REASON_TAG = { accelerating: "accelerating", new: "new", reminder: "kept going", drift: "drifted" };
+  const REASON_TAG = { stopped: "stopped out", accelerating: "accelerating", new: "new", reminder: "kept going", drift: "drifted" };
   const reasonTag = (t) => (REASON_TAG[t.reason] ? h("span", { class: `tag reason ${t.reason}`, title: t.why ?? "", text: REASON_TAG[t.reason] }) : null);
 
   const triggerHash = (id) => `#/trigger/${encodeURIComponent(id)}`;
@@ -3242,6 +3242,24 @@
     return h("div", { class: "sub position-note", text: parts.join(" · ") });
   }
 
+  /**
+   * A stop-out row's sale, from the vault: the published row carries no price,
+   * since with its time it would give the stop away. Absent on the public page.
+   */
+  function stopSaleText(saleId) {
+    const s = saleId ? vaultData?.stopSales?.[saleId] : null;
+    if (!s) return null;
+    const result = s.resultPct === null ? null : `${s.resultPct >= 0 ? "up" : "down"} ${Math.abs(s.resultPct).toFixed(1)}% on cost`;
+    return [`Sold ${s.count} @ ${money(s.price)} on ${s.soldOn}`, s.stopPrices.length ? `stop ${s.stopPrices.map(money).join(", ")}` : null, result]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  function stopSaleNote(saleId) {
+    const text = stopSaleText(saleId);
+    return text ? h("div", { class: "sub position-note", text }) : null;
+  }
+
   const STRIP_GLYPH = { up: "▲", down: "▼" };
 
   /**
@@ -3266,11 +3284,14 @@
             href: queueHash(r.id),
             target: QUEUE_TARGET,
             title: `Show ${r.symbol} in the Revisit queue`,
-            "aria-label": `${r.symbol} fired ${r.direction === "down" ? "below" : "above"} ${r.levelAtTrigger ?? ""}${r.reversal ? ", reversed" : ""}`,
+            "aria-label":
+              r.reason === "stopped"
+                ? `${r.symbol} stopped out`
+                : `${r.symbol} fired ${r.direction === "down" ? "below" : "above"} ${r.levelAtTrigger ?? ""}${r.reversal ? ", reversed" : ""}`,
           },
           h("span", { class: "t-sym", text: r.symbol }),
           r.heldPosition ? h("span", { class: "t-held", title: "Held" }) : null,
-          h("span", { class: "t-lvl", text: `${STRIP_GLYPH[r.direction] ?? "◆"} ${r.levelAtTrigger ?? "–"}` }),
+          h("span", { class: "t-lvl", text: r.reason === "stopped" ? "stopped" : `${STRIP_GLYPH[r.direction] ?? "◆"} ${r.levelAtTrigger ?? "–"}` }),
           r.priority !== null ? h("span", { class: "t-mark", text: r.priority.toFixed(0) }) : null,
           // Reversed fires are most of a real queue, so a glyph, not a word.
           r.reversal ? h("span", { class: "t-mark", title: "Reversed", text: "↩" }) : null
@@ -3319,7 +3340,9 @@
             h(
               "div",
               { class: "sub" },
-              r.reason === "drift"
+              r.reason === "stopped"
+                ? `Recorded ${when(r.triggeredAt)}, alert at ${r.levelAtTrigger ?? "–"}`
+                : r.reason === "drift"
                 ? `Noticed at ${money(r.triggerPrice)}, against ${r.levelAtTrigger ?? "–"} · ${when(r.triggeredAt)}`
                 : `Fired ${r.direction ? `${SIDE_OF[r.direction]} ` : ""}${r.levelAtTrigger ?? "–"} @ ${money(r.triggerPrice)} · ${when(r.triggeredAt)}`,
               r.session && r.session !== "regular" && SESSION_LABEL[r.session] ? ` · ${SESSION_LABEL[r.session]}` : "",
@@ -3331,6 +3354,7 @@
             // decides it goes here (src/narrative.ts's rule).
             ...(r.updates ?? []).map((text) => h("div", { class: "sub update-note", text })),
             r.sinceTrigger ? h("div", { class: "sub", text: r.sinceTrigger }) : null,
+            stopSaleNote(r.saleId),
             positionNote(r.symbol),
             r.sinceWatching ? h("div", { class: "sub", text: r.sinceWatching }) : null,
             suggestionNote(r),
@@ -3475,7 +3499,7 @@
           symbol: r.symbol,
           alertId: r.alertId,
           revisitId: r.id,
-          summary: `${r.symbol}: dismiss the ${when(r.triggeredAt)} ${r.reason === "drift" ? "drift" : "fire"}${r.levelAtTrigger === null ? "" : ` at ${r.levelAtTrigger}`} from the queue for ${span}`,
+          summary: `${r.symbol}: dismiss the ${when(r.triggeredAt)} ${r.reason === "drift" ? "drift" : r.reason === "stopped" ? "stop-out" : "fire"}${r.levelAtTrigger === null ? "" : ` at ${r.levelAtTrigger}`} from the queue for ${span}`,
         }
       );
     });
@@ -4574,9 +4598,14 @@
       rows.push(kv("Condition", muted(t.alertExists ? "Not recorded." : "Not recorded, and the alert has since been removed.")));
     }
 
-    rows.push(kv("Price at trigger", money(t.triggerPrice)));
+    if (t.reason === "stopped") {
+      const sale = stopSaleText(t.saleId);
+      if (sale) rows.push(kv("Sale", sale));
+    } else {
+      rows.push(kv("Price at trigger", money(t.triggerPrice)));
+    }
     if (t.levelAtTrigger !== null) {
-      const vs = t.levelAtTrigger ? muted(` (price ${pct(((t.triggerPrice - t.levelAtTrigger) / t.levelAtTrigger) * 100)})`) : "";
+      const vs = t.levelAtTrigger && t.triggerPrice !== null ? muted(` (price ${pct(((t.triggerPrice - t.levelAtTrigger) / t.levelAtTrigger) * 100)})`) : "";
       rows.push(kv(t.ma ? "Average at trigger" : "Level at trigger", money(t.levelAtTrigger), vs));
     }
     if (t.direction) {

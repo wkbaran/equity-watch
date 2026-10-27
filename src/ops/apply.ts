@@ -24,6 +24,8 @@ import { applyRevisitLevel, closeRevisitsForSymbol, editClosure, loadRevisits, s
 import { loadAlerts, saveAlerts } from "../alerts/store.js";
 import type { Alert } from "../alerts/models.js";
 import { applyHoldingsOp, applyCoverOp } from "./holdings.js";
+import { queueStopOuts } from "../alerts/stopOuts.js";
+import { loadHoldingsStore } from "../holdings/store.js";
 import { ORDER_OP_TYPES } from "./orderTypes.js";
 import { applyWebullHoldingOp } from "./webullHoldings.js";
 import {
@@ -258,13 +260,21 @@ async function applyByType(op: Op, ctx: ApplyContext): Promise<Outcome> {
       // Lots, positions and stops. A change to any of them is a decision
       // about the symbol, so its open fires stop asking. The message is
       // public and holdings messages carry no digits, so no entry ids.
+      const startedAt = new Date().toISOString();
       const outcome = applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
       if (!outcome.ok || outcome.symbol === null) {
         return outcome;
       }
       // The switch narrows op.type to the lot, position and stop changes.
       const closed = closeSymbolRevisits(ctx, outcome.symbol, { change: op.type });
-      return closed.length === 0 ? outcome : { ...outcome, message: `${outcome.message} Its open revisits were closed.` };
+      // After the close, so a sale marked as a stop is what is left asking (stopOuts.ts).
+      const symbol = outcome.symbol;
+      const sales = (loadHoldingsStore(ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE).sales ?? []).filter(
+        (s) => s.symbol === symbol && s.recordedAt >= startedAt
+      );
+      const queued = queueStopOuts(ctx.revisitsFile ?? DEFAULT_REVISITS_FILE, loadAlerts(ctx.alertsFile), sales);
+      const message = `${outcome.message}${closed.length === 0 ? "" : " Its open revisits were closed."}${queued.length === 0 ? "" : " It is in the revisit queue, to look at its alerts."}`;
+      return { ...outcome, message };
     }
   }
 }

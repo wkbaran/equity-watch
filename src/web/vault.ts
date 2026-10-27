@@ -21,11 +21,22 @@ import type { Dashboard, HoldingRow } from "../dashboard.js";
 import type { TickerStory } from "../narrative.js";
 import type { Holding, HoldingsStore, Lot, Stop, WebullState } from "../holdings/models.js";
 import type { SpreadStopsStore } from "../spreads/spreadStops.js";
+import { round } from "../round.js";
 
 export const VAULT_FILE = "vault.json";
 
 const KEY_CONTEXT = "equity-watch/holdings-vault/v1 ";
 const TAG_BYTES = 16;
+
+export interface StopSale {
+  symbol: string;
+  count: number;
+  price: number;
+  soldOn: string;
+  /** The stops the symbol had, highest first; usually one. */
+  stopPrices: number[];
+  resultPct: number | null;
+}
 
 export interface VaultContents {
   /** The dashboard's position rows, with live prices. */
@@ -51,6 +62,12 @@ export interface VaultContents {
    * booking map, which the page has no use for. Absent before the Webull sync.
    */
   holdingSources?: Pick<Holding, "account" | "symbol" | "source" | "ignored">[];
+  /**
+   * Every sale marked as a stop, by sale id, for a stop-out queue row's
+   * numbers (RevisitRow.saleId). The row itself publishes none. `resultPct` is
+   * against what the shares cost. Absent before 2026-10-27.
+   */
+  stopSales?: Record<string, StopSale>;
   /** The last Webull read: cash per account, unmatched and linkable positions, flags. Absent until the first sync. */
   webull?: WebullState;
   /**
@@ -100,9 +117,32 @@ export function vaultContents(
     ...(store.holdings !== undefined && store.holdings.length > 0
       ? { holdingSources: store.holdings.map(({ account, symbol, source, ignored }) => ({ account, symbol, source, ...(ignored ? { ignored } : {}) })) }
       : {}),
+    ...(stopSalesOf(store) ?? {}),
     ...(store.webull !== undefined ? { webull: webullForPage(store.webull) } : {}),
     ...(orders !== undefined ? { orders } : {}),
   };
+}
+
+function stopSalesOf(store: HoldingsStore): { stopSales: Record<string, StopSale> } | null {
+  const sales = (store.sales ?? []).filter((s) => s.stopHit !== undefined);
+  if (sales.length === 0) return null;
+  const entries = sales.map((s): [string, StopSale] => {
+    const cost = s.lots.reduce((n, l) => n + l.count * l.basisPerShare, 0);
+    const shares = s.lots.reduce((n, l) => n + l.count, 0);
+    const basis = shares > 0 ? cost / shares : 0;
+    return [
+      s.id,
+      {
+        symbol: s.symbol,
+        count: s.count,
+        price: s.price,
+        soldOn: s.soldOn,
+        stopPrices: [...new Set(s.stopHit!.stops.map((t) => t.stopPrice))].sort((a, b) => b - a),
+        resultPct: basis > 0 ? round(((s.price - basis) / basis) * 100, 1) : null,
+      },
+    ];
+  });
+  return { stopSales: Object.fromEntries(entries) };
 }
 
 /** The state minus each entry's booking map: the page never needs order ids it can't act on. */

@@ -149,6 +149,12 @@ export function triggerHeadline(entry: RevisitEntry, ctx: NarrativeContext): str
   const held = ctx.heldSymbols.has(entry.symbol.toUpperCase());
   const subject = held ? `Holding ${entry.symbol}` : entry.symbol;
 
+  // Raised by a stop sale (stopOuts.ts). No price: with the time it would
+  // give the stop away, and this line is published.
+  if (entry.reason === "stopped") {
+    return held ? `A stop sold part of ${entry.symbol}` : `Stopped out of ${entry.symbol}`;
+  }
+
   if (entry.kind === "volume") {
     return `${subject} traded unusual volume`;
   }
@@ -317,6 +323,9 @@ export function triggerAction(entry: RevisitEntry, currentLevel: number | null =
   }
   if (entry.reason === "drift") {
     return "Relevel it nearer the price, the other way, or replace it with a trailing alert.";
+  }
+  if (entry.reason === "stopped") {
+    return "Update or remove its alerts, or dismiss this if they still stand.";
   }
   if (entry.suggestedLevel === null) {
     return entry.levelAtTrigger === null ? null : `Level ${entry.levelAtTrigger} still stands.`;

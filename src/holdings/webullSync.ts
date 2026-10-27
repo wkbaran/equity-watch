@@ -82,13 +82,17 @@ export interface Fill {
   date: string;
   /** Sold by a stop, as far as the order type says. */
   stop: boolean;
+  /** The order's stop price; null for anything but a stop, and for a trailing stop Webull reports none for. */
+  stopPrice: number | null;
+  /** When the order was placed, which for a stop is when that stop was set. */
+  placedAt: string | null;
   /** The order is still working, so more of it may fill later. */
   working: boolean;
 }
 
 export type SyncChange =
   | { type: "buy"; lot: PlannedLot & { orderId: string } }
-  | { type: "sell"; count: number; price: number; soldOn: string; orderId: string; stopHit: boolean };
+  | { type: "sell"; count: number; price: number; soldOn: string; orderId: string; stopHit: boolean; stopPrice: number | null; placedAt: string | null };
 
 interface Side {
   count: number;
@@ -158,6 +162,8 @@ export function fillsOf(orders: WebullOrder[]): Fill[] {
       at,
       date: marketDate(new Date(at)),
       stop: STOP_ORDER_TYPES.has(o.orderType),
+      stopPrice: STOP_ORDER_TYPES.has(o.orderType) ? o.stopPrice : null,
+      placedAt: o.placedAt,
       working: o.status === "PARTIAL_FILLED" || o.status === "SUBMITTED" || o.status === "PENDING",
     });
   }
@@ -255,7 +261,7 @@ function changesFrom(fills: Fill[]): SyncChange[] {
   return fills.map((f): SyncChange =>
     f.side === "BUY"
       ? { type: "buy", lot: { count: f.quantity, basisPerShare: f.price, purchaseDate: f.date, orderId: f.orderId } }
-      : { type: "sell", count: f.quantity, price: f.price, soldOn: f.date, orderId: f.orderId, stopHit: f.stop }
+      : { type: "sell", count: f.quantity, price: f.price, soldOn: f.date, orderId: f.orderId, stopHit: f.stop, stopPrice: f.stopPrice, placedAt: f.placedAt }
   );
 }
 
@@ -569,6 +575,15 @@ function holdingRecord(store: HoldingsStore, account: string, symbol: string): H
 }
 
 /**
+ * The stop order a sale filled, as a stop record. The record's own stops are
+ * the mirror of the last run's open orders, so a sale that arrives a run or
+ * more after its fill finds the stop already dropped from them (2026-10-27).
+ */
+function filledStop(change: Extract<SyncChange, { type: "sell" }>, now: Date): { stopPrice: number; count: number | null; createdAt: string } | undefined {
+  return change.stopPrice === null ? undefined : { stopPrice: change.stopPrice, count: change.count, createdAt: change.placedAt ?? now.toISOString() };
+}
+
+/**
  * Writes a plan into `store` in place: each webull holding's buys as lots and
  * sales through the same code the dashboard's Sell uses, every order booked on
  * its holding, and the read itself as `store.webull`. Unmatched and link
@@ -610,7 +625,7 @@ export function applySyncPlan(store: HoldingsStore, plan: SyncPlan, now: Date): 
         }
         const sold = sellFromStore(
           trial,
-          { symbol: h.symbol, count: change.count, price: change.price, soldOn: change.soldOn, account: account.label, orderId: change.orderId, ...(change.stopHit ? { stopHit: { atr: null } } : {}) },
+          { symbol: h.symbol, count: change.count, price: change.price, soldOn: change.soldOn, account: account.label, orderId: change.orderId, ...(change.stopHit ? { stopHit: { atr: null, filled: filledStop(change, now) } } : {}) },
           now
         );
         if (!sold.ok) {

@@ -12,6 +12,7 @@ import { applyOp, parseOp, type OpResult } from "../src/ops/apply.js";
 import type { StaticAlert } from "../src/alerts/models.js";
 import { newRevisitEntry } from "../src/alerts/revisit.js";
 import { loadRevisits, saveRevisits } from "../src/alerts/revisitStore.js";
+import { saveAlerts } from "../src/alerts/store.js";
 import { parseLotEdit, parseLotInput, parseSaleParams, parseStopInput } from "../src/ops/validate.js";
 import type { Quote } from "../src/providers/schwab.js";
 import { NO_OPS, siteDocument, siteFingerprint, writeSite } from "../src/web/site.js";
@@ -438,6 +439,35 @@ describe("holdings ops", () => {
     const r = await apply({ type: "position.remove", target: { symbol: "MSFT" }, expect: { lotIds: ["lotmsft1"] } });
     expect(r.ok).toBe(true);
     expect(loadRevisits(revisitsFile)[0].status).toBe("applied");
+  });
+
+  it("a sale marked as a stop queues the symbol's alert after closing its other revisits, and publishes no price", async () => {
+    saveAlerts(join(dir, "alerts.json"), [aaplAlert]);
+    const base = newRevisitEntry(aaplAlert, 160, "2026-09-14T15:00:00.000Z", "regular");
+    saveRevisits(revisitsFile, [{ ...base, id: "rv000001" }]);
+    const lotIds = ["lotaapl1", "lotaapl2"];
+    const r = await apply({ type: "position.remove", target: { symbol: "AAPL" }, expect: { lotIds, shares: 15 }, params: { price: 139.5, stopHit: true } });
+    expect(r).toMatchObject({ ok: true });
+    expect(r.message).toContain("It is in the revisit queue");
+    expect(r.message).not.toMatch(/\d/);
+    const [closed, stopped] = loadRevisits(revisitsFile);
+    expect(closed.status).toBe("applied");
+    const sale = loadHoldingsStore(holdingsFile).sales![0];
+    expect(stopped).toMatchObject({ status: "open", reason: "stopped", alertId: aaplAlert.id, stopped: { saleId: sale.id } });
+
+    const s = loadHoldingsStore(holdingsFile);
+    const d = buildDashboard({ alerts: [aaplAlert], revisits: loadRevisits(revisitsFile), holdings: s, quotes: new Map(), now: new Date() });
+    const row = d.revisitQueue[0];
+    expect(row).toMatchObject({ reason: "stopped", triggerPrice: null, saleId: sale.id, sinceTrigger: null, headline: "Stopped out of AAPL" });
+    expect(JSON.stringify(siteDocument(d, { holdings: false }))).not.toContain("139.5");
+    expect(vaultContents(d, s).stopSales?.[sale.id]).toEqual({
+      symbol: "AAPL",
+      count: 15,
+      price: 139.5,
+      soldOn: sale.soldOn,
+      stopPrices: [140],
+      resultPct: -11.0,
+    });
   });
 
   // opResults are published in the public dashboard.json.

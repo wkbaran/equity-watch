@@ -89,7 +89,7 @@ export interface RevisitRow extends CrossingDetails {
   symbol: string;
   /** The queue rules' rank (queueRules.ts). Always set since 2026-10-23. */
   priority: number | null;
-  /** Which kind of row: a new or accelerating fire, a reminder, a drift, or an older fire waiting. */
+  /** Which kind of row: a stop-out, a new or accelerating fire, a reminder, a drift, or an older fire waiting. */
   reason: QueueRank["reason"];
   /** Plain-English one-liner: "TGT crossed above 110 on volume and held". */
   headline: string;
@@ -100,7 +100,10 @@ export interface RevisitRow extends CrossingDetails {
   session: Session | null;
   verdict: string | null;
   triggeredAt: string;
-  triggerPrice: number;
+  /** Null on a stop-out: the sale price, with the time, would publish the stop. */
+  triggerPrice: number | null;
+  /** On a stop-out, the sale; the unlocked page reads its numbers from the vault's `stopSales`. */
+  saleId: string | null;
   levelAtTrigger: number | null;
   suggestedLevel: number | null;
   suggestionBasis: string | null;
@@ -153,7 +156,10 @@ export interface TriggerRow extends CrossingDetails {
   kind: Alert["kind"];
   headline: string;
   triggeredAt: string;
-  triggerPrice: number;
+  /** See RevisitRow.triggerPrice. */
+  triggerPrice: number | null;
+  /** See RevisitRow.saleId. */
+  saleId: string | null;
   levelAtTrigger: number | null;
   session: Session | null;
   status: RevisitEntry["status"];
@@ -471,6 +477,11 @@ function revisitUpdates(e: RevisitEntry, alert: Alert | undefined, reversal: Rev
  * held?". Distinct from `sinceWatching`, which measures from when the symbol
  * was first watched, often months earlier.
  */
+/** An entry's price as a published row may carry it: none for a stop-out, whose price is the sale's. */
+function publicPrice(e: RevisitEntry): number | null {
+  return e.stopped ? null : e.triggerPrice;
+}
+
 function sinceTriggerNote(triggerPrice: number, price: number | null): string | null {
   if (price === null || !(triggerPrice > 0)) {
     return null;
@@ -548,13 +559,14 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       sinceWatching: sinceWatchingNote(
         e.watchingSince ?? null,
         e.priceAtWatchStart ?? null,
-        quotes.get(e.symbol)?.lastPrice ?? e.triggerPrice,
+        quotes.get(e.symbol)?.lastPrice ?? publicPrice(e),
         e.watchingSinceApprox ?? false
       ),
       session: e.session ?? null,
       verdict: e.signals?.verdict ?? null,
       triggeredAt: e.triggeredAt,
-      triggerPrice: e.triggerPrice,
+      triggerPrice: publicPrice(e),
+      saleId: e.stopped?.saleId ?? null,
       levelAtTrigger: e.levelAtTrigger,
       suggestedLevel: e.suggestedLevel,
       suggestionBasis: e.suggestionBasis,
@@ -563,7 +575,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
       heldPosition: heldSymbols.has(e.symbol.toUpperCase()),
       alertCondition: alert === undefined ? null : describeAlertCondition(alert),
       updates: revisitUpdates(e, alert, crossing.reversal),
-      sinceTrigger: sinceTriggerNote(e.triggerPrice, quotes.get(e.symbol)?.lastPrice ?? null),
+      sinceTrigger: e.stopped ? null : sinceTriggerNote(e.triggerPrice, quotes.get(e.symbol)?.lastPrice ?? null),
       chartUrl: chartUrl(e.symbol),
       ...crossing,
       };
@@ -708,7 +720,8 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
         kind: e.kind,
         headline: triggerHeadline(e, narrativeCtx),
         triggeredAt: e.triggeredAt,
-        triggerPrice: e.triggerPrice,
+        triggerPrice: publicPrice(e),
+        saleId: e.stopped?.saleId ?? null,
         levelAtTrigger: e.levelAtTrigger,
         session: e.session ?? null,
         status: e.status,
@@ -735,7 +748,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
         sinceWatching: sinceWatchingNote(
           e.watchingSince ?? null,
           e.priceAtWatchStart ?? null,
-          quotes.get(e.symbol)?.lastPrice ?? e.triggerPrice,
+          quotes.get(e.symbol)?.lastPrice ?? publicPrice(e),
           e.watchingSinceApprox ?? false
         ),
         ma: e.ma ?? null,
@@ -841,7 +854,11 @@ export function renderDashboard(d: Dashboard): string {
     const pri = r.priority === null ? "  -  " : r.priority.toFixed(1).padStart(5);
     // Narrative first: the number is the sort key, the sentence is the point.
     lines.push(`${pri}  ${r.headline}`);
-    lines.push(`         fired ${r.levelAtTrigger ?? "-"} @ ${r.triggerPrice}${r.action ? `. ${r.action}` : ""}`);
+    lines.push(
+      r.reason === "stopped"
+        ? `         stopped out${r.action ? `. ${r.action}` : ""}`
+        : `         fired ${r.levelAtTrigger ?? "-"} @ ${r.triggerPrice}${r.action ? `. ${r.action}` : ""}`
+    );
     if (r.suggestedLevel !== null) {
       lines.push(`         'alert revisit apply ${r.id}'`);
     }

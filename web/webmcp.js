@@ -449,7 +449,7 @@
       name: "list_revisit_queue",
       group: "read",
       description:
-        "What is waiting for a decision, highest priority first. Each row has a reason: a new or accelerating fire (ran fast past its level), a reminder (dismissed, then kept going in the alert's direction), a drift (no fire for weeks because price went the other way; relevel or replace the alert), or an older fire still waiting. `why` says what put it there. Each also has the alert's current condition, a suggested new level when one has been proposed, and any change already queued against it. Use the ids with the revisit tools.",
+        "What is waiting for a decision, highest priority first. Each row has a reason: stopped (a stop sold some or all of the position, so the symbol's alerts, set while it was held, want a look; it has no trigger price, and acting on any of the symbol's alerts closes it), a new or accelerating fire (ran fast past its level), a reminder (dismissed, then kept going in the alert's direction), a drift (no fire for weeks because price went the other way; relevel or replace the alert), or an older fire still waiting. `why` says what put it there. Each also has the alert's current condition, a suggested new level when one has been proposed, and any change already queued against it. Use the ids with the revisit tools.",
       inputSchema: object({}),
       async run(api) {
         const d = await loadedDashboard(api);
@@ -707,7 +707,7 @@
           alertId: r.alertId,
           revisitId: r.id,
           summary:
-            `${r.symbol}: dismiss the ${shortDate(r.triggeredAt)} ${r.reason === "drift" ? "drift" : "fire"}${r.levelAtTrigger === null ? "" : ` at ${r.levelAtTrigger}`} from the queue` +
+            `${r.symbol}: dismiss the ${shortDate(r.triggeredAt)} ${r.reason === "drift" ? "drift" : r.reason === "stopped" ? "stop-out" : "fire"}${r.levelAtTrigger === null ? "" : ` at ${r.levelAtTrigger}`} from the queue` +
             (args.days === undefined ? "" : ` for ${args.days} days`),
         });
       },

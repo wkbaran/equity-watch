@@ -44,6 +44,7 @@ import {
   saveRevisits,
 } from "./alerts/revisitStore.js";
 import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.js";
+import { queueStopOuts, stopOutEntries } from "./alerts/stopOuts.js";
 import { addLot, addStop, checkHoldings } from "./holdings/engine.js";
 import { coverCandidates, coverLevel } from "./holdings/cover.js";
 import { computeBasis, heldSymbolsOf } from "./holdings/models.js";
@@ -1325,6 +1326,27 @@ interface RevisitRulesOpts extends AlertCommonOpts {
  * hint but the session's own last trade is still a real price: a weekend
  * review, or a first run after a change to the rules.
  */
+interface RevisitStopOutsOpts extends AlertCommonOpts {
+  since: string;
+  holdingsFile: string;
+  dryRun?: boolean;
+}
+
+function cmdRevisitStopOuts(opts: RevisitStopOutsOpts): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.since)) {
+    console.error(`Bad --since "${opts.since}": expected YYYY-MM-DD.`);
+    process.exit(1);
+  }
+  const sales = (loadHoldingsStore(opts.holdingsFile).sales ?? []).filter((s) => s.soldOn >= opts.since);
+  const alerts = loadAlerts(opts.alertsFile);
+  const created = opts.dryRun ? stopOutEntries(loadRevisits(opts.revisitsFile), alerts, sales) : queueStopOuts(opts.revisitsFile, alerts, sales);
+  for (const e of created) {
+    console.log(`  ${e.symbol}: ${opts.dryRun ? "would queue" : "queued"} its stop-out against ${describeAlertCondition(alerts.find((a) => a.id === e.alertId)!)}${opts.dryRun ? "" : ` (revisit ${e.id})`}.`);
+  }
+  const stopSales = sales.filter((s) => s.stopHit !== undefined).length;
+  console.log(`${created.length} of ${stopSales} stop sale(s) since ${opts.since} ${opts.dryRun ? "would be queued" : "queued"}; the rest are queued already or have no live alert.`);
+}
+
 async function cmdRevisitRules(opts: RevisitRulesOpts): Promise<void> {
   const now = new Date();
   const alerts = loadAlerts(opts.alertsFile);
@@ -1423,7 +1445,9 @@ function cmdRevisitList(opts: RevisitListOpts): void {
     const fired =
       e.reason === "drift"
         ? `drifted from ${level} (${e.drift?.pct ?? "?"}% the wrong side)`
-        : direction === null
+        : e.reason === "stopped"
+          ? `stopped out, alert at ${level}, sold`
+          : direction === null
           ? `fired ${level}`
           : `fired ${direction} through ${level}`;
     console.log(`${pri}  ${e.id}  ${e.symbol.padEnd(6)} ${e.kind.padEnd(8)} ${fired} @ ${e.triggerPrice} on ${e.triggeredAt.slice(0, 10)}`);
@@ -2172,6 +2196,8 @@ async function cmdWebullAccounts(opts: WebullOpts): Promise<void> {
 
 interface HoldingsSyncOpts extends WebullOpts {
   holdingsFile: string;
+  alertsFile: string;
+  revisitsFile: string;
   config: string;
   orderCacheDir: string;
   historyFrom?: string;
@@ -2276,6 +2302,15 @@ async function cmdHoldingsSync(opts: HoldingsSyncOpts): Promise<void> {
   }
   for (const c of result.cashChanges) {
     console.log(`  ! ${describeCashStatus(c.label, c.to, c.cash, cashName)}`);
+  }
+  const soldBy = new Set(result.applied.flatMap((a) => (a.change.type === "sell" ? [a.change.orderId] : [])));
+  const stopOuts = queueStopOuts(
+    opts.revisitsFile,
+    loadAlerts(opts.alertsFile),
+    (store.sales ?? []).filter((s) => s.orderId !== undefined && soldBy.has(s.orderId))
+  );
+  for (const e of stopOuts) {
+    console.log(`  ${e.symbol}: stopped out; queued to look at its alerts (revisit ${e.id}).`);
   }
   const unmatched = store.webull?.accounts.reduce((n, a) => n + a.unmatched.filter((u) => !u.ignored).length, 0) ?? 0;
   const flagged = store.webull?.accounts.reduce((n, a) => n + a.flags.length, 0) ?? 0;
@@ -2995,6 +3030,13 @@ function buildProgram(): Command {
     .option(...configOption())
     .action((opts: RevisitRulesOpts) => cmdRevisitRules(opts));
 
+  withAlertCommon(revisitCmd.command("stop-outs"))
+    .description("Queue the stop sales recorded on or after a date that aren't queued yet (holdings sync and the page's Sell queue new ones)")
+    .requiredOption("--since <YYYY-MM-DD>", "Sales sold on or after this date")
+    .option(...HOLDINGS_FILE_OPTION)
+    .option("--dry-run", "Print what would be queued")
+    .action((opts: RevisitStopOutsOpts) => cmdRevisitStopOuts(opts));
+
   withAlertCommon(revisitCmd.command("dismiss <id>"))
     .description("Close the entry without touching the alert. It may come back if price keeps going (see --days)")
     .option("--days <n>", "Trading days before it may come back, 1-90 (default from the config, 7)", (v) => parseInt(v, 10))
@@ -3123,6 +3165,8 @@ function buildProgram(): Command {
     .option("--history-from <YYYY-MM-DD>", "On a first or full read, start here (default: all of Webull's history, from 2018-05-21)")
     .option("--full-history", "Read the whole order history again instead of the days since the last run")
     .option("--dry-run", "Print the plan without changing holdings.json (the order-history cache is still kept)")
+    .option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json")
+    .option("--revisits-file <path>", "Path to the revisit-queue JSON store; a stop sale is queued there", "revisits.json")
     .action((opts: HoldingsSyncOpts) => cmdHoldingsSync(opts));
 
   withHoldingsChange(holdingsCmd.command("add-lot"))

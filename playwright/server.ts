@@ -25,6 +25,9 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { RevisitEntry } from "../src/alerts/revisit.js";
+import { stopOutEntries } from "../src/alerts/stopOuts.js";
+import type { HoldingsStore, Sale } from "../src/holdings/models.js";
 import { buildDashboard } from "../src/dashboard.js";
 import { OP_TYPES, type OpResult } from "../src/ops/apply.js";
 import type { Quote } from "../src/providers/schwab.js";
@@ -58,6 +61,8 @@ const DEFAULT_CADENCE = { minutesAgo: 6, interval: 15 as number | null, nextInMi
 let cadence = { ...DEFAULT_CADENCE };
 /** Set by /__auth: what the publisher read out of the auth marker. */
 let authExpiredSince: string | null = null;
+/** Set by /__stopout: MSFT's position sold by its stop, queued like the sync queues one (stopOuts.ts). */
+let stopOut = false;
 
 function resultFor(op: QueuedOp): OpResult {
   const appliedAt = new Date().toISOString();
@@ -79,12 +84,30 @@ function resultFor(op: QueuedOp): OpResult {
   return { id: op.id, type: op.type, symbol, alertId: null, ok: true, message: `Applied to ${symbol}.`, appliedAt };
 }
 
+/** The fixture stores, with MSFT bought and stopped out of when /__stopout is on. */
+function stores(): { revisits: RevisitEntry[]; holdings: HoldingsStore } {
+  if (!stopOut) return { revisits: FIXTURE_REVISITS, holdings: HOLDINGS };
+  const sale: Sale = {
+    id: "sale0001",
+    symbol: "MSFT",
+    count: 4,
+    price: 401.25,
+    soldOn: "2026-10-27",
+    recordedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+    lots: [{ lotId: "lot00009", count: 4, basisPerShare: 410, purchaseDate: "2026-10-01", emptied: true }],
+    stopHit: { atr: null, stops: [{ stopPrice: 401.5, count: 4, createdAt: "2026-10-02T15:00:00.000Z" }] },
+  };
+  const holdings = { ...HOLDINGS, sales: [...(HOLDINGS.sales ?? []), sale] };
+  return { revisits: [...FIXTURE_REVISITS, ...stopOutEntries(FIXTURE_REVISITS, FIXTURE_ALERTS, [sale])], holdings };
+}
+
 function documents() {
+  const { revisits, holdings } = stores();
   const quotes = new Map<string, Quote>(Object.entries(PRICES).map(([symbol, lastPrice]) => [symbol, { lastPrice, totalVolume: 0 }]));
   const dashboard = buildDashboard({
     alerts: FIXTURE_ALERTS,
-    revisits: FIXTURE_REVISITS,
-    holdings: HOLDINGS,
+    revisits,
+    holdings,
     quotes,
     now: new Date(),
     // The site build turns this on, so the fixture must too, or the page's
@@ -113,7 +136,7 @@ function documents() {
       maxStaleMinutes: cadence.maxStale,
     }),
     "alerts.json": { generatedAt: dashboard.generatedAt, alerts: buildAlertRows(FIXTURE_ALERTS, quotes, new Set(), new Map(), heldSymbols) },
-    "vault.json": sealVault(vaultContents(dashboard, HOLDINGS, FIXTURE_SPREAD_STOPS), OPS_TOKEN),
+    "vault.json": sealVault(vaultContents(dashboard, holdings, FIXTURE_SPREAD_STOPS), OPS_TOKEN),
   };
 }
 
@@ -169,8 +192,13 @@ createServer(async (req, res) => {
     authExpiredSince = min === null ? null : new Date(Date.now() - Number(min) * 60_000).toISOString();
     return send(200, { authExpiredSince });
   }
+  if (path === "__stopout") {
+    stopOut = url.searchParams.get("on") !== "false";
+    return send(200, { stopOut });
+  }
   if (path === "__reset") {
     authExpiredSince = null;
+    stopOut = false;
     ops = [];
     watcherQuotes = [];
     released = false;

@@ -1366,6 +1366,13 @@ has confirmed yet.
 - **Orders are booked by id with their share count (`Holding.booked`), not by a
   time cutoff.** Webull's history can lag, so an order can appear dated before
   the last run. `linkedAt` only excludes fills that predate Adopt or Link.
+- **Order history is selected by placement time, not by last change.** The
+  incremental read (`nextReadStart` in `src/holdings/webullOrders.ts`) goes back
+  3 days, which never re-reads a GTC stop placed earlier that fills today: it sat
+  `SUBMITTED` in the cache, and on 2026-10-27 nine stopped-out positions were
+  flagged "no fills to explain it" instead of recorded as sales. The read now
+  reaches back to the oldest cached order still working. `--full-history` is the
+  manual repair.
 - **`applySyncPlan` applies each holding's changes on a copy** and keeps them
   only if every one succeeds, so a sale the store refuses leaves that holding
   untouched and becomes a flag. It uses `sellFromStore`, the in-memory core of
@@ -1766,6 +1773,15 @@ tied and the queue was oldest-first. Things that look simplifiable and aren't:
   `regular.regularMarketLastPrice`), so it can run outside the session. Don't make
   `alert check` use it instead of the session gate without asking: the user chose
   market hours for the scheduled run.
+- **A stop-out is a third non-fire, `reason: "stopped"`** (2026-10-27,
+  `src/alerts/stopOuts.ts`). `isFire` already excludes it, but code that tests
+  `!isFire(e)` to mean "a drift" doesn't: the queue rules skip stopped entries
+  outright, and the drift dedupe tests `reason === "drift"`. **Its `triggerPrice`
+  is the sale price and must never publish**: `publicPrice` in `dashboard.ts`
+  nulls it on both row types and `sinceTrigger` is null, because a fill price with
+  its time gives the stop away. The unlocked page reads the numbers from the
+  vault's `stopSales` by `saleId`. The MCP queue tool deliberately shows none
+  (holdings stay behind `holdingsShared`).
 - **`recentTriggers` caps only closed entries.** Every open one must be there: each
   queue row's drawer looks itself up in that list (a 120-fire day pushed IBM's open
   entry past a flat cap of 100, and its drawer said "Trigger not found").

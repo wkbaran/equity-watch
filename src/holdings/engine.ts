@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { MarketData } from "../alerts/engine.js";
-import { computeBasis, saleStoryTime, type HoldingsStore, type Lot, type Sale, type SaleLot, type Stop } from "./models.js";
+import { computeBasis, saleStoryTime, type HoldingsStore, type Lot, type Sale, type SaleLot, type Stop, type StopHit } from "./models.js";
 import { loadHoldingsStore, saveHoldingsStore } from "./store.js";
 import type { HoldingsNotifier } from "./notify.js";
 import { localDateString } from "../timezone.js";
@@ -214,8 +214,11 @@ export interface SaleInput {
   lotId?: string;
   /** Take only from lots in this account, oldest first. Ignored with lotId. */
   account?: string;
-  /** Marks the sale as stop-triggered; the symbol's stops are copied onto it before a closing sale deletes them. */
-  stopHit?: { atr: number | null };
+  /**
+   * Marks the sale as stop-triggered; the symbol's stops are copied onto it before a closing sale deletes them.
+   * `filled` is the stop order that sold it, when known (the Webull sync), and is added when the copy lacks it.
+   */
+  stopHit?: { atr: number | null; filled?: { stopPrice: number; count: number | null; createdAt: string } };
   /** The Webull order behind it, when the sync records it. */
   orderId?: string;
 }
@@ -254,6 +257,11 @@ export function sellShares(path: string, input: SaleInput, now: Date = new Date(
  * not save. For callers that make several changes in one save (the Webull
  * sync), so a crash can't leave half of them written.
  */
+/** The symbol's stops, plus the one that filled when the record no longer had it. */
+function withFilledStop(stops: StopHit["stops"], filled: StopHit["stops"][number] | undefined): StopHit["stops"] {
+  return filled === undefined || stops.some((s) => s.stopPrice === filled.stopPrice) ? stops : [...stops, filled];
+}
+
 export function sellFromStore(store: HoldingsStore, input: SaleInput, now: Date = new Date()): SaleResult {
   const eligible = saleOrder(
     store.lots.filter(
@@ -284,7 +292,10 @@ export function sellFromStore(store: HoldingsStore, input: SaleInput, now: Date 
       ? {
           stopHit: {
             atr: input.stopHit.atr,
-            stops: stopsForSymbol(store, input.symbol).map((s) => ({ stopPrice: s.stopPrice, count: s.count, createdAt: s.createdAt })),
+            stops: withFilledStop(
+              stopsForSymbol(store, input.symbol).map((s) => ({ stopPrice: s.stopPrice, count: s.count, createdAt: s.createdAt })),
+              input.stopHit.filled
+            ),
           },
         }
       : {}),

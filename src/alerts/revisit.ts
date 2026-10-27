@@ -217,9 +217,17 @@ export interface RevisitEntry {
    * Absent on a fire. "drift" is an entry the queue rules (queueRules.ts)
    * raised about an alert that has *not* fired for a long while because price
    * went the other way. It is not a crossing: it never takes follow-ups, never
-   * counts as a trigger, and is left out of stories.
+   * counts as a trigger, and is left out of stories. "stopped" is one a stop
+   * sale raised (stopOuts.ts): the alert was set while the position was held,
+   * so it wants a look. Neither is a fire.
    */
-  reason?: "drift";
+  reason?: "drift" | "stopped";
+  /**
+   * On a stopped entry: the sale in holdings.json. `triggerPrice` holds its
+   * price here, which never publishes (dashboard.ts nulls it): with the time,
+   * it would give the stop away.
+   */
+  stopped?: { saleId: string };
   /** On a drift entry: how far the wrong side price was, and the last activity it was measured from. */
   drift?: { pct: number; quietSince: string };
   /** Set once if price ran `accelerationPct` past the level within `accelerationDays` of the fire. */

@@ -403,9 +403,21 @@ node dist/cli.js alert revisit rules        # apply the queue rules now, on the 
 
 ### What is in the queue, and in what order
 
-Since 2026-10-23 the queue holds three kinds of row (`src/alerts/queueRules.ts`).
-`alert check` applies the rules after each check, on regular-session prices only:
+Since 2026-10-23 the queue holds three kinds of row (`src/alerts/queueRules.ts`), and
+since 2026-10-27 a fourth. `alert check` applies the rules after each check, on
+regular-session prices only:
 
+- **Stop-outs.** A sale marked as a stop, whether recorded by `holdings sync` or by
+  the page's Sell with the stop box ticked, queues the symbol (`src/alerts/stopOuts.ts`),
+  because its alerts were set while it was held. The row hangs off one live alert
+  of the symbol, a static one if there is one. A symbol with no live alert gets
+  none. Update, replace or remove the alert to close it, or dismiss it if the alerts
+  still stand. The rules leave it alone: a later fire doesn't close it, and a
+  dismissal of it doesn't come back. The published row carries no price, since a
+  sale price with its time would give the stop away. Unlocked, the row and its
+  drawer show the shares, price, stop and result from the vault (`stopSales`).
+  `alert revisit stop-outs --since <date>` queues stop sales recorded before this
+  existed, or ones that never got queued.
 - **Fires.** A fire is **new** for `accelerationDays` trading days (default 2), and new
   fires sit at the top. One that runs `accelerationPct` (default 2%) past its level
   inside that time is marked **accelerating** and goes above them. A fire older than
@@ -425,7 +437,7 @@ Since 2026-10-23 the queue holds three kinds of row (`src/alerts/queueRules.ts`)
   fire: it takes no follow-ups, isn't counted as a trigger, and isn't told in stories.
   A fire closes it. A dismissed drift comes back after its wait if it is still drifted.
 
-Order, highest first: accelerating new fire (90), new fire (60), reminder (50),
+Order, highest first: accelerating new fire (90), stop-out (70), new fire (60), reminder (50),
 accelerating older fire (40), drift (30), older fire (10), with 10 more for a held
 position. Ties go newest first. Each row's `why` names the reasons.
 

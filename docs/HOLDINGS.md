@@ -307,7 +307,11 @@ Each account's orders are kept in `.cache/webull/orders-<label>.json`. The first
 run reads all of Webull's history, back to 2018-05-21 (`--history-from` starts
 later), one request every 1.25 s (Webull allows two every two seconds, counted
 when they arrive, and an even two drew 429s), so it takes a few minutes. Later
-runs, dry runs included, read from three days before the last one.
+runs, dry runs included, read from three days before the last one, or from the
+placement of the oldest order the cache still holds as working, if that is earlier.
+Webull selects history by when an order was placed, so without that a GTC stop
+placed last week that filled today never came back, and the sync flagged the
+vanished position instead of recording the sale (nine of them on 2026-10-27).
 `--full-history` reads it all again. A 429 is retried after a wait.
 
 Lots with no account label can't be matched to an account, and `--dry-run` lists
@@ -425,7 +429,10 @@ they cost. The page doesn't list past sales.
 ```
 
 `stops` is every stop the symbol had when it sold, copied by the worker because
-selling the last share deletes them. `atr` is the ATR(14) the page showed when
+selling the last share deletes them. A sale the Webull sync records adds the stop
+order that filled when the record no longer has it, which happens when the sale
+arrives a run or more after the fill. A stop sale also puts the symbol in the
+revisit queue ([ALERTS.md](ALERTS.md#what-is-in-the-queue-and-in-what-order)). `atr` is the ATR(14) the page showed when
 the sale was queued (`null` if it had none). Together with the sale's price and
 lots that is enough to compute the stop's distance in ATRs, the slippage past
 the stop, and the result against basis. A sale without `stopHit` is *not marked*,

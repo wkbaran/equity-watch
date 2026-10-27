@@ -115,7 +115,8 @@ export function applyQueueRules(
   const priceOf = (symbol: string) => prices.get(symbol);
 
   for (const e of entries) {
-    if (e.followUpOf !== undefined || ignored.has(e.symbol.toUpperCase())) continue;
+    // A stop-out waits for a person: no fire closes it and no price brings back its dismissal.
+    if (e.followUpOf !== undefined || e.reason === "stopped" || ignored.has(e.symbol.toUpperCase())) continue;
     const price = priceOf(e.symbol);
     if (price === undefined) continue;
     const alert = alertsById.get(e.alertId);
@@ -188,7 +189,7 @@ export function applyQueueRules(
     // last activity already speaks for it. A fire or a change to the symbol
     // starts a new stretch, and so does the clock.
     const already = entries.some(
-      (e) => !isFire(e) && e.alertId === alert.id && e.levelAtTrigger === alert.level && e.triggeredAt >= quietSince
+      (e) => e.reason === "drift" && e.alertId === alert.id && e.levelAtTrigger === alert.level && e.triggeredAt >= quietSince
     );
     if (already) continue;
     const entry: RevisitEntry = {
@@ -239,14 +240,14 @@ export function snoozeText(days: number | null | undefined): string {
 // ---- ordering ----------------------------------------------------------------
 
 /** Points per reason. Highest first; held adds to any of them. */
-const POINTS = { accelerated: 30, fresh: 60, reminder: 50, drift: 30, stale: 10, held: 10 } as const;
+const POINTS = { stopped: 70, accelerated: 30, fresh: 60, reminder: 50, drift: 30, stale: 10, held: 10 } as const;
 
 export interface QueueRank {
   priority: number;
   /** Why it sits where it does, as one sentence of reasons. Recorded facts only, never a live price. */
   why: string;
   /** Which kind of row it is, for the page's tag. */
-  reason: "accelerating" | "new" | "reminder" | "drift" | "waiting";
+  reason: "stopped" | "accelerating" | "new" | "reminder" | "drift" | "waiting";
 }
 
 const shortDate = (iso: string) =>
@@ -256,7 +257,11 @@ export function queueRank(e: RevisitEntry, held: boolean, now: Date, settings: Q
   const reasons: string[] = [];
   let priority: number;
   let reason: QueueRank["reason"];
-  if (!isFire(e)) {
+  if (e.reason === "stopped") {
+    priority = POINTS.stopped;
+    reason = "stopped";
+    reasons.push(`Stopped out ${shortDate(e.triggeredAt)}; its alerts were set while it was held`);
+  } else if (!isFire(e)) {
     priority = POINTS.drift;
     reason = "drift";
     const quiet = e.drift ? `no fire since ${shortDate(e.drift.quietSince)}` : "no recent fire";
