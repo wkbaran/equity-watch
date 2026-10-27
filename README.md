@@ -26,6 +26,9 @@ your approval, through WebMCP in the browser or an MCP server.
 
 </div>
 
+With a Webull API key it also keeps your positions in step with your Webull accounts,
+and can send stop, buy and sell orders from the page behind an authenticator code.
+
 Built to replace a capped, paid alert subscription. Everything that holds state
 (alerts, positions, the queue) lives in flat JSON files on one machine. The cloud
 only holds a rendered copy of what that machine published, plus a mailbox of
@@ -40,13 +43,14 @@ Only Schwab is required. Everything else is optional, and the engine runs withou
 | Quotes, daily and minute bars, market hours | [Charles Schwab Trader API](https://developer.schwab.com/), Market Data product | **Yes.** Free with a Schwab account. OAuth login in a browser, renewed weekly. See [`docs/SETUP.md`](docs/SETUP.md) |
 | Sector, industry and listing exchange | [Financial Modeling Prep](https://site.financialmodelingprep.com/) | Optional. Free tier, 250 calls/day, cached locally. Without it, chart links fall back to the bare symbol |
 | Charts | [TradingView](https://www.tradingview.com/) | Links and the free embeddable chart widget. No account or key |
+| Positions, cash and orders | [Webull OpenAPI](https://developer.webull.com/) | Optional. Syncs lots, sales, cash and open stops from mapped accounts every check; orders from the page go through an always-on watcher. SMS-activated login. See [`docs/HOLDINGS.md`](docs/HOLDINGS.md#syncing-from-webull) |
 | Dashboard hosting | AWS S3 + CloudFront | Optional. The page is static files; a CloudFormation template is included (`infra/`) |
 | Editing from the dashboard | AWS Lambda (Node 24) + SQS FIFO | Optional. Changes queue in the cloud and the local machine collects them |
 | Custom domain | AWS Route 53 + Certificate Manager | Optional. Otherwise the site serves from its `*.cloudfront.net` URL |
 | Scheduled runs | Windows Task Scheduler, cron, or Docker | One of them, to run unattended |
 | Run monitoring | [healthchecks.io](https://healthchecks.io) or any ping URL | Optional dead-man's switch for scheduled runs |
 | AI agents | [WebMCP](https://github.com/webmachinelearning/webmcp) (Chrome 149+, behind a flag) or any [MCP](https://modelcontextprotocol.io/) client | Optional. The same tools either way; see [Agents](#agents-webmcp-and-mcp) |
-| Importing existing data | TradingView alert CSV exports, Webull holdings CSV exports | One-time migration only. There is no brokerage sync |
+| Importing existing data | TradingView alert CSV exports, Webull holdings CSV exports | One-time migration only. With the Webull API, `holdings sync` replaces the CSV import |
 
 The CLI is TypeScript on Node.js 26, with [commander](https://github.com/tj/commander.js),
 [csv-parse](https://csv.js.org/parse/)/[csv-stringify](https://csv.js.org/stringify/),
@@ -75,12 +79,13 @@ node dist/cli.js dashboard
 The examples here spell out `node dist/cli.js`. `npm link` gets you `equity-watch ...`
 instead, and `npm run cli -- alert check` runs from `src/` via `tsx` and skips the
 build. Every command and command group (`alert`, `alert revisit`, `holdings`,
-`holdings stop`, `ops`, `profile`) supports `--help`. A bare ticker is a shortcut
+`holdings stop`, `orders`, `ops`, `spreads`, `webull`, `profile`) supports `--help`. A bare ticker is a shortcut
 for "show me everything on this symbol": `node dist/cli.js TSLA`.
 
 To run it unattended, register `scripts\check-and-publish.ps1` with Task Scheduler
 (or `scripts/check-and-publish.sh` with cron); see [`docs/SCHEDULING.md`](docs/SCHEDULING.md).
-On a Docker host, `docker/` runs the same loop in one container; see
+On a Docker host, `docker/` runs the same loop in one container, with the order
+watcher and the MCP server as optional services beside it; see
 [`docker/README.md`](docker/README.md).
 
 ### Command map
@@ -89,6 +94,7 @@ On a Docker host, `docker/` runs the same loop in one container; see
 |---|---|
 | `<SYMBOL>` | Show one ticker's alerts |
 | `schwab-login` | Interactive Schwab OAuth login; needed again every 7 days |
+| `webull-login` | Create a Webull token, activated by an SMS code in the Webull app; lasts while it is used |
 | **Alerts** | |
 | `alert add` / `edit` / `remove` / `list` | Manage static, trailing, volume, and moving-average alerts |
 | `alert check` | One polling pass against live quotes — **this is what the scheduler runs** |
@@ -101,11 +107,18 @@ On a Docker host, `docker/` runs the same loop in one container; see
 | `alert revisit dismiss <id> [--days N]` | Take the entry off the queue for N trading days, leave the alert alone |
 | `alert revisit rules` | Apply the queue rules now, on the last regular-session trade (the check does this in the session) |
 | **Holdings** | |
+| `holdings sync` | Bring Webull-kept positions in line with Webull and record each account's cash (`--dry-run` to preview) |
+| `webull accounts` | List the Webull account ids, for `WEBULL_ACCOUNTS` |
 | `holdings import` | One-time import of Webull holdings CSV exports |
 | `holdings add-lot` / `list` | Record and review purchase lots |
 | `holdings cover` | Give every uncovered position a starting alert |
 | `holdings check` | The three basis-relative conditions |
-| `holdings stop add` / `list` / `remove` | Record stops (not live-monitored) |
+| `holdings stop add` / `list` / `remove` | Record stops for positions Webull doesn't keep (not live-monitored) |
+| **Orders** | |
+| `orders totp-setup` | Make the authenticator secret every order needs a code from |
+| `orders watch` | The always-on service that sends orders queued from the page |
+| **Spread stops** | |
+| `spreads sync` / `check` / `list` | Stop levels for option spreads from spread-book ([details](docs/SPREADS.md)) |
 | **Output** | |
 | `dashboard` | The periodic document: terminal view, JSON, static site, or S3 publish |
 | `analyze` | Breakout-confirm a TradingView CSV (`--csv`) or your own triggers (`--from-alerts`) |
@@ -128,16 +141,20 @@ in `.env`).
 ## How it works
 
 One scheduled script on one machine does everything, every 15 minutes through the
-trading day. Each run is four commands, and the order is the point:
+trading day. Each run is a fixed sequence of commands, and the order is the point:
 
 ```
    ┌───────────────────────────────────────────────────────────────┐
-   │  every 15 min, weekdays (Task Scheduler / cron)                │
+   │  every 15 min (cron, Docker, or Task Scheduler)                │
    │                                                                │
    │  1. ops pull        apply edits you queued from the dashboard  │
-   │  2. holdings cover  give any uncovered position a first alert  │
-   │  3. alert check     poll quotes → fire alerts → append to queue│
-   │  4. dashboard --publish --skip-unchanged  → the browser page   │
+   │  2. holdings sync   bring Webull-kept positions and cash in    │
+   │                     line with Webull (skipped if unconfigured) │
+   │  3. spreads sync    take spread-book's stop levels             │
+   │  4. holdings cover  give any uncovered position a first alert  │
+   │  5. alert check     poll quotes → fire alerts → append to queue│
+   │  6. spreads check   the same for the spread stops              │
+   │  7. dashboard --publish --skip-unchanged  → the browser page   │
    └───────────────────────────────────────────────────────────────┘
 
    alerts.json   revisits.json   holdings.json     ← all local, never uploaded
@@ -145,8 +162,12 @@ trading day. Each run is four commands, and the order is the point:
 
 - **`ops pull` runs first** so the same run's `alert check` evaluates the changes you
   just made from the page.
-- **`holdings cover` sits between them** so a lot you added from the page gets a
+- **`holdings sync` comes before `holdings cover`** so a position bought at Webull
+  is recorded, and gets a starting alert, in the same cycle.
+- **`holdings cover` sits before the check** so a lot you added from the page gets a
   starting alert in the same cycle.
+- **Orders don't wait for any of this.** `orders watch` runs all the time beside the
+  schedule and sends an order within seconds of it being queued.
 - **`alert check`** exits without spending a quote request when the market is closed.
 - **`dashboard --publish --skip-unchanged`** decides whether anything happened
   *before* fetching quotes, so a quiet run costs zero API calls.
@@ -252,12 +273,14 @@ applied or rejected with a reason. How that round trip works:
 | | |
 |---|---|
 | Applying dashboard edits | `ops pull` drains the SQS queue until it is empty and logs every result |
+| Webull sync | `holdings sync`: each Webull-kept position's buys and sales become lots and sales, its open stops are copied onto it, and each account's cash and BIL are recorded, with a warning when cash runs low or margin is used |
 | Covering new positions | `holdings cover` gives any held symbol with no live alert a starting level |
 | Polling | `alert check`: one quote batch for every live alert and position, gated on Schwab's real market hours (half days included) |
 | Firing and queueing | triggers append to `revisits.json` with a snapshot of the alert as it was |
 | Spread stops | `spreads sync` and `spreads check`: stop levels for option spreads from spread-book, watched like static levels, for its real book and, kept apart and tagged *paper*, its paper trades ([docs/SPREADS.md](docs/SPREADS.md)) |
 | Publishing | `dashboard --publish --skip-unchanged`, which skips quotes entirely on a quiet run |
 | The page itself | re-fetches `dashboard.json` every minute, toasts new triggers, counts down to the next check |
+| Orders (always on) | `orders watch` sends what the page queues after checking the authenticator code, and sets a buy's stop once the buy fills ([docs/HOLDINGS.md](docs/HOLDINGS.md#orders)) |
 
 Also automatic, but **only while a browser tab is open**: OS notifications for new
 triggers (background tab, other window, or minimized, but not once the tab is closed;
@@ -268,13 +291,14 @@ that would need Web Push, which nothing sends yet).
 | | how often |
 |---|---|
 | `schwab-login` | **weekly.** Schwab's refresh token lives 7 days and only an interactive browser flow renews it |
+| `webull-login` | when the Holdings page says "Webull login needed". The token lasts until 15 days pass unused, and the sync uses it every check |
 | `npm run build` | after any change under `src/`. The scheduled task runs `dist/`, not `src/` |
 | `alert revisit relevel`, or *Suggest level* on a queue row | when you want proposed levels and priority scores. The scheduled run does **not** do this: an entry has no `suggestedLevel` or priority until you ask, per entry from the page or over the whole queue from the CLI |
 | `alert revisit apply` / `dismiss`, or *Apply* / *Dismiss* on the page | deciding what to do about a queue entry. Nothing ever re-levels itself |
 | `holdings check` | the three basis-relative conditions; not in the scheduled run, and daily is plenty. The page shows the two of them that are state rather than events |
 | `analyze` | breakout-confirming a batch of triggers, once or twice a day at most |
 | `profile fetch` | topping up the sector/exchange cache (250/day free tier) |
-| `holdings import` / `add-lot` | when positions change; there is no brokerage sync |
+| `holdings add-lot` | for positions Webull doesn't keep. Webull-kept ones follow the account, and a position new at Webull waits on the page for **Adopt** |
 
 Two deliberate non-features, so you don't go looking for them:
 
@@ -282,7 +306,8 @@ Two deliberate non-features, so you don't go looking for them:
   can only write to SQS; nothing in AWS can reach the machine. A queued edit lands at
   the next scheduled check, and the page's job is to say when
   ([why](docs/ARCHITECTURE.md#state-is-local-the-cloud-is-a-mailbox)).
-- **Stops are record-keeping only.** Nothing fires when price crosses one yet.
+- **A hand-entered stop is a record, not an order.** Nothing fires when price crosses
+  one. Stops on Webull-kept positions are real Webull orders, which Webull executes.
 
 ---
 
@@ -407,6 +432,8 @@ Whichever way it arrives:
 - **Holdings stay off by default.** An agent sees positions only after you tick
   "Agents may see holdings" on the page, or start the server with `--allow-holdings`,
   because tool output goes to the agent's model.
+- **Agents can't place orders.** There are no order tools, on purpose; orders go only
+  from the page, with an authenticator code.
 
 ## When something breaks
 
@@ -424,6 +451,10 @@ Whichever way it arrives:
 
   Queued edits wait and are applied on the next run. Why it behaves this way:
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#when-the-schwab-login-expires).
+- **The Holdings page says "Webull login needed".** The Webull token died. Run
+  `webull-login` where the sync runs (`docker compose ... run --rm cli webull-login` in
+  Docker) and enter the texted code in the Webull app within 5 minutes. The sync
+  stops calling Webull until then; nothing else is affected.
 - **A code change didn't show up on the page.** Nothing rebuilds `dist/` for you. Run
   `npm run build`, and the next check publishes. A field that arrives empty is usually
   a stale `dist/`, not missing data.
@@ -443,7 +474,7 @@ Whichever way it arrives:
 | [`docs/SCHEDULING.md`](docs/SCHEDULING.md) | Task Scheduler / cron setup and the reasoning |
 | [`docker/README.md`](docker/README.md) | Running the scheduled loop in a container, and moving existing state into it |
 | [`docs/ALERTS.md`](docs/ALERTS.md) | Alert kinds in depth, volume baselines, moving averages, market hours, re-fire rules, the revisit queue and its scoring, `alert seed` |
-| [`docs/HOLDINGS.md`](docs/HOLDINGS.md) | Lots and stops, `holdings cover`, the Webull import, basis-relative alerts |
+| [`docs/HOLDINGS.md`](docs/HOLDINGS.md) | Lots and stops, `holdings cover`, the Webull sync and import, orders and their checks, basis-relative alerts |
 | [`docs/DASHBOARD.md`](docs/DASHBOARD.md) | Terminal and browser dashboard, views, notifications, headlines and stories, the WebMCP tools |
 | [`docs/MCP.md`](docs/MCP.md) | The MCP server: access flags, approval, running it for Claude Code and Open WebUI |
 | [`docs/SPREADS.md`](docs/SPREADS.md) | Spread stops from spread-book: the shared files (real and paper), `spreads sync` and `spreads check`, what is kept apart from the main book |
