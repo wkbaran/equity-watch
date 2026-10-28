@@ -21,10 +21,23 @@ test.beforeEach(({ page }) => {
 test.afterEach(() => expect(errors).toEqual([]));
 
 const rows = (page: Page) => page.locator("#spreads .trigger-row");
+const openSpreads = (page: Page) => page.locator("#spreads-summary").click();
+
+test("the spread stops start closed, with a summary saying how many and whether one is at its stop", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("#spreads-summary")).toHaveText("3 stops watched, 1 at its stop");
+  await expect(page.locator("#spreads-summary")).toHaveClass(/warn/);
+  await expect(page.locator("#spreads-note")).toBeHidden();
+  await expect(rows(page).first()).toBeHidden();
+  await openSpreads(page);
+  await expect(page.locator("#spreads-note")).toBeVisible();
+  await expect(rows(page).first()).toBeVisible();
+});
 
 test("the overview lists spread stops, the one at its stop first", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("#spreads-section")).toBeVisible();
+  await openSpreads(page);
   await expect(page.locator("#spreads-count")).toHaveText("3");
   await expect(rows(page)).toHaveCount(3);
   const lines = (i: number) => rows(page).nth(i).locator(".spread-line");
@@ -42,6 +55,7 @@ test("the overview lists spread stops, the one at its stop first", async ({ page
 
 test("each row links to spread-book; the OptionStrat link appears only once the page is unlocked", async ({ page }) => {
   await page.goto("/");
+  await openSpreads(page);
   const book = rows(page).nth(0).getByRole("link", { name: "spread-book" });
   await expect(book).toHaveAttribute("href", `${SPREAD_BOOK_URL}/?spread=${encodeURIComponent("NVDA Nov 27th 175/180 Bull Put Spread|2026-11-27|175/180")}`);
   await expect(book).toHaveAttribute("target", "spread-book");
@@ -58,6 +72,7 @@ test("each row links to spread-book; the OptionStrat link appears only once the 
 
 test("a paper trade's stop says so, and links to spread-book's paper book", async ({ page }) => {
   await page.goto("/");
+  await openSpreads(page);
   const paper = rows(page).nth(2);
   await expect(paper.locator(".spread-line").first()).toHaveText("MSFT 445/450 call, expires 2026-11-20: (spread $1.52, short Δ 0.36)");
   await expect(paper.locator(".tag.paper")).toHaveText("paper");

@@ -49,7 +49,9 @@ closes (its ledger records it), so an empty paper file is a real "everything clo
 
 ## Where they show
 
-- The overview's **Spread stops** section: fired stops first, then the rest by distance
+- The overview's **Spread stops** section, closed by default: its summary line says how
+  many stops are watched, how many are at their stop, and whether the levels are stale.
+  Opened, it shows the note and the rows, fired stops first, then the rest by distance
   to their level. Each row reads "CRM 260/270 call, expires 2026-11-20: (spread $3.39,
   short Δ 0.44)" over "Stop above 252.91, Now 248.51", with an *at stop* tag once it has
   fired, and two links, each in a tab of its own that later clicks reuse:

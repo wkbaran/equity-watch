@@ -4073,6 +4073,12 @@
       (asOf === null ? "" : `Levels from spread-book's snapshot of ${when(section.syncedFrom)}${stale ? " — stale: spread-book hasn't sent new levels since" : ""}. `) +
       "Each is the stock price at which that spread's loss would reach its stop. The stock price stands in for the spread's: check the spread's own price before acting.";
     $("spreads-note").classList.toggle("warn", stale);
+    // Closed by default (the user's call, 2026-10-27), so the summary carries
+    // what would make someone open it: a stop reached, or levels gone stale.
+    const atStop = rows.filter((r) => r.fired !== null).length;
+    $("spreads-summary").textContent =
+      `${rows.length} ${rows.length === 1 ? "stop" : "stops"} watched` + (atStop > 0 ? `, ${atStop} at its stop` : "") + (stale ? " — levels stale" : "");
+    $("spreads-summary").classList.toggle("warn", atStop > 0 || stale);
     const sorted = [...rows].sort(
       (a, b) => (a.fired !== null) !== (b.fired !== null) ? (a.fired !== null ? -1 : 1) : (a.distancePct ?? Infinity) - (b.distancePct ?? Infinity)
     );

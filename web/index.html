@@ -309,6 +309,8 @@
   .story ol { margin: 0.4rem 0 0; padding-left: 1.2rem; color: var(--sub); font-size: 0.88rem; }
 
   details summary { cursor: pointer; color: var(--sub); padding: 0.85rem 1.25rem; }
+  .spreads-note { margin: 0; padding: 0 1.25rem 0.6rem; }
+  details summary.warn { color: var(--signal); }
   details ul { margin: 0; padding: 0 1.25rem 1rem 2.5rem; color: var(--sub); }
   .approach-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 3px 1.25rem; font-size: 0.88rem; }
   .approach-dist { min-width: 4.5rem; text-align: right; color: var(--sub); }
@@ -758,8 +760,7 @@
 
     <div id="spreads-section" hidden>
       <div class="section-header"><h2 class="section-title">Spread stops</h2><span id="spreads-count" class="section-count"></span></div>
-      <p id="spreads-note" class="note"></p>
-      <div id="spreads" class="card"></div>
+      <details id="spreads-details" class="card"><summary id="spreads-summary"></summary><p id="spreads-note" class="note spreads-note"></p><div id="spreads"></div></details>
     </div>
 
     <div class="section-header"><h2 class="section-title">Recent triggers</h2><span id="triggers-count" class="section-count"></span></div>
