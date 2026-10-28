@@ -205,14 +205,15 @@ is prefilled from the published alert, so opening it to read the spec and saving
 "Nothing changed." rather than a silent rewrite.
 
 An alert's panel, and the Alert band of an expanded holding, have the same *Kind*
-choice for anything but a moving average: switching a price or volume alert to
+choice, a moving average's included (since 2026-10-27): switching a price or volume alert to
 *Trailing from a high/low* makes it trailing from the live price when the edit lands,
 switching a trailing alert to *Price level* asks for the level, *Volume only* drops
 a price or trailing alert's price condition (it needs a volume condition, and an
 empty Level box is an error rather than a hidden way to do this), and switching any of
 them to *Moving average* sends the whole spec (the add form's defaults, SMA 200 on
 daily bars crossing up, until changed). That last one drops a volume condition, and
-the form says so before you queue it. A trailing alert's direction and distance are
+the form says so before you queue it. A moving average switched to *Price level*
+starts with *Fires on* set the way its cross crossed. A trailing alert's direction and distance are
 prefilled, and changing its direction restarts it from the live price. A
 moving-average cross's direction can be flipped from its panel too.
 

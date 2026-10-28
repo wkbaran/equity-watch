@@ -633,7 +633,7 @@
       group: "write",
       ops: ["alert.edit"],
       description:
-        "Queue a change to one alert, by id. Send only what changes. `clearLevel` turns a price or trailing alert with a volume condition into a volume alert; `clearVolume` drops the volume condition. A trail (trailPercent or trailAmount) with a `direction` of up or down turns a price or volume alert into a trailing one, starting from the live price; a `level` turns a trailing alert back into a price alert. A new `direction` on a trailing alert restarts it from the live price. Rejected at apply time if the alert has changed since this call read it. The person is asked to approve.",
+        "Queue a change to one alert, by id. Send only what changes. `clearLevel` turns a price or trailing alert with a volume condition into a volume alert; `clearVolume` drops the volume condition. A trail (trailPercent or trailAmount) with a `direction` of up or down turns a price or volume alert into a trailing one, starting from the live price; a `level` turns a trailing or moving-average alert into a price alert (a moving average also takes a trail, or `clearLevel` if it has a volume condition). A new `direction` on a trailing alert restarts it from the live price. Rejected at apply time if the alert has changed since this call read it. The person is asked to approve.",
       inputSchema: object(
         {
           alertId: alertIdProp,

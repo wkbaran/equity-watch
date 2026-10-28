@@ -1312,8 +1312,9 @@
    *
    * And a price, trailing or volume alert can become a moving average. A
    * cross keeps its volume condition; a touch can't have one, so it is
-   * dropped. The way back isn't offered: the worker has no conversion out of
-   * a moving average.
+   * dropped. Since 2026-10-27 the way back is offered too (the user's call:
+   * an edit is a change of mind about the symbol, like an add): a moving
+   * average can become any of the other kinds, and a cross's volume goes along.
    *
    * *Volume only* is a Kind too (2026-10-02). Before, a volume-only alert was
    * made by leaving Level empty, which nothing on the form said, and a
@@ -1342,9 +1343,11 @@
       h("option", { value: "ma", text: "Moving average" }),
       h("option", { value: "volume", text: "Volume only" })
     );
-    kind.value = a.kind === "trailing" || a.kind === "volume" ? a.kind : "static";
+    kind.value = a.kind;
     const level = numberInput(a.kind === "static" ? a.level : null);
-    const direction = directionSelect(a.direction ?? "up");
+    // A moving-average cross becoming a level keeps the way it crossed.
+    const crossDirection = a.kind === "ma" && a.ma?.trigger === "cross" ? MA_CROSS_DIRECTION[a.ma.from] : null;
+    const direction = directionSelect(a.direction ?? crossDirection ?? "up");
     const trailDirection = h(
       "select",
       {},
@@ -1373,20 +1376,18 @@
     const volumeClause = clause("and volume", ...volumeFields.fields);
     const dropsVolume =
       old === null ? null : h("p", { class: "note clause-note", text: `A moving-average touch can't have a volume condition, so this drops ${volumeConditionText(old)}.` });
-    const maChosen = () => isMa || kind.value === "ma";
+    const maChosen = () => kind.value === "ma";
     const touchChosen = () => maChosen() && maFields.isTouch();
 
-    fields.push(clause("Watch", ...(isMa ? [] : [field("Kind", kind), ...priceFields, ...trailFields]), ...maFields.fields), volumeClause);
+    fields.push(clause("Watch", field("Kind", kind), ...priceFields, ...trailFields, ...maFields.fields), volumeClause);
     if (dropsVolume) fields.push(dropsVolume);
     const sync = () => {
-      if (!isMa) {
-        for (const f of priceFields) f.hidden = kind.value !== "static";
-        for (const f of trailFields) f.hidden = kind.value !== "trailing";
-        // buildMaFields shows one of Direction or Approached/Touch band by
-        // trigger; outside the MA kind all of them go.
-        for (const f of maFields.fields) f.hidden = kind.value !== "ma";
-        if (kind.value === "ma") maFields.sync();
-      }
+      for (const f of priceFields) f.hidden = kind.value !== "static";
+      for (const f of trailFields) f.hidden = kind.value !== "trailing";
+      // buildMaFields shows one of Direction or Approached/Touch band by
+      // trigger; outside the MA kind all of them go.
+      for (const f of maFields.fields) f.hidden = kind.value !== "ma";
+      if (kind.value === "ma") maFields.sync();
       volumeClause.hidden = touchChosen();
       if (dropsVolume) dropsVolume.hidden = !touchChosen();
     };
@@ -1394,6 +1395,8 @@
     maFields.trigger.addEventListener("change", sync);
     sync();
 
+    // What the alert watches now, for a change line that switches its kind.
+    const wasText = isMa && a.ma ? maSpecText(a.ma.maType, a.ma.period, a.ma.timeframe) : a.kind === "static" ? `level ${a.level}` : a.kind;
     const trailText = (type, v, dir) => `trailing ${type === "percent" ? `${v}%` : `$${v}`} off the ${dir === "up" ? "low" : "high"}`;
 
     const collect = () => {
@@ -1416,15 +1419,15 @@
         if (volume === null) return { error: "Set a volume condition: it is all a volume-only alert watches." };
         if (a.kind !== "volume") {
           params.clearLevel = true;
-          changes.push(wasTrailing ? "trailing → volume only" : `drop level ${a.level}, volume only`);
+          changes.push(a.kind === "static" ? `drop level ${a.level}, volume only` : `${wasText} → volume only`);
         }
       } else if (kind.value === "static") {
         const lvl = positive(level.value);
-        if (lvl === null) return { error: wasTrailing ? "Enter the level to watch instead of the trail." : "Enter a level above 0." };
+        if (lvl === null) return { error: wasTrailing ? "Enter the level to watch instead of the trail." : isMa ? "Enter the level to watch instead of the average." : "Enter a level above 0." };
         const was = a.kind === "static" ? a.level : null;
         if (lvl !== was) {
           params.level = lvl;
-          changes.push(wasTrailing ? `trailing → level ${lvl}` : was === null ? `add level ${lvl}` : `level ${was} → ${lvl}`);
+          changes.push(wasTrailing || isMa ? `${wasText} → level ${lvl}` : was === null ? `add level ${lvl}` : `level ${was} → ${lvl}`);
         }
         // An alert gaining a level states its direction outright: it has none
         // yet, so "unchanged" would mean the worker's default.
@@ -1441,7 +1444,7 @@
           if (v === null) return { error: "Enter a trail distance above 0." };
           Object.assign(params, trailType.value === "percent" ? { trailPercent: v } : { trailAmount: v });
           params.direction = trailDirection.value;
-          changes.push(`${a.kind === "static" ? `level ${a.level}` : "volume only"} → ${trailText(trailType.value, v, trailDirection.value)}`);
+          changes.push(`${a.kind === "volume" ? "volume only" : wasText} → ${trailText(trailType.value, v, trailDirection.value)}`);
         } else {
           if (v !== null && (trail === null || v !== trail.value || trailType.value !== trail.type)) {
             Object.assign(params, trailType.value === "percent" ? { trailPercent: v } : { trailAmount: v });

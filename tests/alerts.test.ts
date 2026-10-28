@@ -878,9 +878,6 @@ describe("editAlert", () => {
 
   it("rejects fields the alert's kind doesn't have", async () => {
     saveAlerts(path, [makeStatic(), makeVolume()]);
-    const maId = await addMa("cross");
-    const trail = await editAlert(path, maId, { trail: { type: "percent", value: 3 } }, offline);
-    expect(trail.rejectedReason).toMatch(/ma alert has no trail/);
     const volumeId = loadAlerts(path)[1].id;
     const cleared = await editAlert(path, volumeId, { volume: null }, offline);
     expect(cleared.rejectedReason).toMatch(/can't lose its volume condition/);
@@ -1212,6 +1209,52 @@ describe("editAlert", () => {
     const touch = await addMa("touch");
     expect((await editAlert(path, touch, { marginPct: 0.5, from: "above" }, offline)).rejectedReason).toBeNull();
     expect(loadAlerts(path)[0]).toMatchObject({ trigger: "touch", lastSide: null });
+  });
+
+  async function addCrossWithVolume(): Promise<string> {
+    const result = await addAlert(
+      path,
+      { kind: "ma", symbol: "TEST", maType: "ema", period: 20, timeframe: "1D", trigger: "cross", from: "below", marginPct: 0.25, volume: { ratio: 2, mode: "today" } },
+      fakeMarket({ prices: { TEST: 100 } })
+    );
+    const alerts = loadAlerts(path);
+    Object.assign(alerts[0], { triggerCount: 3, lastTriggeredAt: "2026-10-01T14:00:00.000Z", lastSide: "above", lastLevel: 98 });
+    saveAlerts(path, alerts);
+    return result.added!.id;
+  }
+
+  it("turns a moving average into a fixed level, keeping id, history, direction and volume", async () => {
+    const id = await addCrossWithVolume();
+    const result = await editAlert(path, id, { level: 120 }, fakeMarket({ prices: { TEST: 110 } }));
+    expect(result.rejectedReason).toBeNull();
+    const [a] = loadAlerts(path);
+    expect(a).toMatchObject({ id, kind: "static", level: 120, side: "above", lastKnownSide: "below", direction: "up", triggerCount: 3, volumeCondition: { ratio: 2, mode: "today" } });
+    expect(a).not.toHaveProperty("maType");
+    expect(a).not.toHaveProperty("lastLevel");
+  });
+
+  it("turns a moving average trailing, or volume-only when its level is dropped", async () => {
+    const id = await addCrossWithVolume();
+    const trailing = await editAlert(path, id, { trail: { type: "percent", value: 5 }, direction: "down" }, fakeMarket({ prices: { TEST: 110 } }));
+    expect(trailing.edited).toMatchObject({ id, kind: "trailing", side: "above", near: 110, extremePrice: 110, triggerCount: 3, volumeCondition: { ratio: 2, mode: "today" } });
+    expect(trailing.edited).not.toHaveProperty("level");
+
+    rmSync(path);
+    const again = await addCrossWithVolume();
+    const volume = await editAlert(path, again, { level: null }, offline);
+    expect(volume.edited).toMatchObject({ id: again, kind: "volume", volume: { ratio: 2, mode: "today" }, triggerCount: 3 });
+  });
+
+  it.each([
+    ["a level and a new average", { level: 120, ma: { maType: "sma" as const, period: 50, timeframe: "1D" as const } }, /not both/],
+    ["a level and a touch margin", { level: 120, marginPct: 0.5 }, /not both/],
+    ["a trail with no direction", { trail: { type: "percent" as const, value: 5 } }, /Give the direction/],
+    ["a dropped level on a touch, which has no volume", { level: null }, /would watch nothing/],
+  ])("refuses a moving average given %s, and saves nothing", async (_name, edit, reason) => {
+    const id = await addMa("touch");
+    const before = loadAlerts(path);
+    expect((await editAlert(path, id, edit, fakeMarket({ prices: { TEST: 110 } }))).rejectedReason).toMatch(reason);
+    expect(loadAlerts(path)).toEqual(before);
   });
 
   it.each([

@@ -676,8 +676,11 @@ Things that look simplifiable and aren't:
   therefore sends `direction` with any new level, since it has none to keep.
   `AlertRow.volume` carries the condition so the form can prefill it; the
   condition text can't be parsed back. Moving averages are editable from the
-  page, and anything but a moving average can be turned into one (one way only:
-  `editAlert` has no conversion out of a moving average).
+  page, and since 2026-10-27 the conversion goes both ways: an MA leaving for a
+  level, trail or volume-only is first rebuilt as a static alert in `editAlert`
+  (placeholder level and side) and then takes the existing static paths, so
+  don't give it a fourth copy of the re-seed. The user's view: an edit is a
+  change of mind about the symbol, no different from an add.
   Since 2026-10-02 trailing joins in: a *Kind* select switches a static or
   volume alert to trailing (`trail` + required `direction`, starting from the
   live price) and a trailing alert back to static (`level`). A trailing alert

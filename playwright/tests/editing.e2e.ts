@@ -542,6 +542,24 @@ test.describe("trailing and moving-average alerts from the page", () => {
     await expect(page.locator("#ops-pending")).toContainText("sma200@1D → sma50@1D");
   });
 
+  test("a moving-average alert's panel can make it a price level, keeping the cross's direction", async ({ page }) => {
+    await storeToken(page);
+    await page.goto(`/#/alert/${MOVING_AVERAGE.id}`);
+    const form = page.locator("#drawer-body form");
+    await expect(form.getByLabel("Kind")).toHaveValue("ma");
+    await expect(form.getByLabel("Level")).toBeHidden();
+    await form.getByLabel("Kind").selectOption("static");
+    await expect(form.getByLabel("Average")).toBeHidden();
+    await expect(form.getByLabel("Fires on")).toHaveValue("up");
+    await form.getByLabel("Level").fill("600");
+    await expect(form.locator(".edit-preview")).toHaveText("SMA 200 on daily bars → level 600, crosses up");
+    await form.locator("button[type=submit]").click();
+
+    const [op] = await queuedOps(page);
+    expect(op).toMatchObject({ type: "alert.edit", target: { alertId: MOVING_AVERAGE.id }, params: { level: 600, direction: "up" } });
+    expect(Object.keys(op.params).sort()).toEqual(["direction", "level"]);
+  });
+
   test("turning a cross into a touch sends the band and the side together", async ({ page }) => {
     await storeToken(page);
     await page.goto(`/#/alert/${MOVING_AVERAGE.id}`);

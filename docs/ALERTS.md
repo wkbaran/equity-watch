@@ -252,8 +252,13 @@ makes a touch a cross, and `--touch <margin>` and/or `--from` make a cross a tou
 dropping any volume condition (a touch can't have one yet). Either way it restarts
 its evaluation, as a new alert would.
 
-Changing a moving average back into anything else is not an edit: remove it and
-add a new one.
+A moving average can also become anything else, keeping its id and history:
+`--level` makes it a static alert (re-seeded against the live price like any moved
+level, and watching the way a cross crossed unless `--direction` says otherwise),
+a trail with `--direction` makes it trailing from the live price, and
+`--clear-level` leaves its volume condition as a volume alert. A cross's volume
+condition goes along; nothing about the average does. A moving-average field
+(`--ma`, `--touch`, `--from`) in the same edit is refused.
 
 **Acting on a symbol closes all of its open revisit entries.** That means adding,
 editing or removing an alert on it, applying a suggested level, or adding, changing

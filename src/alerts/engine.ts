@@ -882,12 +882,31 @@ export async function addAlert(
   return { added: candidate, replaced: existing ?? null, rejectedReason: null };
 }
 
+/** Only what every kind shares, for an edit that changes an alert's kind: identity, watch start, history. */
+function sharedFields(alert: Alert) {
+  return {
+    id: alert.id,
+    symbol: alert.symbol,
+    status: alert.status,
+    createdAt: alert.createdAt,
+    livePriceAtCreation: alert.livePriceAtCreation,
+    watchingSince: alert.watchingSince,
+    watchingSinceApprox: alert.watchingSinceApprox,
+    priceAtWatchStart: alert.priceAtWatchStart,
+    triggerCount: alert.triggerCount,
+    lastTriggeredAt: alert.lastTriggeredAt,
+    lastTriggerPrice: alert.lastTriggerPrice,
+    triggerSnapshot: alert.triggerSnapshot,
+  };
+}
+
 /** What `editAlert` may change. Omitted fields are left as they are. */
 export interface AlertEdit {
   /**
-   * Static, or a volume alert gaining a price level, which makes it a static
-   * alert with its volume as the AND condition. Null drops a static alert's
-   * level, which leaves a volume alert and so needs a volume condition.
+   * Static, or a volume or moving-average alert gaining a price level, which
+   * makes it a static alert with its volume as the AND condition. Null drops a
+   * static (or moving-average) alert's price condition, which leaves a volume
+   * alert and so needs a volume condition.
    */
   level?: number | null;
   /**
@@ -896,7 +915,7 @@ export interface AlertEdit {
    */
   direction?: AlertDirection;
   /**
-   * Trailing. On a static or volume alert it makes it a trailing alert
+   * Trailing. On a static, volume or moving-average alert it makes it a trailing alert
    * starting from the live price, and then needs a direction. A level on a
    * trailing alert makes it static again.
    */
@@ -925,9 +944,9 @@ export interface EditAlertResult {
 }
 
 const EDITABLE_KINDS: Record<keyof AlertEdit, { label: string; kinds: Alert["kind"][] }> = {
-  level: { label: "level", kinds: ["static", "volume", "trailing"] },
+  level: { label: "level", kinds: ["static", "volume", "trailing", "ma"] },
   direction: { label: "direction", kinds: ["static", "ma", "volume", "trailing"] },
-  trail: { label: "trail", kinds: ["trailing", "static", "volume"] },
+  trail: { label: "trail", kinds: ["trailing", "static", "volume", "ma"] },
   volume: { label: "volume condition", kinds: ["static", "trailing", "volume", "ma"] },
   ma: { label: "moving average", kinds: ["ma"] },
   marginPct: { label: "touch margin", kinds: ["ma"] },
@@ -942,7 +961,9 @@ const EDITABLE_KINDS: Record<keyof AlertEdit, { label: string; kinds: Alert["kin
  * volume alert makes it a static alert whose volume is the AND condition, and
  * a static alert's level dropped leaves its volume condition standing alone.
  * Likewise a trail turns a static or volume alert into a trailing one, and a
- * level turns a trailing alert static. The volume condition goes along.
+ * level turns a trailing alert static. The volume condition goes along. A
+ * moving average can become any of the three, and any of them a moving
+ * average: an edit is a change of mind about the symbol, like an add.
  * `triggerSnapshot` and the revisit entries already record what it looked like
  * when it fired, so an edit doesn't rewrite that.
  *
@@ -1035,20 +1056,8 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
       }
       from = edit.direction === "up" ? "below" : "above";
     }
-    // Only what every kind shares carries over: identity, watch start, history.
     const ma: MaAlert = {
-      id: alert.id,
-      symbol: alert.symbol,
-      status: alert.status,
-      createdAt: alert.createdAt,
-      livePriceAtCreation: alert.livePriceAtCreation,
-      watchingSince: alert.watchingSince,
-      watchingSinceApprox: alert.watchingSinceApprox,
-      priceAtWatchStart: alert.priceAtWatchStart,
-      triggerCount: alert.triggerCount,
-      lastTriggeredAt: alert.lastTriggeredAt,
-      lastTriggerPrice: alert.lastTriggerPrice,
-      triggerSnapshot: alert.triggerSnapshot,
+      ...sharedFields(alert),
       kind: "ma",
       ...edit.ma,
       trigger: isTouch ? "touch" : "cross",
@@ -1067,6 +1076,32 @@ export async function editAlert(path: string, ref: string, edit: AlertEdit, mark
     alerts[alerts.indexOf(alert)] = ma;
     saveAlerts(path, alerts);
     return { before, edited: ma, replaced: null, rejectedReason: null };
+  }
+
+  if (alert.kind === "ma" && (edit.level !== undefined || edit.trail !== undefined)) {
+    // Leaves the average for a level, a trail, or (a null level) volume alone.
+    // It becomes a static alert here, and the paths below treat it as one: a
+    // level is set and re-seeded like any moved level, a trail turns it
+    // trailing, and a dropped level leaves its volume condition. Only a
+    // cross's volume condition carries over; nothing about the average does.
+    if (edit.ma !== undefined || edit.marginPct !== undefined || edit.from !== undefined) {
+      return reject("Give a moving average or a level or trail, not both.");
+    }
+    const direction: AlertDirection = alert.trigger === "cross" ? (alert.from === "below" ? "up" : "down") : DEFAULT_ALERT_DIRECTION;
+    const leaving: StaticAlert = {
+      ...sharedFields(alert),
+      kind: "static",
+      side: "above",
+      direction,
+      // Replaced below by the moved-level path; dropped with the rest of the
+      // static fields when it goes on to become trailing or volume.
+      level: edit.level ?? 0,
+      lastKnownSide: "above",
+      mutedUntil: null,
+      ...(alert.volumeCondition !== undefined ? { volumeCondition: alert.volumeCondition } : {}),
+    };
+    alerts[alerts.indexOf(alert)] = leaving;
+    alert = leaving;
   }
 
   if ((alert.kind === "static" || alert.kind === "volume") && edit.trail !== undefined) {
