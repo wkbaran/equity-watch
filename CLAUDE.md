@@ -285,6 +285,15 @@ The narrative called the crossing back "slipped below support".
   fire's own day is day 0. Both directions fold, with no volume check. The
   first follow-up against the fire is the reversal (`reversalOf` in
   `src/alerts/reversion.ts`). That is the signal the user wants.
+- **Only an open fire folds** (the user's rule, 2026-10-28). The queue is for
+  notices, and a refire is one; a dismissal answers its row, never the next fire.
+  So after a dismissal (or a closure by acting on the symbol) a watched crossing
+  fires again inside the window, and a counter-crossing records nothing.
+  `latestFireOf` itself doesn't filter on status; the engine checks `open`.
+- **One row per alert.** A new fire closes the alert's open fire or drift
+  (`supersedeOpenEntries`): status `dismissed`, `snoozeDays: null`, and
+  `supersededBy`. That last field is what keeps the story from saying "you left
+  the level where it was" and the drawer from saying "Dismissed". Stop-outs stay.
 - **Outside the window**, a crossing against `direction` records nothing. "It
   is below the alert now" is explicitly not news.
 - **Don't say "support" or "resistance".** To the user those mean a level the

@@ -384,12 +384,20 @@ Re-firing is still self-limiting, so a live alert doesn't spam you:
   crossing in the watched direction fires again, and a crossing the other way
   records nothing — "it is below the alert now" is explicitly not news. Weekends are
   skipped, but holidays aren't known, so a holiday stretches the window by a day.
+  Only an **open** fire takes follow-ups. Once you dismiss it (or act on the symbol),
+  a crossing in the watched direction fires again even inside the window, and one
+  the other way records nothing. Dismissing answers that row, never the next fire.
 - **Trailing** — `extremePrice` resets to the trigger price, so it starts trailing
   afresh from there.
 - **Volume** — a volume threshold, once crossed, stays crossed, so these set a
   `mutedUntil` for the rest of the day (or the rest of the period window) rather
   than firing on every poll.
 - **Moving average** — at most once per MA bar, as above.
+
+An alert holds at most **one row** in the queue. A new fire takes the place of the
+alert's open fire or drift, which closes as replaced ("Replaced by a later fire" in
+its drawer; the story tells it as no decision). A stop-out row stays, since it is
+about the sale.
 
 Stores written before directions existed are upgraded once with
 `node dist/cli.js alert migrate-directions`. It backs both files up to

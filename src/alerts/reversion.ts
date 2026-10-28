@@ -9,6 +9,13 @@
  * above 50, fell back below it the same day" is the useful signal. Outside
  * the window, a crossing against the watched direction records nothing.
  *
+ * Only an open fire takes follow-ups (the user's rule, 2026-10-28). Once it
+ * is dismissed or closed, a crossing in the watched direction fires again and
+ * one against it records nothing, window or not: a refire is news to look at,
+ * the dismissal only answered the earlier one. And an alert holds at most one
+ * row in the queue, so a new fire takes the place of its open one
+ * (`supersedeOpenEntries`).
+ *
  * The window is counted in trading days on the exchange's calendar
  * (America/New_York): the fire's own day is day 0. Weekends are skipped;
  * exchange holidays are not known here, so a holiday stretches the window by
@@ -135,6 +142,26 @@ export function latestFireOf(entries: RevisitEntry[], alertId: string, level: nu
     }
   }
   return latest;
+}
+
+/**
+ * Closes the open queue rows of `fire`'s alert that it takes the place of: an
+ * older fire, or a drift. A stop-out stays, since it is about the sale and not
+ * the alert. Closed as a dismissal that is settled (`snoozeDays: null`), with
+ * `supersededBy` saying why. Returns the entries it closed.
+ */
+export function supersedeOpenEntries(entries: RevisitEntry[], fire: RevisitEntry, now: Date): RevisitEntry[] {
+  const closed: RevisitEntry[] = [];
+  for (const e of entries) {
+    if (e === fire || e.alertId !== fire.alertId || e.status !== "open") continue;
+    if (e.reason === "stopped" || e.followUpOf !== undefined || e.triggeredAt > fire.triggeredAt) continue;
+    e.status = "dismissed";
+    e.resolvedAt = now.toISOString();
+    e.snoozeDays = null;
+    e.supersededBy = fire.id;
+    closed.push(e);
+  }
+  return closed;
 }
 
 function addFollowUp(anchor: RevisitEntry, followUp: RevisitFollowUp): boolean {

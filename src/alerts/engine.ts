@@ -45,6 +45,7 @@ import {
   entryDirection,
   latestFireOf,
   reversalOf,
+  supersedeOpenEntries,
   watchesDirection,
   withinReversionWindow,
 } from "./reversion.js";
@@ -531,11 +532,13 @@ export async function checkAlerts(
           alert.primed = null;
         }
 
-        // Inside a fire's window, every crossing (either direction, muted or
-        // not) belongs to that fire. It never fires on its own and never waits
-        // on volume: volume was the fire's condition, and it was met.
+        // Inside an open fire's window, every crossing (either direction, muted
+        // or not) belongs to that fire. It never fires on its own and never
+        // waits on volume: volume was the fire's condition, and it was met.
+        // A dismissed or closed fire takes nothing: a watched crossing fires
+        // again, and one against it records nothing.
         const earlier = latestFireOf([...existing, ...revisits], alert.id, alert.level);
-        if (earlier !== null && withinReversionWindow(earlier.triggeredAt, p.at, windowFor(alert.symbol))) {
+        if (earlier !== null && earlier.status === "open" && withinReversionWindow(earlier.triggeredAt, p.at, windowFor(alert.symbol))) {
           const reversal = cross !== entryDirection(earlier) && reversalOf(earlier) === null;
           const followUp: RevisitFollowUp = { at: p.at.toISOString(), price, direction: cross, session: sessionOf(p) };
           earlier.followUps = [...(earlier.followUps ?? []), followUp];
@@ -675,6 +678,13 @@ export async function checkAlerts(
       } else {
         await fireMa(primed.price, primed.at, primedLevel, volume);
       }
+    }
+  }
+
+  // One row per alert: each new fire takes the place of the alert's open one.
+  for (const [i, fire] of revisits.entries()) {
+    for (const e of supersedeOpenEntries([...existing, ...revisits.slice(0, i)], fire, nowDate)) {
+      if (existing.includes(e)) updated.add(e);
     }
   }
 

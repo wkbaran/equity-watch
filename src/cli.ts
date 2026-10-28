@@ -1179,8 +1179,8 @@ async function cmdAlertCheck(opts: AlertCheckOpts): Promise<void> {
   const config = loadTuningConfig(opts.config);
   const ignored = ignoredSymbols(config);
   const market = buildMarketData(opts);
-  // The whole queue, not just open entries: a crossing folds onto its fire
-  // whether or not that entry has been dismissed.
+  // The whole queue, not just open entries: a fire's window and a new fire's
+  // place in the queue are both judged against what came before.
   const stored = loadRevisits(opts.revisitsFile);
   const { checked, triggered, revisits, followUps, updatedRevisits, warnings, unconfirmed, regularPrices } = await checkAlerts(
     alerts,

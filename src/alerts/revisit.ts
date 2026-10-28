@@ -191,6 +191,12 @@ export interface RevisitEntry {
    */
   closedBy?: RevisitClosure;
   /**
+   * The newer fire of the same alert that closed this entry, since an alert
+   * holds one row in the queue (`supersedeOpenEntries`). Status is
+   * "dismissed", but nobody dismissed it, so a story doesn't tell it as one.
+   */
+  supersededBy?: string;
+  /**
    * When and where the price condition was met, if that was at an earlier
    * check than the one where volume qualified and the alert fired. Then
    * `triggeredAt`/`triggerPrice` are the moment volume arrived, and this is

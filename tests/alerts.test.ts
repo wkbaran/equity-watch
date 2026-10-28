@@ -348,10 +348,47 @@ describe("checkAlerts", () => {
       expect(wed.triggered).toHaveLength(1);
       expect(wed.followUps).toHaveLength(0);
       expect(fire.followUps).toHaveLength(1);
+      // One row per alert: the new fire takes the old one's place in the queue.
+      expect(fire).toMatchObject({ status: "dismissed", snoozeDays: null, supersededBy: wed.revisits[0].id });
+      expect(wed.updatedRevisits).toEqual([fire]);
 
       // And later chop folds onto the new fire, not the old one.
       const chop = await p.check(99, "2026-09-16T16:00:00.000Z");
       expect(chop.followUps[0].entry).toBe(wed.revisits[0]);
+    });
+
+    it("folds nothing onto a dismissed fire: a watched crossing fires again, one against it records nothing", async () => {
+      const alert = makeStatic({ direction: "up", level: 100, lastKnownSide: "below" });
+      const p = poller(alert);
+      const fire = (await p.check(101, FRI)).revisits[0];
+      fire.status = "dismissed";
+      fire.resolvedAt = "2026-09-11T14:30:00.000Z";
+      fire.snoozeDays = 7;
+
+      const back = await p.check(99, "2026-09-11T15:00:00.000Z");
+      expect(back.followUps).toHaveLength(0);
+      expect(back.updatedRevisits).toHaveLength(0);
+      expect(fire.followUps).toBeUndefined();
+      expect(alert.lastKnownSide).toBe("below");
+
+      const again = await p.check(101, "2026-09-11T16:00:00.000Z");
+      expect(again.triggered).toHaveLength(1);
+      expect(again.revisits).toHaveLength(1);
+      // The dismissal is left as it was: it isn't open, so nothing is superseded.
+      expect(fire).toMatchObject({ status: "dismissed", snoozeDays: 7 });
+      expect(fire.supersededBy).toBeUndefined();
+    });
+
+    it("leaves a stop-out open when the alert fires again", async () => {
+      const alert = makeStatic({ direction: "up", level: 100, lastKnownSide: "below" });
+      const p = poller(alert);
+      const fire = (await p.check(101, FRI)).revisits[0];
+      p.store.push({ ...fire, id: "stop", followUps: undefined, reason: "stopped", triggeredAt: "2026-09-12T14:00:00.000Z" });
+
+      await p.check(99, "2026-09-16T14:00:00.000Z");
+      await p.check(101, "2026-09-16T15:00:00.000Z");
+      expect(fire.supersededBy).toBeDefined();
+      expect(p.store.find((e) => e.id === "stop")?.status).toBe("open");
     });
 
     it("records nothing for a counter-crossing outside the window", async () => {

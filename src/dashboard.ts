@@ -164,6 +164,8 @@ export interface TriggerRow extends CrossingDetails {
   session: Session | null;
   status: RevisitEntry["status"];
   resolvedAt: string | null;
+  /** The newer fire that took this one's place in the queue, if that is what closed it. */
+  supersededBy: string | null;
   /** The level before and after the edit that closed it, when that moved it. */
   appliedFrom: number | null;
   appliedTo: number | null;
@@ -726,6 +728,7 @@ export function buildDashboard(inputs: DashboardInputs): Dashboard {
         session: e.session ?? null,
         status: e.status,
         resolvedAt: e.resolvedAt,
+        supersededBy: e.supersededBy ?? null,
         appliedFrom: e.appliedFrom ?? null,
         appliedTo: e.appliedTo ?? null,
         priority: rankOf(e).priority,

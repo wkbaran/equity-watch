@@ -398,6 +398,15 @@ describe("tickerStory", () => {
     expect(story.lines.some((l) => l.text.includes("you left the level where it was"))).toBe(true);
   });
 
+  it("tells no dismissal for a fire a later one took the place of", () => {
+    const story = tickerStory(
+      "GO",
+      [entry({ symbol: "GO", status: "dismissed", resolvedAt: "2026-09-11T13:00:00Z", supersededBy: "2" })],
+      NONE
+    );
+    expect(story.lines.some((l) => l.text.includes("you left the level where it was"))).toBe(false);
+  });
+
   it("keeps beats in chronological order regardless of input order", () => {
     const story = tickerStory(
       "X",

@@ -4749,6 +4749,7 @@
   function triggerStatus(t) {
     if (t.status === "open") return ["Open"];
     const at = t.resolvedAt ? ` ${atWhen(t.resolvedAt)}` : "";
+    if (t.supersededBy) return [`Replaced by a later fire${at}`];
     if (t.status === "dismissed") return [`Dismissed${at}`];
     if (t.appliedTo !== null && t.appliedTo !== undefined) {
       return [`Changed to ${t.appliedTo}${at}`, t.appliedFrom !== null && t.appliedFrom !== undefined ? muted(` (was ${t.appliedFrom})`) : ""];

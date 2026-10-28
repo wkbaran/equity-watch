@@ -556,7 +556,7 @@ export function tickerStory(symbol: string, entriesInput: RevisitEntry[], ctx: N
       changesTold.add(change.key);
       const at = entry.resolvedAt ?? entry.triggeredAt;
       lines.push({ at, text: `${shortDate(at)}: you ${change.text}.` });
-    } else if (entry.status === "dismissed") {
+    } else if (entry.status === "dismissed" && entry.supersededBy === undefined) {
       lines.push({
         at: entry.resolvedAt ?? entry.triggeredAt,
         text: `${shortDate(entry.resolvedAt ?? entry.triggeredAt)}: you left the level where it was.`,
