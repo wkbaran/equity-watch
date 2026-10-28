@@ -76,6 +76,8 @@ export interface OrderOutcome extends Outcome {
 
 /** A buy or sell limit this far from the last price is refused as a likely typo. */
 export const FAT_FINGER = 0.2;
+/** Outside the regular session a cash equivalent's book thins: refuse a bid-ask spread wider than this share of the price. */
+export const MAX_EXTENDED_SPREAD = 0.0025;
 /** How long a Roth buy waits for the BIL sale funding it to fill. */
 export const FUNDING_WAIT_MS = 3 * 60 * 1000;
 const FUNDING_POLL_MS = 5000;
@@ -119,6 +121,23 @@ export function inRegularSession(now: Date): boolean {
   const day = new Date(Date.UTC(w.year, w.month - 1, w.day)).getUTCDay();
   const minute = w.hour * 60 + w.minute;
   return day >= 1 && day <= 5 && minute >= 9 * 60 + 30 && minute < 16 * 60;
+}
+
+/** Pre-market, regular and after-hours together: Monday to Friday 04:00-20:00 New York. */
+export function inExtendedHours(now: Date): boolean {
+  const w = wallClock(now, MARKET_TIME_ZONE);
+  const day = new Date(Date.UTC(w.year, w.month - 1, w.day)).getUTCDay();
+  const minute = w.hour * 60 + w.minute;
+  return day >= 1 && day <= 5 && minute >= 4 * 60 && minute < 20 * 60;
+}
+
+/**
+ * The session a cash equivalent's order goes out in: the regular session when
+ * it is open, otherwise extended hours, so moving cash in or out of BIL needn't
+ * wait for the open (the user's call, 2026-10-28).
+ */
+function bilSession(now: Date): "CORE" | "ALL" {
+  return inExtendedHours(now) && !inRegularSession(now) ? "ALL" : "CORE";
 }
 
 function newOrder(
@@ -212,6 +231,7 @@ async function bilPrice(ctx: OrderContext, symbol: string, side: "BUY" | "SELL",
   const price = quote === null ? null : side === "BUY" ? quote.ask : quote.bid;
   if (price === null || !(price > 0)) return null;
   if (last !== null && last > 0 && Math.abs(price - last) > last * FAT_FINGER) return null;
+  if (bilSession(ctx.now()) === "ALL" && quote!.ask - quote!.bid > price * MAX_EXTENDED_SPREAD) return null;
   return tick(price);
 }
 
@@ -442,15 +462,15 @@ async function cover(op: Op, ctx: OrderContext, account: Account): Promise<Order
   if (account.open.some((o) => o.symbol === bil.symbol && o.side === "SELL")) {
     return no(bil.symbol, `Not sent: a ${bil.symbol} sell order is already working.`);
   }
-  if (!inRegularSession(ctx.now())) {
-    return no(bil.symbol, "Not sent: the regular session is closed. Try again during market hours.");
+  if (!inExtendedHours(ctx.now())) {
+    return no(bil.symbol, "Not sent: the market is closed, extended hours included (04:00-20:00 New York).");
   }
   const bid = await bilPrice(ctx, bil.symbol, "SELL", bil.lastPrice);
   if (bid === null) {
     return no(bil.symbol, `Not sent: there is no usable ${bil.symbol} bid to sell at.`);
   }
   const quantity = Math.min(Math.ceil(-cash / bid), Math.floor(bil.quantity + 1e-9));
-  const order = newOrder(clientOrderId(op.id, "cover"), bil.symbol, "SELL", "LIMIT", quantity, { limit: bid }, "DAY", "CORE");
+  const order = newOrder(clientOrderId(op.id, "cover"), bil.symbol, "SELL", "LIMIT", quantity, { limit: bid }, "DAY", bilSession(ctx.now()));
   const { placed, already } = await placeOnce(ctx, account, [order]);
   const short = quantity * bid < -cash ? ` That is all of it, and still short ${(-cash - quantity * bid).toFixed(2)}.` : "";
   return ok(bil.symbol, `Selling ${bil.symbol} to cover the margin debit.`, `${sentText([order], placed, already)}; cash ${cash}.${short}`);
@@ -469,8 +489,8 @@ async function park(op: Op, ctx: OrderContext, account: Account): Promise<OrderO
   if (account.open.some((o) => o.symbol === symbol && o.side === "BUY")) {
     return no(symbol, `Not sent: a ${symbol} buy order is already working.`);
   }
-  if (!inRegularSession(ctx.now())) {
-    return no(symbol, "Not sent: the regular session is closed. Try again during market hours.");
+  if (!inExtendedHours(ctx.now())) {
+    return no(symbol, "Not sent: the market is closed, extended hours included (04:00-20:00 New York).");
   }
   const ask = await bilPrice(ctx, symbol, "BUY", held(account, symbol)?.lastPrice ?? null);
   if (ask === null) {
@@ -486,7 +506,7 @@ async function park(op: Op, ctx: OrderContext, account: Account): Promise<OrderO
   if (quantity < 1) {
     return no(symbol, `Not sent: the spare cash doesn't buy a whole ${symbol} share.`, `cash ${account.balance.cash}, in buy orders ${committed.toFixed(2)}, ask ${ask}`);
   }
-  const order = newOrder(clientOrderId(op.id, "park"), symbol, "BUY", "LIMIT", quantity, { limit: ask }, "DAY", "CORE");
+  const order = newOrder(clientOrderId(op.id, "park"), symbol, "BUY", "LIMIT", quantity, { limit: ask }, "DAY", bilSession(ctx.now()));
   const { placed, already } = await placeOnce(ctx, account, [order]);
   const capped = allowed < affordable ? " (capped at the largest order allowed)" : "";
   return ok(symbol, `Buying ${symbol} with the spare cash${capped}.`, `${sentText([order], placed, already)}; cash ${account.balance.cash}, in buy orders ${committed.toFixed(2)}`);
@@ -596,7 +616,7 @@ async function buy(op: Op, ctx: OrderContext, account: Account, symbol: string |
     if (bilShares * bid < shortfall) {
       return no(symbol, "Not sent: it costs more than the account's cash and BIL together, and orders here never borrow.", `cost ${cost.toFixed(2)}, cash ${cash}, BIL at the bid ${(bilShares * bid).toFixed(2)}`);
     }
-    const sale = newOrder(clientOrderId(op.id, "fund"), bil!.symbol, "SELL", "LIMIT", bilShares, { limit: bid }, "DAY", "CORE");
+    const sale = newOrder(clientOrderId(op.id, "fund"), bil!.symbol, "SELL", "LIMIT", bilShares, { limit: bid }, "DAY", bilSession(ctx.now()));
     const sold = await placeOnce(ctx, account, [sale]);
     funding = `${sentText([sale], sold.placed, sold.already)}; `;
     if (account.type !== "MARGIN") {

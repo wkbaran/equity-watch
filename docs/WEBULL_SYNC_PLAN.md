@@ -244,11 +244,12 @@ Trading), and it does exactly one thing:
 - **One at a time.** If an open sell order for BIL already exists in that account,
   the op is refused, so two clicks or a redelivered op can't sell twice. The op id
   is the idempotency key, as for stops.
-- **Limit order, regular session, `DAY`.** A limit at the bid (since 2026-10-26;
+- **Limit order, `DAY`, regular or extended hours.** A limit at the bid (since 2026-10-26;
   it was a few cents under the last price) rather than a market order. BIL trades in a narrow band, so it fills, and a bad
-  print can't sell it cheap. Outside the regular session the button is disabled,
-  and an op that arrives after the close is refused rather than sent for the next
-  day.
+  print can't sell it cheap. Since 2026-10-28 it also goes out in pre- and
+  post-market (`support_trading_session: ALL`), refusing a spread over 0.25%
+  there; an op that arrives outside 04:00-20:00 New York is refused rather than
+  sent for the next day.
 - **Margin account and `cashEquivalents` only.** The op names no symbol and no
   quantity, so it can't be turned into another sale. When BIL doesn't cover the
   whole shortfall ("On margin"), it sells all the whole BIL shares held and says

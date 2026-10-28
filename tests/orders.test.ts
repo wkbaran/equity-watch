@@ -6,7 +6,7 @@ import type { HoldingsStore } from "../src/holdings/models.js";
 import { saveHoldingsStore } from "../src/holdings/store.js";
 import { parseOp, type Op } from "../src/ops/apply.js";
 import { loadOrdersState, ordersConfig, type OrdersConfig } from "../src/orders/config.js";
-import { applyOrderOp, clientOrderId, inRegularSession, settleFollowUps, type OrderClient, type OrderContext } from "../src/orders/execute.js";
+import { applyOrderOp, clientOrderId, inExtendedHours, inRegularSession, settleFollowUps, type OrderClient, type OrderContext } from "../src/orders/execute.js";
 import { base32Decode, base32Encode, stepOf, totpAt, verifyTotp } from "../src/orders/totp.js";
 import { handleMessage, type WatchContext } from "../src/orders/watch.js";
 import type { NewOrder, OrderChange, WebullBalance, WebullOrder, WebullPosition } from "../src/providers/webull.js";
@@ -49,6 +49,16 @@ describe("inRegularSession", () => {
     expect(inRegularSession(new Date("2026-10-26T15:00:00.000Z"))).toBe(true); // Monday 11:00 ET
     expect(inRegularSession(new Date("2026-10-26T13:00:00.000Z"))).toBe(false); // 09:00 ET
     expect(inRegularSession(new Date("2026-10-25T15:00:00.000Z"))).toBe(false); // Sunday
+  });
+});
+
+describe("inExtendedHours", () => {
+  it("runs 04:00-20:00 New York on weekdays", () => {
+    expect(inExtendedHours(new Date("2026-10-26T08:00:00.000Z"))).toBe(true); // Monday 04:00 ET
+    expect(inExtendedHours(new Date("2026-10-26T23:59:00.000Z"))).toBe(true); // 19:59 ET
+    expect(inExtendedHours(new Date("2026-10-27T00:00:00.000Z"))).toBe(false); // 20:00 ET
+    expect(inExtendedHours(new Date("2026-10-26T07:59:00.000Z"))).toBe(false); // 03:59 ET
+    expect(inExtendedHours(new Date("2026-10-25T15:00:00.000Z"))).toBe(false); // Sunday
   });
 });
 
@@ -292,20 +302,35 @@ describe("Move to BIL", () => {
     expect(client.placed[0].orders[0]).toMatchObject({ symbol: "BIL", quantity: "21" });
   });
 
-  it("refuses under a share of spare cash, with a BIL buy working, or outside the session", async () => {
+  it("goes out in extended hours after the close, and refuses a wide spread there", async () => {
+    const after = new Date("2026-10-26T22:13:00.000Z"); // 18:13 ET
+    const client = fakeClient({ positions: [], cash: 1000 });
+    const evening = { ...context(client), now: () => after };
+    expect(await applyOrderOp(op("cash.park", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(after))), evening)).toMatchObject({ ok: true });
+    expect(client.placed[0].orders[0]).toMatchObject({ symbol: "BIL", side: "BUY", limit_price: "91.51", time_in_force: "DAY", support_trading_session: "ALL" });
+    const thin = { ...context(fakeClient({ positions: [], cash: 1000 })), now: () => after, bidAsk: () => Promise.resolve({ bid: 91.2, ask: 91.6 }) };
+    expect(await applyOrderOp(op("cash.park", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(after) + 1)), thin)).toMatchObject({ ok: false, message: expect.stringContaining("no usable BIL ask") });
+  });
+
+  it("refuses under a share of spare cash, with a BIL buy working, or outside extended hours", async () => {
     expect(await applyOrderOp(op("cash.park", { account: "margin" }), context(fakeClient({ positions: [], cash: 50 })))).toMatchObject({ ok: false, message: expect.stringContaining("whole BIL share") });
     const busy = fakeClient({ positions: [], cash: 1000, open: [working("ewbil", "BIL", "BUY", "LIMIT", 1, { limit: 91.5 })] });
     expect(await applyOrderOp(op("cash.park", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(NOW) + 1)), context(busy))).toMatchObject({ ok: false, message: expect.stringContaining("already working") });
-    const late = new Date("2026-10-26T23:00:00.000Z");
+    const late = new Date("2026-10-27T01:00:00.000Z"); // 21:00 ET
     const evening = { ...context(fakeClient({ positions: [], cash: 1000 })), now: () => late };
-    expect(await applyOrderOp(op("cash.park", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(late))), evening)).toMatchObject({ ok: false, message: expect.stringContaining("session") });
+    expect(await applyOrderOp(op("cash.park", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(late))), evening)).toMatchObject({ ok: false, message: expect.stringContaining("market is closed") });
   });
 
-  it("refuses with nothing to cover, outside the session, or in a cash account", async () => {
+  it("refuses with nothing to cover, outside extended hours, or in a cash account", async () => {
     const client = fakeClient({ positions: [position("BIL", 100, 91.5)], cash: 100 });
     expect((await applyOrderOp(op("cash.cover", { account: "margin" }), context(client))).ok).toBe(false);
-    const evening = { ...context(fakeClient({ positions: [position("BIL", 100, 91.5)], cash: -450 })), now: () => new Date("2026-10-26T23:00:00.000Z") };
-    expect((await applyOrderOp(op("cash.cover", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(new Date("2026-10-26T23:00:00.000Z")))), evening)).ok).toBe(false);
+    const night = new Date("2026-10-27T01:00:00.000Z"); // 21:00 ET
+    const evening = { ...context(fakeClient({ positions: [position("BIL", 100, 91.5)], cash: -450 })), now: () => night };
+    expect((await applyOrderOp(op("cash.cover", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(night))), evening)).ok).toBe(false);
+    const after = new Date("2026-10-26T23:00:00.000Z"); // 19:00 ET
+    const postMarket = fakeClient({ positions: [position("BIL", 100, 91.5)], cash: -450 });
+    expect((await applyOrderOp(op("cash.cover", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(after))), { ...context(postMarket), now: () => after })).ok).toBe(true);
+    expect(postMarket.placed[0].orders[0]).toMatchObject({ side: "SELL", support_trading_session: "ALL" });
     saveHoldingsStore(holdingsFile, store("CASH", "roth"));
     const roth = context(fakeClient({ positions: [position("BIL", 100, 91.5)], cash: -1 }), {}, "roth");
     expect((await applyOrderOp(op("cash.cover", { account: "roth" }, {}, undefined, totpAt(SECRET, stepOf(NOW) + 1)), roth)).ok).toBe(false);

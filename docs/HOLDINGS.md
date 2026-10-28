@@ -210,7 +210,9 @@ same checks on the machine before anything reaches Webull.
    sync's copy):
    - **Stops**: GTC sell `STOP_LOSS`, regular session, whole shares only, no more
      than the whole shares held less any other working sell, a stop under the last
-     price. Only on a holding the sync keeps.
+     price. Only on a holding the sync keeps. Placing, moving and cancelling one
+     works at any hour, weekends included (confirmed with Webull 2026-10-28); the
+     stop itself only triggers in the regular session.
    - **Sells and buys**: limit orders only, never market; a limit more than 20%
      the wrong side of the last price is refused as a likely typo.
    - **Buys**: Webull previews the cost, which must be under `ORDERS_MAX_VALUE`
@@ -249,10 +251,17 @@ same checks on the machine before anything reaches Webull.
      order is sent: covering, funding a buy, and moving cash in. With no bid or
      ask (Schwab's login expired, or one more than 20% off the last price), the
      order is refused rather than priced another way.
-   - **Sell BIL to cover**: margin account, cash below zero, regular session, no
-     BIL sale already working; sells `ceil(-cash / bid)` whole shares.
+   - **BIL trades in extended hours too** (2026-10-28): covering, moving cash in,
+     and the Fund from BIL sale all go out with Webull's `ALL` session between
+     04:00 and 09:30 and 16:00 and 20:00 New York, and `CORE` in the regular
+     session. Outside 04:00-20:00 covering and moving cash in are refused. In
+     extended hours a bid-ask spread wider than 0.25% of the price is refused,
+     since the book thins there. Half days aren't known, so after a 13:00 close
+     an order sent after 17:00 is refused or expires at Webull.
+   - **Sell BIL to cover**: margin account, cash below zero, regular or extended
+     hours, no BIL sale already working; sells `ceil(-cash / bid)` whole shares.
    - **Move to BIL**: shown beside an account's cash when the cash not already in
-     buy orders buys a share at BIL's last price. Regular session, no BIL buy
+     buy orders buys a share at BIL's last price. Regular or extended hours, no BIL buy
      already working; buys as many whole shares as that cash covers at the ask, up
      to `ORDERS_MAX_VALUE` (the result says when it was capped).
    - **Change or cancel**: the order must still look as the page showed it.

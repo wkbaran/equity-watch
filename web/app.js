@@ -1969,7 +1969,7 @@
       h("button", {
         type: "button",
         text: "Sell BIL to cover",
-        title: "Sells just enough whole BIL shares, a limit at the bid, to bring cash back to zero. Regular session only.",
+        title: "Sells just enough whole BIL shares, a limit at the bid, to bring cash back to zero. Regular or extended hours (04:00-20:00 New York).",
         onclick: () => submitOrder({ type: "cash.cover", target: { account: account.label }, params: {} }, code, { symbol: "BIL", summary: `sell BIL to cover margin in ${account.label}` }),
       })
     );
@@ -1994,7 +1994,7 @@
       h("button", {
         type: "button",
         text: "Move to BIL",
-        title: "Buys as many whole BIL shares as the spare cash allows, a limit at the ask, up to the largest order allowed. Regular session only.",
+        title: "Buys as many whole BIL shares as the spare cash allows, a limit at the ask, up to the largest order allowed. Regular or extended hours (04:00-20:00 New York).",
         onclick: () => submitOrder({ type: "cash.park", target: { account: account.label }, params: {} }, code, { symbol: "BIL", summary: `move spare cash in ${account.label} to BIL` }),
       })
     );
