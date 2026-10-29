@@ -3021,19 +3021,20 @@
     const submit = h("button", { type: "submit", text: "Queue sale" });
     const cancel = h("button", { type: "button", class: "link-button", text: "Cancel", onclick: () => close() });
     // The old Remove: for a lot entered by mistake, which was never sold.
+    // An account scope holding one lot is that lot: with the rest kept by the
+    // sync there is no lot scope to pick then, and it must still be removable.
+    const lotToRemove = (sc) => sc.lot ?? (partial && sc.lots.length === 1 ? sc.lots[0] : null);
     const removeOnly = confirmButton("Remove without a sale", () => {
-      const sc = scopeOf(from.value);
-      return sc.lot
+      const lot = lotToRemove(scopeOf(from.value));
+      return lot
         ? submitOp(
-            { type: "lot.remove", target: { lotId: sc.lot.id }, expect: lotExpect(sc.lot), params: {} },
-            { symbol, summary: `remove a ${symbol} lot (${sc.lot.count} @ ${sc.lot.basisPerShare})` }
+            { type: "lot.remove", target: { lotId: lot.id }, expect: lotExpect(lot), params: {} },
+            { symbol, summary: `remove a ${symbol} lot (${lot.count} @ ${lot.basisPerShare})` }
           ).then((queued) => queued && close())
-        : partial
-          ? Promise.resolve(notice(`Remove ${symbol}'s lots one at a time: the Webull sync keeps the rest of the position.`, false))
-          : submitOp(
-              { type: "position.remove", target: { symbol }, expect: { lotIds: lots.map((l) => l.id) }, params: {} },
-              { symbol, summary: `remove the ${symbol} position` }
-            ).then((queued) => queued && close());
+        : submitOp(
+            { type: "position.remove", target: { symbol }, expect: { lotIds: lots.map((l) => l.id) }, params: {} },
+            { symbol, summary: `remove the ${symbol} position` }
+          ).then((queued) => queued && close());
     });
     removeOnly.classList.add("link-button");
 
@@ -3051,9 +3052,9 @@
       const n = positive(count.value);
       const p = price.value.trim() === "" ? q : positive(price.value);
       const plan = n === null ? null : planSale(sc.lots, n, p);
-      // Account and whole-position removals have no "without a sale" here: a
-      // removal with no price is all of a lot or all of the position.
-      removeOnly.hidden = !(sc.lot || sc.value === "all");
+      // Account removals have no "without a sale" here: a removal with no
+      // price is all of a lot or all of the position.
+      removeOnly.hidden = !(lotToRemove(sc) || sc.value === "all");
 
       const taking = new Map((plan?.takes ?? []).map((t) => [t.lot.id, t.take]));
       const inScope = new Set(sc.lots.map((l) => l.id));

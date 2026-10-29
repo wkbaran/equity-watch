@@ -119,6 +119,21 @@ test("a lot the sync keeps can't be edited or sold by hand, and can be unlinked"
   expect(ops[0]).toMatchObject({ type: "holding.unlink", target: { account: "margin", symbol: "AA" } });
 });
 
+test("the one hand lot beside a kept account can be removed without a sale", async ({ page }) => {
+  await serveVault(page, { webull: WEBULL, holdingSources: [{ account: "margin", symbol: "AA", source: "webull" }] });
+  await page.goto("/#/holdings");
+  await unlockWith(page, OPS_TOKEN);
+  await positionRow(page, "AA").locator("td").nth(2).click();
+  await expect(detail(page)).toBeVisible();
+
+  await detail(page).getByRole("button", { name: "Sell from position" }).click();
+  await detail(page).getByRole("button", { name: "Remove without a sale" }).click();
+  await detail(page).getByRole("button", { name: "Click again to confirm" }).click();
+  await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+  const ops = await queuedOps(page);
+  expect(ops[0]).toMatchObject({ type: "lot.remove", target: { lotId: "lot00001" }, params: {} });
+});
+
 test("a kept position's Webull stops show as orders, flagged short and expiring", async ({ page }) => {
   const placedAt = new Date(Date.now() - 55 * 86_400_000).toISOString();
   await serveVault(page, {
