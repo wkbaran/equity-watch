@@ -443,7 +443,11 @@ selling the last share deletes them. A sale the Webull sync records adds the sto
 order that filled when the record no longer has it, which happens when the sale
 arrives a run or more after the fill. A stop sale also puts the symbol in the
 revisit queue ([ALERTS.md](ALERTS.md#what-is-in-the-queue-and-in-what-order)). `atr` is the ATR(14) the page showed when
-the sale was queued (`null` if it had none). Together with the sale's price and
+the sale was queued (`null` if it had none). A sale the Webull sync records
+starts with `null`, since the sync applies sales with no market data; the same
+`holdings sync` run then fills it, and any other stop sale still `null`, with
+ATR(14) from the daily bars before the sale date. Without a Schwab login it
+stays `null` and the next run tries again. Together with the sale's price and
 lots that is enough to compute the stop's distance in ATRs, the slippage past
 the stop, and the result against basis. The story tells a marked sale as the
 stop's, with those numbers: "a stop sold your VYX position: 50 shares at 7.79, up

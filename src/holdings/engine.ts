@@ -224,6 +224,29 @@ export interface SaleInput {
 }
 
 /**
+ * Fills in `stopHit.atr` on stop sales that lack one, in place: every sale the
+ * Webull sync records (the sync has no market data when it applies them), and
+ * any the page queued without an ATR. `atrBefore` is ATR(14) from the daily
+ * bars before the sale date, which is what the page shows on that day; it
+ * returns undefined when it couldn't find out (no login, a failed fetch), and
+ * the sale stays null for a later run to try. Returns the sales it filled.
+ */
+export async function fillStopAtrs(
+  store: HoldingsStore,
+  atrBefore: (symbol: string, date: string) => Promise<number | null | undefined>
+): Promise<Sale[]> {
+  const filled: Sale[] = [];
+  for (const sale of store.sales ?? []) {
+    if (sale.stopHit === undefined || sale.stopHit.atr !== null) continue;
+    const atr = await atrBefore(sale.symbol, sale.soldOn);
+    if (atr === undefined || atr === null) continue;
+    sale.stopHit.atr = atr;
+    filled.push(sale);
+  }
+  return filled;
+}
+
+/**
  * Lots in the order a sale takes from them: oldest purchase first, which is
  * the brokers' default (FIFO), with the entry time and id as tie-breaks so the
  * order never depends on how the store happens to be sorted. Exported because

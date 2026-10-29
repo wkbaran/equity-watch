@@ -45,9 +45,9 @@ import {
 } from "./alerts/revisitStore.js";
 import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.js";
 import { queueStopOuts, stopOutEntries } from "./alerts/stopOuts.js";
-import { addLot, addStop, checkHoldings } from "./holdings/engine.js";
+import { addLot, addStop, checkHoldings, fillStopAtrs } from "./holdings/engine.js";
 import { coverCandidates, coverLevel } from "./holdings/cover.js";
-import { computeBasis, heldSymbolsOf } from "./holdings/models.js";
+import { computeBasis, heldSymbolsOf, type HoldingsStore, type Sale } from "./holdings/models.js";
 import { ConsoleHoldingsNotifier } from "./holdings/notify.js";
 import { writeHoldingsAlertReport } from "./holdings/report.js";
 import {
@@ -315,17 +315,11 @@ async function heldDailyStats(opts: CommonOpts, firstPurchase: Map<string, strin
   if (firstPurchase.size === 0 || schwabCredentials(opts) === null) {
     return stats;
   }
-  const midnight = (date: string) => {
-    const [y, m, d] = date.split("-").map(Number);
-    return zonedTimeToUtc(y, m, d, 0, 0, 0, MARKET_TIME_ZONE);
-  };
   const today = marketDate(now);
-  const end = midnight(today);
   const provider = new CachingProvider(schwabProvider(opts), join(".cache", "bars"));
   for (const [symbol, purchased] of firstPurchase) {
-    const start = new Date(Math.min(midnight(purchased).getTime(), end.getTime() - 60 * 86_400_000));
     try {
-      const bars = (await provider.getDailyBars(symbol, start, end)).filter((b) => marketDate(b.date) < today);
+      const bars = await dailyBarsBefore(provider, symbol, today, purchased);
       const atr = averageTrueRange(bars);
       const held = bars.filter((b) => marketDate(b.date) >= purchased);
       stats.set(symbol, {
@@ -341,6 +335,50 @@ async function heldDailyStats(opts: CommonOpts, firstPurchase: Map<string, strin
     }
   }
   return stats;
+}
+
+function easternMidnight(date: string): Date {
+  const [y, m, d] = date.split("-").map(Number);
+  return zonedTimeToUtc(y, m, d, 0, 0, 0, MARKET_TIME_ZONE);
+}
+
+/**
+ * Completed daily bars before the trading date `date`, from `from` and at least
+ * 60 days back. Ending the request at Eastern midnight keys the bar cache by
+ * trading date, and the filter drops that day's own bar if the response carries one.
+ */
+async function dailyBarsBefore(provider: PriceDataProvider, symbol: string, date: string, from: string = date): Promise<PriceBar[]> {
+  const end = easternMidnight(date);
+  const start = new Date(Math.min(easternMidnight(from).getTime(), end.getTime() - 60 * 86_400_000));
+  return (await provider.getDailyBars(symbol, start, end)).filter((b) => marketDate(b.date) < date);
+}
+
+/**
+ * ATR(14) on each stop sale that has none (`fillStopAtrs`), as of the close
+ * before it sold. `holdings sync` records Webull's stop sales with no market
+ * data, and runs whether or not Schwab is logged in, so this is best-effort:
+ * without a login a sale stays null and the next run tries again. The request
+ * for a past date never changes, so the bar cache makes the retry free once
+ * one succeeds.
+ */
+async function fillStopSaleAtrs(opts: CommonOpts, store: HoldingsStore): Promise<Sale[]> {
+  if (schwabCredentials(opts) === null) {
+    return [];
+  }
+  const provider = new CachingProvider(schwabProvider(opts), join(".cache", "bars"));
+  let loginFailed = false;
+  return fillStopAtrs(store, async (symbol, date) => {
+    if (loginFailed) return undefined;
+    try {
+      const atr = averageTrueRange(await dailyBarsBefore(provider, symbol, date));
+      return atr === null ? null : round(atr, 4);
+    } catch (err) {
+      console.error(`  ! ${symbol}: daily bars failed (${errorText(err)}); its stop sale has no ATR yet.`);
+      // An expired login fails every symbol the same way.
+      loginFailed = err instanceof SchwabAuthError;
+      return undefined;
+    }
+  });
 }
 
 const VOLUME_BASELINE_CACHE_DIR = join(".cache", "volume-baseline");
@@ -2194,7 +2232,7 @@ async function cmdWebullAccounts(opts: WebullOpts): Promise<void> {
   }
 }
 
-interface HoldingsSyncOpts extends WebullOpts {
+interface HoldingsSyncOpts extends WebullOpts, CommonOpts {
   holdingsFile: string;
   alertsFile: string;
   revisitsFile: string;
@@ -2298,6 +2336,7 @@ async function cmdHoldingsSync(opts: HoldingsSyncOpts): Promise<void> {
   }
 
   const result = applySyncPlan(store, plan, now);
+  const withAtr = await fillStopSaleAtrs(opts, store);
   saveHoldingsStore(opts.holdingsFile, store);
 
   const cashName = cashEquivalents.length > 0 ? cashEquivalents.join("+") : "cash equivalents";
@@ -2309,6 +2348,9 @@ async function cmdHoldingsSync(opts: HoldingsSyncOpts): Promise<void> {
   }
   for (const c of result.cashChanges) {
     console.log(`  ! ${describeCashStatus(c.label, c.to, c.cash, cashName)}`);
+  }
+  for (const s of withAtr) {
+    console.log(`  ${s.symbol}: recorded ATR ${s.stopHit!.atr} on its stop sale of ${s.soldOn}.`);
   }
   const soldBy = new Set(result.applied.flatMap((a) => (a.change.type === "sell" ? [a.change.orderId] : [])));
   const stopOuts = queueStopOuts(
@@ -3162,8 +3204,7 @@ function buildProgram(): Command {
     .option("--dry-run", "Print the plan without writing anything")
     .action((opts: HoldingsImportOpts) => cmdHoldingsImport(opts));
 
-  holdingsCmd
-    .command("sync")
+  withCommon(holdingsCmd.command("sync"))
     .description("Bring the webull holdings in line with the mapped Webull accounts, and record their cash")
     .option(...HOLDINGS_FILE_OPTION)
     .option(...configOption("supplies cashEquivalents"))

@@ -114,7 +114,11 @@ export interface Sale {
  * leaves holdings.json.
  */
 export interface StopHit {
-  /** ATR(14) in dollars as the page showed it when the sale was queued; null when it had none. */
+  /**
+   * ATR(14) in dollars as the page showed it when the sale was queued. Null when
+   * it had none, and on a sale the Webull sync records until `holdings sync`
+   * fills it from the daily bars before the sale date (`fillStopAtrs`).
+   */
   atr: number | null;
   /** Every stop the symbol had when it sold. Usually one; `count` null covers whatever was held. */
   stops: { stopPrice: number; count: number | null; createdAt: string }[];

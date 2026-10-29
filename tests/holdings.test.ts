@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ABOVE_BASIS_THRESHOLD_PCT, checkHoldings, saleOrder, STAGNANT_MAX_PROFIT_PCT, STAGNANT_MIN_DAYS, STOP_ATR_BAND, STOP_ATR_MULTIPLE } from "../src/holdings/engine.js";
-import { computeBasis, emptyHoldingsStore, type HoldingsStore, type Lot } from "../src/holdings/models.js";
+import { ABOVE_BASIS_THRESHOLD_PCT, checkHoldings, fillStopAtrs, saleOrder, STAGNANT_MAX_PROFIT_PCT, STAGNANT_MIN_DAYS, STOP_ATR_BAND, STOP_ATR_MULTIPLE } from "../src/holdings/engine.js";
+import { computeBasis, emptyHoldingsStore, type HoldingsStore, type Lot, type Sale } from "../src/holdings/models.js";
 import type { Quote } from "../src/providers/schwab.js";
 
 function fakeMarket(prices: Record<string, number>) {
@@ -312,5 +312,47 @@ describe("web/app.js takes lots for a sale in the worker's order", () => {
     ];
     expect(copy(lots).map((l) => l.id)).toEqual(["d", "a", "c", "b"]);
     expect(copy(lots)).toEqual(saleOrder(lots));
+  });
+});
+
+describe("fillStopAtrs", () => {
+  const sale = (id: string, stopHit: Sale["stopHit"], symbol = "STGW"): Sale => ({
+    id,
+    symbol,
+    count: 40,
+    price: 8.42,
+    soldOn: "2026-10-29",
+    recordedAt: "2026-10-29T13:45:01.641Z",
+    lots: [],
+    ...(stopHit !== undefined ? { stopHit } : {}),
+  });
+
+  it("fills only stop sales with no ATR, from the day before the sale", async () => {
+    const store: HoldingsStore = {
+      ...emptyHoldingsStore(),
+      sales: [
+        sale("synced", { atr: null, stops: [{ stopPrice: 8.45, count: 40, createdAt: "2026-10-13T14:50:55.533Z" }] }),
+        sale("page", { atr: 0.31, stops: [] }),
+        sale("plain", undefined),
+      ],
+    };
+    const asked: string[] = [];
+    const filled = await fillStopAtrs(store, async (symbol, date) => {
+      asked.push(`${symbol} ${date}`);
+      return 0.2967;
+    });
+    expect(asked).toEqual(["STGW 2026-10-29"]);
+    expect(filled.map((s) => s.id)).toEqual(["synced"]);
+    expect(store.sales!.map((s) => s.stopHit?.atr)).toEqual([0.2967, 0.31, undefined]);
+  });
+
+  it("leaves a sale null when the ATR couldn't be found, for a later run", async () => {
+    const store: HoldingsStore = {
+      ...emptyHoldingsStore(),
+      sales: [sale("a", { atr: null, stops: [] }), sale("b", { atr: null, stops: [] }, "NEW")],
+    };
+    const filled = await fillStopAtrs(store, async (symbol) => (symbol === "NEW" ? null : undefined));
+    expect(filled).toEqual([]);
+    expect(store.sales!.map((s) => s.stopHit?.atr)).toEqual([null, null]);
   });
 });
