@@ -201,7 +201,10 @@ same checks on the machine before anything reaches Webull.
 
 1. `WEBULL_ORDERS=on`;
 2. a valid 6-digit authenticator code, used once (the page asks for it on every
-   order; the secret is only on the machine, so the ops token alone can't trade);
+   order; the secret is only on the machine, so the ops token alone can't trade).
+   After an order, every code field counts down, in its placeholder, to when the
+   authenticator shows the next code, and the page refuses the spent code itself
+   rather than queue an order the watcher would refuse;
 3. an allowed account;
 4. under `ORDERS_MAX_PER_DAY` orders today (stops and cancels don't count, so
    re-levelling every stop at the close is never refused);

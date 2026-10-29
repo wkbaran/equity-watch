@@ -296,6 +296,32 @@ test.describe("orders", () => {
     expect((await queuedOps(page))[0]).toMatchObject({ type: "cash.park", target: { account: "margin" }, params: { code: "444555" } });
   });
 
+  test("after an order, the code fields count down to the next code and refuse the spent one", async ({ page }) => {
+    // Ten seconds into a 30-second authenticator step.
+    await page.clock.install({ time: new Date("2026-10-29T15:00:10.000Z") });
+    const spare = { ...WEBULL, accounts: [{ ...WEBULL.accounts[0], cash: { ...WEBULL.accounts[0].cash!, cash: 1249.4, total: 10399.4 }, cashStatus: "ok" as const }] };
+    await serveVault(page, { webull: spare, orders: ON });
+    // No result yet, for the page's poll while the order is pending.
+    await page.route("**/orders.json", (route) => route.fulfill({ json: sealVault({ results: [] } as never, OPS_TOKEN) }));
+    await page.goto("/#/holdings");
+    await unlockWith(page, OPS_TOKEN);
+    const cash = page.locator("#webull-panel .webull-cash");
+    const code = cash.locator(".code-input");
+    await expect(code).toHaveAttribute("placeholder", "code");
+    await code.fill("444555");
+    await cash.getByRole("button", { name: "Move to BIL" }).click();
+    await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+    await expect(code).toHaveAttribute("placeholder", /^(1\d|20)s$/);
+
+    await code.fill("444555");
+    await cash.getByRole("button", { name: "Move to BIL" }).click();
+    await expect(page.locator("#toasts .toast.bad")).toContainText("That code was just used. A new one appears in");
+    expect(await queuedOps(page)).toHaveLength(1);
+
+    await page.clock.fastForward("00:25");
+    await expect(code).toHaveAttribute("placeholder", "code");
+  });
+
   test("no Move to BIL when the cash doesn't buy a share", async ({ page }) => {
     const little = { ...WEBULL, accounts: [{ ...WEBULL.accounts[0], cash: { ...WEBULL.accounts[0].cash!, cash: 50, total: 9200 }, cashStatus: "ok" as const }] };
     await serveVault(page, { webull: little, orders: ON });

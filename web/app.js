@@ -1612,17 +1612,45 @@
   }
   const webullAccount = (label) => (vaultData?.webull?.accounts ?? []).find((a) => a.label === label) ?? null;
 
+  // The worker takes each code once, so after an order the next one means waiting
+  // for the authenticator to roll over. TOTP_STEP_SECONDS in src/orders/totp.ts.
+  const TOTP_STEP_MS = 30_000;
+  const CODE_TITLE = "The 6-digit code from your authenticator app. Each code works once.";
+  /** The code the last order was queued with, and when. */
+  let spentCode = null;
+  let codeTimer = null;
+  /**
+   * Seconds until the authenticator shows a code after the spent one, by this
+   * device's clock (the app's is usually the same phone). 0 once it has.
+   */
+  function codeWaitSeconds() {
+    if (spentCode === null) return 0;
+    const next = (Math.floor(spentCode.at / TOTP_STEP_MS) + 1) * TOTP_STEP_MS;
+    return Math.max(0, Math.ceil((next - Date.now()) / 1000));
+  }
+  function setCodeHint(input, wait) {
+    input.placeholder = wait > 0 ? `${wait}s` : "code";
+    input.title = wait > 0 ? `That code is spent. A new one appears in ${wait}s.` : CODE_TITLE;
+  }
+  /** Counts the wait down on every code field on the page, then puts "code" back. */
+  function showCodeWait() {
+    clearTimeout(codeTimer);
+    const wait = codeWaitSeconds();
+    for (const input of document.querySelectorAll(".code-input")) setCodeHint(input, wait);
+    codeTimer = wait > 0 ? setTimeout(showCodeWait, 250) : null;
+  }
+
   function codeInput() {
-    return h("input", {
+    const input = h("input", {
       type: "text",
       class: "code-input",
       inputmode: "numeric",
       autocomplete: "one-time-code",
       maxlength: "6",
-      placeholder: "code",
       "aria-label": "Authenticator code",
-      title: "The 6-digit code from your authenticator app. Each code works once.",
     });
+    setCodeHint(input, codeWaitSeconds());
+    return input;
   }
 
   /** Queues an order op with the code from `code`, then watches for its result. */
@@ -1633,9 +1661,19 @@
       code.focus();
       return false;
     }
+    // The same digits again inside the worker's window (a step either side) are
+    // the spent code, and would only come back refused.
+    if (spentCode !== null && c === spentCode.code && Date.now() - spentCode.at < 3 * TOTP_STEP_MS) {
+      const wait = codeWaitSeconds();
+      notice(wait > 0 ? `That code was just used. A new one appears in ${wait}s.` : "That code was just used. Enter the new one.", false);
+      code.focus();
+      return false;
+    }
     const queued = await submitOp({ ...op, params: { ...(op.params ?? {}), code: c } }, { symbol, summary });
     if (queued) {
       code.value = "";
+      spentCode = { code: c, at: Date.now() };
+      showCodeWait();
       watchOrderResults();
     }
     return queued;
