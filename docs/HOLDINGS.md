@@ -203,7 +203,8 @@ same checks on the machine before anything reaches Webull.
 2. a valid 6-digit authenticator code, used once (the page asks for it on every
    order; the secret is only on the machine, so the ops token alone can't trade);
 3. an allowed account;
-4. under `ORDERS_MAX_PER_DAY` orders today (cancels don't count);
+4. under `ORDERS_MAX_PER_DAY` orders today (stops and cancels don't count, so
+   re-levelling every stop at the close is never refused);
 5. arriving within two minutes of being queued: a late order is refused, never
    sent at a price nobody saw;
 6. then the order's own rules, against a fresh read of the account (not the last

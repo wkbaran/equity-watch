@@ -5,7 +5,7 @@
  *   WEBULL_ORDERS=on          the kill switch; anything else refuses every order op
  *   ORDERS_TOTP_SECRET=...    base32, from `equity-watch orders totp-setup`
  *   ORDERS_MAX_VALUE=2000     the largest buy, in dollars (estimated cost)
- *   ORDERS_MAX_PER_DAY=10     orders sent per New York trading date, all kinds
+ *   ORDERS_MAX_PER_DAY=10     orders sent per New York trading date, stops and cancels excepted
  *   ORDERS_ACCOUNTS=margin    labels that may trade (default: every mapped one)
  */
 

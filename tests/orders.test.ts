@@ -202,10 +202,11 @@ describe("the gate every order passes", () => {
   it("refuses an account orders aren't allowed in, and stops at the daily limit", async () => {
     const client = fakeClient({ positions: [position("AAA", 10, 50)], cash: 1000 });
     expect((await applyOrderOp(op("stop.place", { account: "roth", symbol: "AAA" }, { quantity: 5, stopPrice: 45 }), context(client))).ok).toBe(false);
-    const limited = context(client, { maxPerDay: 1 });
+    const limited = context(client, { maxPerDay: 0 });
     // A refused op still spent its code, so the next one needs a new one.
+    // Stops don't count, so one goes out even with the day's limit reached.
     expect((await applyOrderOp(op("stop.place", { account: "margin", symbol: "AAA" }, { quantity: 5, stopPrice: 45 }, undefined, totpAt(SECRET, stepOf(NOW) - 1)), limited)).ok).toBe(true);
-    const next = op("stop.place", { account: "margin", symbol: "AAA" }, { quantity: 1, stopPrice: 44 }, undefined, totpAt(SECRET, stepOf(NOW) + 1));
+    const next = op("cash.park", { account: "margin" }, {}, undefined, totpAt(SECRET, stepOf(NOW) + 1));
     expect(await applyOrderOp(next, limited)).toMatchObject({ ok: false, message: expect.stringContaining("today's order limit") });
   });
 

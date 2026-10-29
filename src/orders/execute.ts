@@ -8,7 +8,7 @@
  *   1. WEBULL_ORDERS=on (the kill switch);
  *   2. a valid, unused authenticator code (params.code);
  *   3. an account WEBULL_ACCOUNTS maps and ORDERS_ACCOUNTS allows;
- *   4. under ORDERS_MAX_PER_DAY orders sent today.
+ *   4. under ORDERS_MAX_PER_DAY orders sent today (stops and cancels are free).
  * Then each type reads the account fresh from Webull (positions, cash, open
  * orders: never the last sync's copy, which can be 15 minutes old) and checks
  * its own rules before anything is sent.
@@ -263,7 +263,9 @@ export async function applyOrderOp(op: Op, ctx: OrderContext): Promise<OrderOutc
   const today = wallClock(ctx.now(), MARKET_TIME_ZONE);
   const day = `${today.year}-${String(today.month).padStart(2, "0")}-${String(today.day).padStart(2, "0")}`;
   const sentToday = state.day === day ? state.sentToday : 0;
-  const counts = op.type !== "stop.cancel" && op.type !== "order.cancel";
+  // Stops count for nothing: one sits under the price on shares already held, so it
+  // adds no exposure, and re-levelling every stop at the close is dozens of ops.
+  const counts = !op.type.startsWith("stop.") && op.type !== "order.cancel";
   if (counts && sentToday >= ctx.config.maxPerDay) {
     return no(symbol, "Not sent: today's order limit (ORDERS_MAX_PER_DAY) is reached.");
   }
