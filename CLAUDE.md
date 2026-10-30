@@ -731,6 +731,13 @@ Things that look simplifiable and aren't:
   a cached panel would otherwise keep showing an alert that has since been
   edited. The holdings row's alert pill and its edit form both come from
   `alertsDoc`, which the holdings view already fetches for `uncoveredSymbols`.
+- **A reused form loses focus when it is moved, and `keepingFocus` puts it
+  back** (2026-10-29). `replaceChildren` with the same form element moves it,
+  and moving a focused element out of the document blurs it, so every poll or
+  landing result (the toasts made it noticeable) took the cursor out of the
+  drawer's edit form mid-word. `render`, `rerenderOps` and the `ensureAlerts`
+  refresh run inside `keepingFocus`. A new re-render entry point that can
+  re-parent a form needs the same.
 - **Both drawers fetch `alerts.json`.** The trigger drawer needs the alert's
   *current* level and direction for the edit form, and `TriggerRow` carries
   neither (it records what fired, not what is set now). `RevisitRow.alertId`

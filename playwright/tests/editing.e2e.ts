@@ -1437,3 +1437,47 @@ test.describe("several tabs", () => {
     expect((await queuedOps(page)).length).toBe(2);
   });
 });
+
+// A result landing re-renders the views, and the forms are reused across
+// renders by being moved into the new markup. Moving a focused element out of
+// the document blurs it, so the toast that announced the result took the
+// cursor out of whatever was being typed.
+test.describe("a result landing while typing", () => {
+  async function queueAnAdd(page: Page) {
+    const add = page.locator("#alert-add form");
+    await add.getByLabel("Symbol").fill("GMED");
+    await add.getByLabel("Level").fill("80.5");
+    await add.locator("button[type=submit]").click();
+    await expect(page.locator("#ops-pending .pending-row")).toHaveCount(1);
+  }
+
+  test("keeps the cursor in the drawer's edit form", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    await queueAnAdd(page);
+    await page.goto(`/#/alert/${STATIC.id}`);
+    const level = page.locator("#drawer-body form").getByLabel("Level");
+    await level.fill("5");
+    await level.press("End");
+    await page.request.get("/__release");
+    await poll(page);
+    await expect(page.locator("#toasts .toast.ok", { hasText: "Added static alert" })).toBeVisible();
+    await expect(level).toBeFocused();
+    await page.keyboard.type("7");
+    await expect(level).toHaveValue("57");
+  });
+
+  test("keeps the cursor in the New alert form", async ({ page }) => {
+    await storeToken(page);
+    await openAlerts(page);
+    await queueAnAdd(page);
+    const symbol = page.locator("#alert-add form").getByLabel("Symbol");
+    await symbol.fill("MS");
+    await page.request.get("/__release");
+    await poll(page);
+    await expect(page.locator("#toasts .toast.ok", { hasText: "Added static alert" })).toBeVisible();
+    await expect(symbol).toBeFocused();
+    await page.keyboard.type("FT");
+    await expect(symbol).toHaveValue("MSFT");
+  });
+});

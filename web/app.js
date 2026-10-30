@@ -44,6 +44,43 @@
     return el;
   }
 
+  /**
+   * Runs a re-render without taking the cursor out of the field being typed in.
+   *
+   * Forms are kept between renders and moved into the fresh markup
+   * (replaceChildren), and moving a focused element out of the document blurs
+   * it. A poll, or a result landing with its toast, would otherwise drop focus
+   * mid-word. Focus goes back only when it fell to the body: a render that
+   * focuses something on purpose (a drawer opening) is left alone, and a field
+   * that was rebuilt rather than moved is gone, along with what was typed in it.
+   */
+  function keepingFocus(update) {
+    const el = document.activeElement;
+    let start = null;
+    let end = null;
+    try {
+      start = el?.selectionStart ?? null;
+      end = el?.selectionEnd ?? null;
+    } catch {
+      /* number, checkbox and select inputs have no selection */
+    }
+    try {
+      return update();
+    } finally {
+      const dropped = document.activeElement === null || document.activeElement === document.body;
+      if (el && el !== document.body && el.isConnected && dropped) {
+        el.focus({ preventScroll: true });
+        if (start !== null) {
+          try {
+            el.setSelectionRange(start, end);
+          } catch {
+            /* as above */
+          }
+        }
+      }
+    }
+  }
+
   // ---- storage (may be unavailable in private windows) ----------------------
 
   function loadSeen() {
@@ -389,6 +426,10 @@
   const storyFor = (symbol) => (storiesVisible() ? ((vaultStories() ?? []).find((st) => st.symbol === symbol) ?? null) : null);
 
   function rerenderOps() {
+    keepingFocus(renderOpsViews);
+  }
+
+  function renderOpsViews() {
     renderOpsControls();
     syncAgentTools();
     if (current) {
@@ -4266,6 +4307,10 @@
   }
 
   function render(d) {
+    keepingFocus(() => renderDocument(d));
+  }
+
+  function renderDocument(d) {
     current = d;
     resolveFirstLoad();
     renderUpdated();
@@ -4301,10 +4346,12 @@
       })
       .then((doc) => {
         alertsDoc = doc;
-        populateKindFilter();
-        if (baseView === "alerts") renderAlerts();
-        const drawer = parseRoute().drawer;
-        if (drawer) renderDrawer(drawer);
+        keepingFocus(() => {
+          populateKindFilter();
+          if (baseView === "alerts") renderAlerts();
+          const drawer = parseRoute().drawer;
+          if (drawer) renderDrawer(drawer);
+        });
       })
       .catch((err) => {
         alertsPromise = null;
