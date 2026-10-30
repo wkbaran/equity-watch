@@ -608,9 +608,11 @@
     // than the watermark is done even when its result is no longer published
     // (the document keeps only the most recent ones). The rule lives in
     // web/webmcp.js, which the MCP server settles its own pending list with.
-    const { done, processed, waiting } = window.equityWatchWebMcp.settlePending(pendingOps, results, processedThrough);
+    // A sent order has its result already; only the vault's Webull read settles it (settleSentOrders).
+    const { done, processed, waiting } = window.equityWatchWebMcp.settlePending(pendingOps.filter((p) => !orderSent(p)), results, processedThrough);
     if (done.length === 0 && processed.length === 0) return;
-    pendingOps = waiting;
+    const kept = new Set(waiting.map((p) => p.id));
+    pendingOps = pendingOps.filter((p) => orderSent(p) || kept.has(p.id));
     savePending();
     if (processed.length === 1) {
       notice(`${processed[0].summary}: applied. Its result is no longer published.`, true);
@@ -733,15 +735,15 @@
 
   function renderPendingList(box, items) {
     box.hidden = items.length === 0;
-    const schedule = items.length === 0 ? null : opsScheduleNote();
+    const schedule = items.some((p) => !orderSent(p)) ? opsScheduleNote() : null;
     const rows = [
       ...items.map((p) =>
         h(
           "div",
           { class: "pending-row" },
-          h("span", { class: "tag pending", text: "pending" }),
+          h("span", { class: "tag pending", text: orderSent(p) ? "sent" : "pending" }),
           p.summary,
-          muted(`· queued ${ago(p.queuedAt)}`),
+          muted(orderSent(p) ? `· sent ${ago(p.sentAt)}, shown here after the next Webull read` : `· queued ${ago(p.queuedAt)}`),
           forgetButton(p)
         )
       ),
@@ -1614,6 +1616,7 @@
         if (opsToken !== token) return;
         vaultData = data;
         vaultError = null;
+        settleSentOrders();
       })
       .catch((err) => {
         if (opsToken !== token) return;
@@ -1644,6 +1647,25 @@
   /** Keep in step with ORDER_OP_TYPES in src/ops/orderTypes.ts. */
   const ORDER_OP_TYPES = ["stop.place", "stop.replace", "stop.cancel", "cash.cover", "cash.park", "order.buy", "order.sell", "order.replace", "order.cancel", "quote.read"];
   const isOrderOpType = (type) => ORDER_OP_TYPES.includes(type);
+  /**
+   * An order the watcher reported sent. It stays pending until the vault holds
+   * a Webull read taken after it: the result lands within seconds, but the
+   * position, stops and open orders on the page only change at the next sync
+   * and publish, and until then the page would show the old order with nothing
+   * saying a change is on its way.
+   */
+  const orderSent = (p) => isOrderOpType(p.type) && typeof p.sentAt === "string";
+
+  /** Retires sent orders the vault's Webull read has caught up with. */
+  function settleSentOrders() {
+    const readAt = Date.parse(vaultData?.webull?.readAt ?? "");
+    if (Number.isNaN(readAt)) return;
+    syncPending();
+    const seen = new Set(pendingOps.filter((p) => orderSent(p) && readAt > Date.parse(p.sentAt)).map((p) => p.id));
+    if (seen.size === 0) return;
+    pendingOps = pendingOps.filter((p) => !seen.has(p.id));
+    savePending();
+  }
   const ordersOn = () => canEditHoldings() && vaultData?.orders?.enabled === true;
   /** Accounts orders may go to: the Webull accounts the sync reads, narrowed by ORDERS_ACCOUNTS. */
   function orderAccounts() {
@@ -1731,7 +1753,7 @@
     const started = Date.now();
     const tick = async () => {
       syncPending();
-      const waiting = pendingOps.filter((p) => isOrderOpType(p.type));
+      const waiting = pendingOps.filter((p) => isOrderOpType(p.type) && !orderSent(p));
       if (waiting.length === 0 || Date.now() - started > 5 * 60_000 || !opsToken) {
         orderWatch = null;
         return;
@@ -1741,8 +1763,15 @@
         const byId = new Map(results.map((r) => [r.id, r]));
         const done = waiting.filter((p) => byId.has(p.id));
         if (done.length > 0) {
-          pendingOps = pendingOps.filter((p) => !byId.has(p.id));
+          syncPending();
+          // A refusal changed nothing, so it is done. A sent order waits for the page to show it.
+          pendingOps = pendingOps.flatMap((p) => {
+            const r = orderSent(p) ? undefined : byId.get(p.id);
+            if (r === undefined) return [p];
+            return r.ok ? [{ ...p, sentAt: r.at }] : [];
+          });
           savePending();
+          settleSentOrders();
           for (const p of done) {
             const r = byId.get(p.id);
             notice(r.ok ? `Sent: ${p.summary}. ${r.detail}` : `${p.summary}: ${r.message}`, r.ok);
@@ -3805,7 +3834,9 @@
     // the rest. Measured over the filtered set: a hidden row must not set the scale.
     const span = Math.min(50, Math.max(5, ...shown.map((r) => Math.abs(r.pctFromBasis ?? 0))));
     const editable = canEditHoldings();
-    const pendingSymbols = new Set(pendingOps.filter(isHoldingsOp).map((p) => p.symbol));
+    const symbolPending = (symbol) => pendingOps.filter((p) => isHoldingsOp(p) && p.symbol === symbol);
+    // Sent orders only, and the pill says why it is still there: Webull has it, the page doesn't yet.
+    const pendingTitle = (symbol) => (symbolPending(symbol).every(orderSent) ? "Sent to Webull. Shown here after the next Webull read." : null);
 
     const head = h(
       "tr",
@@ -3858,7 +3889,7 @@
           // What `holdings check` would report, worked out in the browser so
           // nothing basis-derived has to be published to say it.
           ...holdingFlags(r).map((f) => h("span", { class: `tag ${f.kind}`, title: f.title, text: f.label })),
-          pendingSymbols.has(r.symbol) ? h("span", { class: "tag pending", text: "change pending" }) : null
+          symbolPending(r.symbol).length > 0 ? h("span", { class: "tag pending", title: pendingTitle(r.symbol), text: "change pending" }) : null
         ),
         h("td", { text: accountsOf(r).join(", ") || "—" }),
         h("td", { text: r.shares }),

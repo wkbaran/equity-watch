@@ -1353,6 +1353,15 @@ order was sent.
   page is waiting for. The page posts it directly, not through `submitOp`, so it
   never becomes a pending row. `playwright/server.ts` answers it the same way,
   keeping quotes out of `/__ops`, which specs count as queued changes.
+- **A sent order stays pending on the page until the vault catches up**
+  (2026-10-30, `orderSent`/`settleSentOrders` in `web/app.js`). Its result lands
+  in `orders.json` within seconds, but the holdings rows come from the vault,
+  which changes only at the next sync and publish. So a successful result marks
+  the entry `sentAt` and keeps the "change pending" pill until
+  `vaultData.webull.readAt` is later than that. A refusal still clears it at once.
+  Sent entries are kept out of `settlePending`'s drain watermark, or the next
+  `ops pull` would retire them with an "applied" toast. With Webull reads failing,
+  `readAt` stops moving and the pill stays until someone clicks Forget.
 - **The ticket's marketable limit is only set from a regular-session quote,**
   and never over a limit typed in the ticket or carried from the Add a lot form
   (`priceTyped`). Don't extend it to pre/post: that is when the quote lies (see

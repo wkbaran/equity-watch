@@ -226,11 +226,39 @@ test.describe("orders", () => {
     expect(placed).toMatchObject({ type: "stop.place", target: { account: "margin", symbol: "AA" }, params: { quantity: 5, stopPrice: 38.5, code: "123456" } });
     expect(moved).toMatchObject({ type: "stop.replace", target: { account: "margin", symbol: "AA", clientOrderId: "ewclient0001" }, expect: { stopPrice: 39, quantity: 5 }, params: { stopPrice: 40, code: "654321" } });
 
-    // The watcher's sealed result for the first one.
+    // The watcher's sealed results: the place went out, the move was refused.
+    const sentAt = new Date().toISOString();
     await page.route("**/orders.json", (route) =>
-      route.fulfill({ json: sealVault({ results: [{ id: placed.id, type: "stop.place", symbol: "AA", account: "margin", ok: true, message: "Placed a stop order for AA.", detail: "placed: sell 5 AA stop_loss stop 38.50 GTC CORE", at: new Date().toISOString() }] } as never, OPS_TOKEN) })
+      route.fulfill({
+        json: sealVault(
+          {
+            results: [
+              { id: placed.id, type: "stop.place", symbol: "AA", account: "margin", ok: true, message: "Placed a stop order for AA.", detail: "placed: sell 5 AA stop_loss stop 38.50 GTC CORE", at: sentAt },
+              { id: moved.id, type: "stop.replace", symbol: "AA", account: "margin", ok: false, message: "Not changed: that AA order changed since the page loaded.", detail: "", at: sentAt },
+            ],
+          } as never,
+          OPS_TOKEN
+        ),
+      })
     );
     await expect(page.locator("#toasts .toast.ok").last()).toContainText("sell 5 AA stop_loss stop 38.50", { timeout: 15_000 });
+    await expect(page.locator("#toasts .toast.bad").last()).toContainText("changed since the page loaded");
+
+    // The refusal is done; the sent stop stays pending until the vault's Webull read is newer than it.
+    const pending = page.locator("#holdings-pending .pending-row");
+    await expect(pending).toHaveCount(1);
+    await expect(pending).toContainText("sent");
+    await expect(pending).toContainText("shown here after the next Webull read");
+    await expect(positionRow(page, "AA").locator(".tag.pending")).toHaveAttribute("title", /Sent to Webull/);
+
+    await page.unroute("**/vault.json");
+    await serveVault(page, { webull: { ...WEBULL, readAt: new Date(Date.parse(sentAt) + 60_000).toISOString() }, holdingSources: AA_KEPT, stops: [STOP], orders: ON }, (c) => ({
+      ...c,
+      holdings: c.holdings.map((r) => (r.symbol === "AA" ? { ...r, stops: [STOP.stopPrice] } : r)),
+    }));
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(pending).toHaveCount(0);
+    await expect(positionRow(page, "AA").locator(".tag.pending")).toHaveCount(0);
   });
 
   test("Sell BIL to cover, on a margin account using margin", async ({ page }) => {
