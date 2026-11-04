@@ -39,8 +39,8 @@ run_step() {
 # Dashboard changes first, so the check evaluates them. A failure doesn't stop the check.
 run_step "ops pull" cli ops pull || echo "ops pull failed; continuing with the check."
 # Webull's positions and cash into holdings.json (docs/HOLDINGS.md#syncing-from-webull),
-# after the page's queued Adopt/Link ops and before cover, so a new buy gets its
-# starting alert in the same run. Needs no Schwab login. Exits 0 when Webull isn't
+# after the page's queued Adopt/Link ops and before cover, so a new buy's price
+# alert moves to 10% above it in the same run (src/holdings/purchaseAlert.ts). Needs no Schwab login. Exits 0 when Webull isn't
 # set up, and records its own failures in holdings.json for the page to show.
 cli holdings sync || echo "holdings sync failed; continuing with the check."
 # spread-book's stop levels (src/spreads/). Reads a file, fetches nothing, so it runs even with the login expired.

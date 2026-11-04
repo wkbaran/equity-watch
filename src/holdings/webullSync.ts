@@ -24,6 +24,7 @@
 import { marketDate } from "../marketHours.js";
 import { WORKING_STATUSES, type WebullBalance, type WebullOrder, type WebullPosition } from "../providers/webull.js";
 import { sellFromStore } from "./engine.js";
+import { recordPurchase } from "./purchaseAlert.js";
 import {
   holdingKey,
   type CashStatus,
@@ -632,6 +633,14 @@ export function applySyncPlan(store: HoldingsStore, plan: SyncPlan, now: Date): 
             orderId: change.lot.orderId,
           });
           booked[change.lot.orderId] = round6((booked[change.lot.orderId] ?? 0) + change.lot.count);
+          // Recorded on the trial, so a holding refused part-way records nothing.
+          recordPurchase(trial, {
+            symbol: h.symbol,
+            price: change.lot.basisPerShare,
+            purchaseDate: change.lot.purchaseDate,
+            recordedAt: now.toISOString(),
+            source: "webull",
+          });
           continue;
         }
         const sold = sellFromStore(

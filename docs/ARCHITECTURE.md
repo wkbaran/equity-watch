@@ -319,9 +319,15 @@ decide what this is allowed to hold:
   position trading below cost the published alert is `basis × 1.1` — and the alert
   book is public. This is not new: the scheduled `holdings cover` has always worked
   this way, and the button added in 2026-09-21 only makes it reachable sooner. It is
-  the one place a published number is a function of a private one. Turn on basic auth
+  one of two places a published number is a function of a private one. Turn on basic auth
   if that matters; nothing else about the position (size, value, cost) is exposed
   either way.
+- **A purchase's alert level implies what the lot cost.** Since 2026-11-04 every new
+  lot (dashboard, CLI, or a buy the Webull sync books) moves the symbol's price alert
+  to `lot price × 1.1` (docs/HOLDINGS.md, "New lots move the price alert"), so the
+  public alert book shows each buy's price to anyone who divides by 1.1, until the
+  alert is next moved. The op's result message carries no number; the alert itself
+  does. Basic auth is the remedy here too.
 - **Queued ops are not encrypted end-to-end.** A message carries symbols, levels, and —
   for a lot — share counts and basis, readable by anyone with queue access in your AWS
   account. None of that reaches the public site: a holdings op *result* names the

@@ -13,6 +13,7 @@ import {
   renderSyncPlan,
   replayFills,
   syncChanges,
+  type SyncPlan,
   type WebullAccountSnapshot,
 } from "../src/holdings/webullSync.js";
 import type { WebullOrder, WebullPosition } from "../src/providers/webull.js";
@@ -335,6 +336,57 @@ describe("applySyncPlan", () => {
     const second = applySyncPlan(store, planWebullSync(store, snaps, OPTIONS), NOW);
     expect(second.applied).toEqual([]);
     expect(store.lots.reduce((n, l) => n + l.count, 0)).toBe(8);
+  });
+
+  it("records each symbol's newest buy for its price alert, and nothing for a sale", () => {
+    const store = webullStore();
+    const orders = [buy("B2", "AAA", 4, 55, "2026-10-21T15:00:00.000Z"), buy("B3", "AAA", 2, 58, "2026-10-22T15:00:00.000Z")];
+    applySyncPlan(store, planWebullSync(store, [snapshot("roth", [position("AAA", 16, 52)], orders)], OPTIONS), NOW);
+    expect(store.pendingPurchases).toEqual([
+      { symbol: "AAA", price: 58, purchaseDate: "2026-10-22", recordedAt: NOW.toISOString(), source: "webull" },
+    ]);
+
+    const sold = webullStore();
+    applySyncPlan(sold, planWebullSync(sold, [snapshot("roth", [position("AAA", 4, 50)], [sell("S1", "AAA", 6, 60, "2026-10-22T15:00:00.000Z")])], OPTIONS), NOW);
+    expect(sold.pendingPurchases).toBeUndefined();
+  });
+
+  it("records no purchase for a holding whose changes the store refused", () => {
+    const store = webullStore();
+    const plan: SyncPlan = {
+      readAt: NOW.toISOString(),
+      unlabelled: [],
+      accounts: [
+        {
+          label: "roth",
+          accountId: "A1",
+          accountType: "CASH",
+          cash: null,
+          cashStatus: "ok",
+          lowCash: null,
+          skipped: [],
+          openOrders: [],
+          vanished: [],
+          holdings: [
+            {
+              kind: "sync",
+              account: "roth",
+              symbol: "AAA",
+              local: { count: 10, basis: 50 },
+              webull: { count: 0, basis: 0 },
+              flags: [],
+              changes: [
+                { type: "buy", lot: { count: 1, basisPerShare: 55, purchaseDate: "2026-10-21", orderId: "B2" } },
+                { type: "sell", count: 99, price: 60, soldOn: "2026-10-22", orderId: "S1", stopHit: false, stopPrice: null, placedAt: null },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const result = applySyncPlan(store, plan, NOW);
+    expect(result.refused).toHaveLength(1);
+    expect(store.pendingPurchases).toBeUndefined();
   });
 
   it("marks a sale by a stop and keeps the stops it hit", () => {

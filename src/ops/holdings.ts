@@ -26,6 +26,13 @@ const reject = (symbol: string | null, message: string): Outcome => ({ symbol, a
 const kept = (symbol: string): Outcome =>
   reject(symbol, `Not changed: ${symbol} in that account is kept by the Webull sync, so its lots follow Webull. Unlink it to edit by hand.`);
 
+/**
+ * addLot records the purchase and `holdings cover`, later in the same check,
+ * moves the alert (src/holdings/purchaseAlert.ts): not here, because that needs
+ * a quote after the lot is already written. Public, so no digits: no "10%".
+ */
+const PRICE_ALERT_FOLLOWS = " Its price alert moves above the purchase price later in this check.";
+
 function field(value: unknown, key: string): unknown {
   return value !== null && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined;
 }
@@ -75,9 +82,9 @@ export function applyHoldingsOp(op: Op, holdingsFile: string): Outcome {
         // size or basis has changed, so this one replaces them rather than adding
         // alongside.
         replaceStop(holdingsFile, { symbol: lot.symbol, stopPrice, count: stopCount ?? null });
-        return ok(lot.symbol, `Added a lot of ${lot.symbol} and set its stop.`);
+        return ok(lot.symbol, `Added a lot of ${lot.symbol} and set its stop.${PRICE_ALERT_FOLLOWS}`);
       }
-      return ok(lot.symbol, `Added a lot of ${lot.symbol}.`);
+      return ok(lot.symbol, `Added a lot of ${lot.symbol}.${PRICE_ALERT_FOLLOWS}`);
     }
 
     case "lot.edit":

@@ -30,6 +30,45 @@ resolved dynamically each time rather than frozen at creation, so it still reads
 there is no live "price crossed the stop" alert yet, though it would reuse the
 existing static-alert engine if added.
 
+## New lots move the price alert
+
+Every new lot sets the symbol's price alert to **10% above what the lot cost**
+(2026-11-04), whichever way it arrives: **Add a lot** on the dashboard (the
+`lot.add` op), `holdings add-lot`, or a buy the Webull sync books.
+
+- **A live price-level (static) alert on the symbol is moved in place**, keeping
+  its id and history: level to lot price × 1.1, watching upward, and **any volume
+  condition removed**. With several, the one watching up (or either way) nearest
+  the new level is moved; a down-watching alert is moved only when it is the only
+  one. The others stay.
+- **No price-level alert** (none at all, or only trailing, volume-only or
+  moving-average alerts): a new one is added at that level, and the others are left
+  as they are.
+- **The newest lot wins.** Several buys before the next check move the alert once,
+  to 10% above the latest. A backdated lot entered after a newer one changes nothing.
+- It uses the one-alert-per-symbol+side rule like any automatic change
+  ("keep-closest", docs/ALERTS.md), so a trailing alert nearer the price on the same
+  side refuses the new level; the check output says so.
+- Symbols in `ignoreSymbols` (BIL) are skipped. A lot already sold off by the time
+  it runs is skipped too.
+- **Adopting or linking** a Webull position is not a purchase and moves nothing;
+  neither does `holdings import`.
+
+Nothing changes in `alerts.json` when the lot arrives. The lot records a pending
+purchase in `holdings.json` (`pendingPurchases`), and `holdings cover` applies it
+first, before covering anything still without an alert. The scheduled check runs
+`ops pull`, then `holdings sync`, then `holdings cover`, so the alert moves in the
+same check that adds the lot. Waiting is deliberate. Moving a level needs a live
+quote, and a quote that failed after the lot was written would stop the drain before
+its result was logged; the retry would add the lot twice. And `holdings sync` runs
+even with the Schwab login expired, so a buy it books waits out the login instead of
+being lost. A failed or missing quote leaves the purchase for the next run; an
+engine refusal (the level equals the live price, a nearer alert holds that side)
+settles it.
+
+The level goes into the public alert book, so it shows what the lot cost
+(docs/ARCHITECTURE.md).
+
 ## Covering positions that have no alert
 
 `holdings cover` creates a starting alert for every held position that doesn't
@@ -56,9 +95,10 @@ Not volatility-scaled: a flat 10% is the whole rule. The level also always lands
 clear of the live price, which matters because an alert *at* the live price has no
 side to fire on and is rejected.
 
-This runs in the scheduled script (after `ops pull`, before `alert check`), so a lot
-added from the dashboard, a CSV import, or the CLI is covered the same way within
-one cycle. It exits before fetching a single quote when every held symbol already
+This runs in the scheduled script (after `ops pull`, before `alert check`), so a
+position from a CSV import is covered within one cycle. A lot added from the
+dashboard, the CLI or the Webull sync sets its own level first (the section above),
+so the sweep only reaches a position that has no lot newer than its last alert. It exits before fetching a single quote when every held symbol already
 has an alert, so a quiet run costs nothing. Run it **after** `alert seed`, or every
 position will look uncovered. Symbols in `ignoreSymbols` are skipped.
 

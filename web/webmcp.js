@@ -823,7 +823,7 @@
       group: "holdings",
       ops: ["lot.add"],
       description:
-        "Queue a purchase: a lot of shares at a basis per share. With stopPrice, replaces the symbol's existing stop(s) with that one. Merges into the position, and the symbol gets a starting alert at the next check if it has none. The person is asked to approve.",
+        "Queue a purchase: a lot of shares at a basis per share. With stopPrice, replaces the symbol's existing stop(s) with that one. Merges into the position, and at the next check the symbol's price-level alert moves to 10% above basisPerShare (watching up, any volume condition removed), or one is added there if it has none. The person is asked to approve.",
       inputSchema: object(
         {
           symbol: symbolProp,
