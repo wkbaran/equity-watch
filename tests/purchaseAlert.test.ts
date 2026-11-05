@@ -9,6 +9,7 @@ import { addLot } from "../src/holdings/engine.js";
 import type { HoldingsStore, PendingPurchase } from "../src/holdings/models.js";
 import {
   applyPendingPurchases,
+  purchaseClosure,
   purchaseLevel,
   purchaseTarget,
   recordPurchase,
@@ -147,6 +148,26 @@ describe("applyPendingPurchases", () => {
     expect(moved).toMatchObject({ id: added!.id, status: "live", level: 110, direction: "up", side: "above", lastKnownSide: "below" });
     expect(moved.volumeCondition).toBeUndefined();
     expect(loadHoldingsStore(holdingsFile).pendingPurchases).toBeUndefined();
+  });
+
+  it("closes the symbol's open entries as an edit or add from the page would, and a rejection closes nothing", async () => {
+    const m = market({ AAPL: 101 });
+    const { added } = await addAlert(alertsFile, { kind: "static", symbol: "AAPL", level: 95, direction: "down" }, m);
+    pending(purchase("AAPL", 100));
+    const [moved] = await applyPendingPurchases(holdingsFile, alertsFile, m, new Set());
+    expect(moved.status === "applied" && purchaseClosure(moved.result)).toEqual({
+      change: "alert.edit",
+      alertId: added!.id,
+      condition: expect.any(String) as string,
+      moved: { from: 95, to: 110 },
+    });
+
+    saveAlerts(alertsFile, []);
+    pending(purchase("AAPL", 100, "2026-11-05"));
+    const [created] = await applyPendingPurchases(holdingsFile, alertsFile, m, new Set());
+    expect(created.status === "applied" && purchaseClosure(created.result)).toMatchObject({ change: "alert.add", alertId: loadAlerts(alertsFile)[0].id });
+
+    expect(purchaseClosure({ action: "rejected", level: 110, reason: "no" })).toBeNull();
   });
 
   it("adds a price alert beside alerts of other kinds and leaves them alone", async () => {

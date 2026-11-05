@@ -258,16 +258,18 @@ async function applyByType(op: Op, ctx: ApplyContext): Promise<Outcome> {
       // Who keeps the holding, not a decision about the symbol: its revisits stay open.
       return applyWebullHoldingOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE, ctx.now?.() ?? new Date());
     default: {
-      // Lots, positions and stops. A change to any of them is a decision
-      // about the symbol, so its open fires stop asking. The message is
-      // public and holdings messages carry no digits, so no entry ids.
+      // Lots and positions. A change to either is a decision about the
+      // symbol, so its open fires stop asking. A stop change is not (the
+      // user's call, 2026-11-05): it is risk upkeep, and leaves them open.
+      // The message is public and holdings messages carry no digits, so no
+      // entry ids.
       const startedAt = new Date().toISOString();
       const outcome = applyHoldingsOp(op, ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE);
       if (!outcome.ok || outcome.symbol === null) {
         return outcome;
       }
       // The switch narrows op.type to the lot, position and stop changes.
-      const closed = closeSymbolRevisits(ctx, outcome.symbol, { change: op.type });
+      const closed = op.type.startsWith("stop.") ? [] : closeSymbolRevisits(ctx, outcome.symbol, { change: op.type });
       // After the close, so a sale marked as a stop is what is left asking (stopOuts.ts).
       const symbol = outcome.symbol;
       const sales = (loadHoldingsStore(ctx.holdingsFile ?? DEFAULT_HOLDINGS_FILE).sales ?? []).filter(

@@ -21,6 +21,7 @@
  *     doesn't hold. A webull holding's closing sales are applied like any other.
  */
 
+import type { RevisitClosure } from "../alerts/revisit.js";
 import { marketDate } from "../marketHours.js";
 import { WORKING_STATUSES, type WebullBalance, type WebullOrder, type WebullPosition } from "../providers/webull.js";
 import { sellFromStore } from "./engine.js";
@@ -677,6 +678,27 @@ export function applySyncPlan(store: HoldingsStore, plan: SyncPlan, now: Date): 
   }
   store.webull = webullStateOf(plan, plan.readAt ?? now.toISOString(), refused);
   return { applied, refused, cashChanges };
+}
+
+/**
+ * The symbols whose open revisit entries a sync's applied changes close, and
+ * what closed them (closeRevisitsForSymbol). A buy or sale made in the Webull
+ * app is acting on the symbol as much as the same change from the page is.
+ * A stop's fill is not a decision made that day, and queues its own stop-out
+ * entry instead (stopOuts.ts), so it closes nothing. A buy wins over a sale
+ * when one run brings both.
+ */
+export function syncClosures(applied: AppliedChange[]): Map<string, RevisitClosure> {
+  const closures = new Map<string, RevisitClosure>();
+  for (const { symbol, change } of applied) {
+    const key = symbol.toUpperCase();
+    if (change.type === "buy") {
+      closures.set(key, { change: "lot.add" });
+    } else if (!change.stopHit && !closures.has(key)) {
+      closures.set(key, { change: "lot.remove" });
+    }
+  }
+  return closures;
 }
 
 /**

@@ -407,15 +407,12 @@ describe("holdings ops", () => {
     expect(await apply({ type: "stop.edit", params: { stopPrice: 1 } })).toMatchObject({ ok: false, message: "A stop edit needs target.stopId." });
   });
 
-  // A change to a lot, a position or a stop is a decision about the symbol,
-  // so its open fires leave the revisit queue; other symbols' stay.
+  // A change to a lot or a position is a decision about the symbol, so its
+  // open fires leave the revisit queue; other symbols' stay.
   it.each([
     ["lot.add", { type: "lot.add", params: { symbol: "AAPL", count: 4, basisPerShare: 120.5 } }],
     ["lot.edit", { type: "lot.edit", target: { lotId: "lotaapl1" }, expect: AAPL1_AS_SHOWN, params: { count: 11 } }],
     ["lot.remove", { type: "lot.remove", target: { lotId: "lotaapl1" }, expect: AAPL1_AS_SHOWN }],
-    ["stop.add", { type: "stop.add", params: { symbol: "AAPL", stopPrice: 130 } }],
-    ["stop.edit", { type: "stop.edit", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 }, params: { stopPrice: 150 } }],
-    ["stop.remove", { type: "stop.remove", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 } }],
   ])("%s closes the symbol's open revisits", async (type, body) => {
     const base = newRevisitEntry(aaplAlert, 160, "2026-09-14T15:00:00.000Z", "regular");
     saveRevisits(revisitsFile, [
@@ -428,6 +425,20 @@ describe("holdings ops", () => {
     expect(r.message).toContain("Its open revisits were closed.");
     expect(loadRevisits(revisitsFile).map((e) => e.status)).toEqual(["applied", "dismissed", "open"]);
     expect(loadRevisits(revisitsFile)[0]).toMatchObject({ appliedFrom: null, appliedTo: null, closedBy: { change: type } });
+  });
+
+  // A stop change is risk upkeep, not a decision about the symbol (2026-11-05).
+  it.each([
+    ["stop.add", { type: "stop.add", params: { symbol: "AAPL", stopPrice: 130 } }],
+    ["stop.edit", { type: "stop.edit", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 }, params: { stopPrice: 150 } }],
+    ["stop.remove", { type: "stop.remove", target: { stopId: "stopaapl" }, expect: { stopPrice: 140 } }],
+  ])("%s leaves the symbol's open revisits open", async (_type, body) => {
+    const base = newRevisitEntry(aaplAlert, 160, "2026-09-14T15:00:00.000Z", "regular");
+    saveRevisits(revisitsFile, [{ ...base, id: "rv000001" }]);
+    const r = await apply(body);
+    expect(r.ok).toBe(true);
+    expect(r.message).not.toContain("revisits");
+    expect(loadRevisits(revisitsFile)[0].status).toBe("open");
   });
 
   it("position.remove closes the symbol's open revisits, and a refused op closes none", async () => {

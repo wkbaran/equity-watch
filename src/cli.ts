@@ -47,7 +47,7 @@ import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.
 import { queueStopOuts, stopOutEntries } from "./alerts/stopOuts.js";
 import { addLot, addStop, checkHoldings, fillStopAtrs } from "./holdings/engine.js";
 import { coverCandidates, coverLevel } from "./holdings/cover.js";
-import { applyPendingPurchases, describePendingOutcome, purchaseLevel, purchaseTarget } from "./holdings/purchaseAlert.js";
+import { applyPendingPurchases, describePendingOutcome, purchaseClosure, purchaseLevel, purchaseTarget } from "./holdings/purchaseAlert.js";
 import { computeBasis, heldSymbolsOf, type HoldingsStore, type Sale } from "./holdings/models.js";
 import { ConsoleHoldingsNotifier } from "./holdings/notify.js";
 import { writeHoldingsAlertReport } from "./holdings/report.js";
@@ -65,6 +65,7 @@ import {
   parseLowCash,
   planWebullSync,
   renderSyncPlan,
+  syncClosures,
   type WebullAccountSnapshot,
 } from "./holdings/webullSync.js";
 import { ordersConfig, DEFAULT_ORDERS_STATE_FILE } from "./orders/config.js";
@@ -1666,7 +1667,7 @@ interface HoldingsListOpts extends HoldingsCommonOpts {
   symbol?: string;
 }
 
-interface HoldingsStopAddOpts extends HoldingsChangeOpts {
+interface HoldingsStopAddOpts extends HoldingsCommonOpts {
   symbol: string;
   price: string;
   count?: string;
@@ -1712,7 +1713,6 @@ function cmdHoldingsStopAdd(opts: HoldingsStopAddOpts): void {
     count: opts.count !== undefined ? parseFloat(opts.count) : null,
   });
   console.log(`Added stop ${stop.id}: ${stop.symbol} @ ${stop.stopPrice} (${stop.count ?? "all"} shares).`);
-  printClosed(closeRevisitsForSymbol(opts.revisitsFile, stop.symbol, { change: "stop.add" }));
 }
 
 function cmdHoldingsStopList(opts: HoldingsListOpts): void {
@@ -1727,14 +1727,13 @@ function cmdHoldingsStopList(opts: HoldingsListOpts): void {
   }
 }
 
-function cmdHoldingsStopRemove(id: string, opts: HoldingsChangeOpts): void {
+function cmdHoldingsStopRemove(id: string, opts: HoldingsCommonOpts): void {
   const stop = loadHoldingsStore(opts.holdingsFile).stops.find((s) => s.id === id);
   if (stop === undefined || !removeStop(opts.holdingsFile, id)) {
     console.log(`No stop with id ${id}.`);
     return;
   }
   console.log(`Removed stop ${id}.`);
-  printClosed(closeRevisitsForSymbol(opts.revisitsFile, stop.symbol, { change: "stop.remove" }));
 }
 
 async function cmdHoldingsCheck(opts: HoldingsCommonOpts & { config: string; profileCacheDir: string }): Promise<void> {
@@ -1879,6 +1878,7 @@ function cmdProfileShow(opts: ProfileShowOpts): void {
 interface HoldingsCoverOpts extends CommonOpts {
   holdingsFile: string;
   alertsFile: string;
+  revisitsFile: string;
   config: string;
   dryRun?: boolean;
 }
@@ -1914,6 +1914,11 @@ async function cmdHoldingsCover(opts: HoldingsCoverOpts): Promise<void> {
     } else {
       for (const o of await applyPendingPurchases(opts.holdingsFile, opts.alertsFile, buildMarketData(opts), ignored)) {
         console.log(`  ${describePendingOutcome(o)}`);
+        // Moving the alert is acting on the symbol, like the same edit from the page.
+        const closure = o.status === "applied" ? purchaseClosure(o.result) : null;
+        if (closure !== null) {
+          printClosed(closeRevisitsForSymbol(opts.revisitsFile, o.symbol, closure));
+        }
       }
     }
   }
@@ -2380,6 +2385,13 @@ async function cmdHoldingsSync(opts: HoldingsSyncOpts): Promise<void> {
   }
   for (const s of withAtr) {
     console.log(`  ${s.symbol}: recorded ATR ${s.stopHit!.atr} on its stop sale of ${s.soldOn}.`);
+  }
+  // A buy or sale made in the Webull app closes the symbol's open entries, as
+  // the page's own lot changes do. Before the stop-outs, which queue new ones.
+  for (const [symbol, closure] of syncClosures(result.applied)) {
+    for (const id of closeRevisitsForSymbol(opts.revisitsFile, symbol, closure, now)) {
+      console.log(`  ${symbol}: revisit ${id} marked applied.`);
+    }
   }
   const soldBy = new Set(result.applied.flatMap((a) => (a.change.type === "sell" ? [a.change.orderId] : [])));
   const stopOuts = queueStopOuts(
@@ -3219,6 +3231,7 @@ function buildProgram(): Command {
         "for each held position that has none (10% above basis, or just above price)"
     )
     .option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json")
+    .option("--revisits-file <path>", "Path to the revisit-queue JSON store; a moved alert closes its symbol's open entries", "revisits.json")
     .option(...configOption("supplies ignoreSymbols"))
     .option("--dry-run", "Print the plan without writing anything")
     .action((opts: HoldingsCoverOpts) => cmdHoldingsCover(opts));
@@ -3264,7 +3277,7 @@ function buildProgram(): Command {
 
   const stopCmd = holdingsCmd.command("stop").description("Manage stops (record-keeping only, not live-monitored yet)");
 
-  withHoldingsChange(stopCmd.command("add"))
+  withHoldingsCommon(stopCmd.command("add"))
     .description("Record a stop")
     .requiredOption("--symbol <symbol>", "Ticker symbol")
     .requiredOption("--price <price>", "Stop price")
@@ -3276,9 +3289,9 @@ function buildProgram(): Command {
     .option("--symbol <symbol>", "Only show this symbol")
     .action((opts: HoldingsListOpts) => cmdHoldingsStopList(opts));
 
-  withHoldingsChange(stopCmd.command("remove <id>"))
+  withHoldingsCommon(stopCmd.command("remove <id>"))
     .description("Remove a stop by id")
-    .action((id: string, opts: HoldingsChangeOpts) => cmdHoldingsStopRemove(id, opts));
+    .action((id: string, opts: HoldingsCommonOpts) => cmdHoldingsStopRemove(id, opts));
 
   withHoldingsCommon(holdingsCmd.command("check"))
     .description("Check holdings for the 10%-above-basis, month-stagnant, and 3%-appreciation alerts")

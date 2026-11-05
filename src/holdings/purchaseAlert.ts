@@ -30,6 +30,8 @@
 import { describeAlertCondition } from "../alerts/describe.js";
 import { addAlert, editAlert, type MarketData } from "../alerts/engine.js";
 import type { Alert, StaticAlert } from "../alerts/models.js";
+import type { RevisitClosure } from "../alerts/revisit.js";
+import { editClosure } from "../alerts/revisitStore.js";
 import { loadAlerts } from "../alerts/store.js";
 import { errorText } from "../errorText.js";
 import { round } from "../round.js";
@@ -121,6 +123,23 @@ export async function applyPurchaseAlert(
     return { action: "rejected", level, reason: result.rejectedReason ?? "unknown reason" };
   }
   return { action: "created", level, alert: result.added, replaced: result.replaced };
+}
+
+/**
+ * What closes the symbol's open revisit entries when a purchase moves or adds
+ * its alert: the same closure an edit or add from the page would stamp
+ * (closeRevisitsForSymbol), so the story tells the move. A rejection changed
+ * nothing and closes nothing.
+ */
+export function purchaseClosure(result: PurchaseAlertResult): RevisitClosure | null {
+  switch (result.action) {
+    case "moved":
+      return editClosure(result.before, result.alert);
+    case "created":
+      return { change: "alert.add", alertId: result.alert.id, condition: describeAlertCondition(result.alert) };
+    case "rejected":
+      return null;
+  }
 }
 
 /** One line for the run log. Terminal only: it names the level. */

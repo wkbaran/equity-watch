@@ -13,6 +13,8 @@ import {
   renderSyncPlan,
   replayFills,
   syncChanges,
+  syncClosures,
+  type AppliedChange,
   type SyncPlan,
   type WebullAccountSnapshot,
 } from "../src/holdings/webullSync.js";
@@ -424,6 +426,32 @@ describe("applySyncPlan", () => {
     expect(applySyncPlan(store, planWebullSync(store, low, options), NOW).cashChanges).toEqual([]);
     const borrowing = [snapshot("margin", [position("BIL", 100, 91.5)], [], -300)];
     expect(applySyncPlan(store, planWebullSync(store, borrowing, options), NOW).cashChanges.map((c) => [c.from, c.to])).toEqual([["low", "usingMargin"]]);
+  });
+});
+
+describe("syncClosures", () => {
+  const buyOf = (symbol: string): AppliedChange => ({
+    account: "roth",
+    symbol,
+    change: { type: "buy", lot: { count: 1, basisPerShare: 10, purchaseDate: "2026-11-05", orderId: `B-${symbol}` } },
+  });
+  const sellOf = (symbol: string, stopHit: boolean): AppliedChange => ({
+    account: "roth",
+    symbol,
+    change: { type: "sell", count: 1, price: 10, soldOn: "2026-11-05", orderId: `S-${symbol}`, stopHit, stopPrice: null, placedAt: null },
+  });
+
+  it("closes on a buy or a sale made in the app, never on a stop's fill", () => {
+    const closures = syncClosures([buyOf("coty"), sellOf("AAA", false), sellOf("BBB", true)]);
+    expect([...closures]).toEqual([
+      ["COTY", { change: "lot.add" }],
+      ["AAA", { change: "lot.remove" }],
+    ]);
+  });
+
+  it("tells a buy over a sale when one run brings both", () => {
+    expect(syncClosures([sellOf("AAA", false), buyOf("AAA")]).get("AAA")).toEqual({ change: "lot.add" });
+    expect(syncClosures([buyOf("AAA"), sellOf("AAA", false)]).get("AAA")).toEqual({ change: "lot.add" });
   });
 });
 

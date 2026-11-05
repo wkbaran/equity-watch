@@ -262,8 +262,13 @@ condition goes along; nothing about the average does. A moving-average field
 
 **Acting on a symbol closes all of its open revisit entries.** That means adding,
 editing or removing an alert on it, applying a suggested level, or adding, changing
-or removing a lot, a position or a stop, from the CLI or the page. A symbol you
-have just made a decision about stops asking for one. The entries are marked
+or removing a lot or a position, from the CLI or the page. A buy or a sale made in
+the Webull app counts too, when `holdings sync` books it, and so does the alert move
+a new lot causes (the 10% purchase level). Stops do not: adding, moving or removing
+one is risk upkeep, not a decision about the symbol, and leaves its entries open
+(since 2026-11-05; older entries closed by a stop change still say so in the story).
+A stop filling queues its own stop-out entry. A symbol you have just made a decision about stops
+asking for one. The entries are marked
 `applied`, and each records the change that closed it (`closedBy`), which the
 symbol's story tells once however many entries it closed:
 
@@ -457,7 +462,7 @@ Order, highest first: accelerating new fire (90), stop-out (70), new fire (60), 
 accelerating older fire (40), drift (30), older fire (10), with 10 more for a held
 position. Ties go newest first. Each row's `why` names the reasons.
 
-Acting on a symbol (any alert, lot or stop change) closes its open entries, as before.
+Acting on a symbol (any alert or lot change, not a stop) closes its open entries.
 It also settles its dismissals: those stay dismissed.
 
 `alert check` applies the rules only in the regular session. To apply them outside it

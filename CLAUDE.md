@@ -565,12 +565,25 @@ Things that look simplifiable and aren't:
 - **Acting on a symbol closes all of its open revisit entries**, wherever it is
   done (the user's rule: 2026-09-18 for an alert's own entries on edit, widened
   on 2026-10-05 to the whole symbol, and to adds, removes, `revisit.apply`, and
-  every lot, position and stop change). `closeRevisitsForSymbol` is the one
+  every lot and position change). `closeRevisitsForSymbol` is the one
   function that does it. `closeSymbolRevisits` in `src/ops/apply.ts` calls it
-  for ops, and the CLI's `alert add/edit/remove`, `alert revisit apply`,
-  `holdings add-lot` and `holdings stop add/remove` call it directly.
-  `holdings cover` and `import` deliberately don't: they are automatic or bulk,
-  not a decision about a symbol.
+  for ops, and the CLI's `alert add/edit/remove`, `alert revisit apply` and
+  `holdings add-lot` call it directly.
+  **Stop changes close nothing** (the user's call, 2026-11-05: adjusting a stop
+  is risk upkeep, not a decision about the symbol). That covers the `stop.*`
+  ops, `holdings stop add/remove`, the Webull order ops, and stops the sync
+  mirrors from the app; don't add stop-change detection to the sync. The
+  `stop.*` values stay in `ClosingChange` because older entries carry them.
+  `holdings import` and the cover *sweep* deliberately don't: they are bulk or
+  automatic, not a decision about a symbol. Since 2026-11-05 two automatic paths
+  do, because each follows from one (the user's call, after a COTY buy in the
+  Webull app left its 7:30 fire on top of the queue): `holdings sync` closes on
+  every booked buy and non-stop sale (`syncClosures`; a stop fill queues its own
+  stop-out instead, so it runs before `queueStopOuts`), and `holdings cover`
+  closes when it applies a purchase's alert move (`purchaseClosure`, the same
+  closure as the page's edit or add). The buy usually closes them first as
+  `lot.add` (which the story leaves to `holdingLines`), so the move's own
+  closure is told only when a fire landed between the buy and the move.
   - **`applied`, never `dismissed`, and no invented move.** A dismissed entry's
     story line is "you left the level where it was", which is false after a
     removed alert or a new lot. Only the moved alert's entries get
