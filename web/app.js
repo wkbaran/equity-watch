@@ -561,7 +561,7 @@
   // Every other caller only branches on the return value, so this stays out of it.
   let lastSubmit = { id: null, error: null };
 
-  async function submitOp(op, { symbol, alertId = null, revisitId = null, summary }) {
+  async function submitOp(op, { symbol, symbols = null, alertId = null, revisitId = null, summary }) {
     const body = { ...op, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
     lastSubmit = { id: body.id, error: null };
     let resp;
@@ -594,7 +594,8 @@
       return false;
     }
     syncPending(); // another tab may have queued something while the request was out
-    pendingOps.push({ id: body.id, type: body.type, symbol, alertId, revisitId, summary, queuedAt: body.createdAt });
+    // `symbols`: an op that changes several (stops.update), so each position's row shows it pending.
+    pendingOps.push({ id: body.id, type: body.type, symbol, ...(symbols ? { symbols } : {}), alertId, revisitId, summary, queuedAt: body.createdAt });
     savePending();
     notice(`Queued: ${summary}. It applies at the next scheduled check.`, true);
     rerenderOps();
@@ -1582,6 +1583,8 @@
   let lotAddFields = null; // { symbol, account } inputs of lotAddFormEl
 
   const isHoldingsOp = (p) => !p.type.startsWith("alert.") && !p.type.startsWith("revisit.");
+  /** A pending change touches `symbol`: its own, or one of several (stops.update). */
+  const pendsOn = (p, symbol) => p.symbol === symbol || (Array.isArray(p.symbols) && p.symbols.includes(symbol));
   const canEditHoldings = () => canEdit() && vaultData !== null;
   const localToday = () => new Date().toLocaleDateString("en-CA");
   const fromBase64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
@@ -1645,7 +1648,7 @@
   // while an order is pending.
 
   /** Keep in step with ORDER_OP_TYPES in src/ops/orderTypes.ts. */
-  const ORDER_OP_TYPES = ["stop.place", "stop.replace", "stop.cancel", "cash.cover", "cash.park", "order.buy", "order.sell", "order.replace", "order.cancel", "quote.read"];
+  const ORDER_OP_TYPES = ["stop.place", "stop.replace", "stop.cancel", "stops.update", "cash.cover", "cash.park", "order.buy", "order.sell", "order.replace", "order.cancel", "quote.read"];
   const isOrderOpType = (type) => ORDER_OP_TYPES.includes(type);
   /**
    * An order the watcher reported sent. It stays pending until the vault holds
@@ -1717,7 +1720,7 @@
   }
 
   /** Queues an order op with the code from `code`, then watches for its result. */
-  async function submitOrder(op, code, { symbol, summary }) {
+  async function submitOrder(op, code, meta) {
     const c = code.value.trim();
     if (!/^\d{6}$/.test(c)) {
       notice("Enter the 6-digit code from your authenticator app.", false);
@@ -1732,7 +1735,7 @@
       code.focus();
       return false;
     }
-    const queued = await submitOp({ ...op, params: { ...(op.params ?? {}), code: c } }, { symbol, summary });
+    const queued = await submitOp({ ...op, params: { ...(op.params ?? {}), code: c } }, meta);
     if (queued) {
       code.value = "";
       spentCode = { code: c, at: Date.now() };
@@ -1774,7 +1777,8 @@
           settleSentOrders();
           for (const p of done) {
             const r = byId.get(p.id);
-            notice(r.ok ? `Sent: ${p.summary}. ${r.detail}` : `${p.summary}: ${r.message}`, r.ok);
+            // A batch's message names each stop moved or refused; its detail is a line per order.
+            notice(r.ok ? `Sent: ${p.summary}. ${p.type === "stops.update" ? r.message : r.detail}` : `${p.summary}: ${r.message}`, r.ok);
           }
           rerenderOps();
         }
@@ -1948,7 +1952,7 @@
       field("Code", code),
       h("button", { type: "submit", text: "Place stop at Webull" }),
       error,
-      h("div", { class: "note", text: "A GTC sell stop, regular session. The suggested price is 2 ATR under the high close since purchase." })
+      h("div", { class: "note", text: "A GTC sell stop, regular session. The suggested price is 2 ATR under the high close since purchase, rounded down to $0.05." })
     );
   }
 
@@ -2000,6 +2004,146 @@
           }),
       })
     );
+  }
+
+  // ---- Update stops: every 2 ATR move under one code -------------------------
+
+  /**
+   * The Webull stops whose 2 ATR trail (nickel-floored) differs from where they
+   * sit. A raise is always offered, since a trailing stop moves up as the high
+   * close does. A lowering only for a position flagged "stop tight", and
+   * unticked, since the trail never lowers. Plain stops only: a stop-limit's
+   * limit would be left behind, and a trailing stop moves itself. A symbol with
+   * an order change already pending is left out until it lands.
+   */
+  function stopUpdates() {
+    if (!ordersOn()) return [];
+    const accounts = orderAccounts();
+    const out = [];
+    for (const row of holdingRows() ?? []) {
+      if (row.ignored || row.price === null) continue;
+      const trail = trailFor(row);
+      if (trail === null || !(trail.suggested > 0) || trail.suggested >= row.price) continue;
+      if (pendingOps.some((p) => isOrderOpType(p.type) && pendsOn(p, row.symbol))) continue;
+      const tight = stopFlags(row).some((f) => f.kind === "stop-tight");
+      const stops = (vaultData?.stops ?? []).filter(
+        (s) => s.symbol === row.symbol && s.webull?.clientOrderId && s.webull.orderType === "STOP_LOSS" && accounts.includes(s.webull.account)
+      );
+      for (const s of stops) {
+        const to = trail.suggested;
+        if (Math.abs(to - s.stopPrice) < 0.005) continue;
+        const raise = to > s.stopPrice;
+        if (raise || tight) out.push({ stop: s, row, trail, to, raise });
+      }
+    }
+    return out.sort((a, b) => a.row.symbol.localeCompare(b.row.symbol) || a.stop.webull.account.localeCompare(b.stop.webull.account));
+  }
+
+  let stopsDialog = null;
+
+  /** The dialog: every change listed, each tickable and editable, sent as one stops.update under one code. */
+  function openStopUpdates() {
+    const updates = stopUpdates();
+    if (updates.length === 0) return notice("Every Webull stop already sits at its 2 ATR trail.", true);
+    if (stopsDialog === null) {
+      stopsDialog = h("dialog", { class: "modal ticket stop-updates", "aria-label": "Update stops" });
+      document.body.append(stopsDialog);
+    }
+    const lines = updates.map((u) => {
+      const s = u.stop;
+      const check = h("input", { type: "checkbox", "aria-label": `Move the ${s.symbol} ${s.webull.account} stop` });
+      check.checked = u.raise;
+      const price = numberInput(u.to.toFixed(2), { class: "price-input", "aria-label": `New ${s.symbol} ${s.webull.account} stop` });
+      const under = u.trail.fromHigh ? `high close ${money(u.trail.reference)}` : `price ${money(u.trail.reference)}`;
+      const why = `${u.raise ? "raise" : "lower"} · 2 × ATR ${u.trail.atr.toFixed(2)} under ${under}`;
+      const tr = h(
+        "tr",
+        { class: u.raise ? "raise" : "lower" },
+        h("td", {}, check),
+        h("td", {}, h("strong", { text: s.symbol })),
+        h("td", { text: s.webull.account }),
+        h("td", { class: "num", text: s.count === null ? "all" : String(s.count) }),
+        h("td", { class: "num", text: money(s.stopPrice) }),
+        h("td", {}, price),
+        h("td", { class: "muted", text: why })
+      );
+      return { u, check, price, tr };
+    });
+    const code = codeInput();
+    const error = h("span", { class: "form-error" });
+    const send = h("button", { type: "submit" });
+    const refresh = () => {
+      const n = lines.filter((l) => l.check.checked).length;
+      send.textContent = n === 1 ? "Move 1 stop" : `Move ${n} stops`;
+      send.disabled = n === 0;
+    };
+    for (const l of lines) l.check.onchange = refresh;
+    const form = h(
+      "form",
+      {
+        onsubmit: async (e) => {
+          e.preventDefault();
+          error.textContent = "";
+          const chosen = lines.filter((l) => l.check.checked);
+          if (chosen.length === 0) return (error.textContent = "Tick at least one stop.");
+          const changes = [];
+          for (const { u, price } of chosen) {
+            const p = positive(price.value);
+            const s = u.stop;
+            const bad = p === null ? `Enter a ${s.symbol} stop price above 0.` : p >= u.row.price ? `A ${s.symbol} sell stop must be under its price, ${money(u.row.price)}.` : null;
+            if (bad !== null) {
+              error.textContent = bad;
+              price.focus();
+              return;
+            }
+            changes.push({ account: s.webull.account, symbol: s.symbol, clientOrderId: s.webull.clientOrderId, expect: { stopPrice: s.stopPrice, quantity: s.count }, stopPrice: p });
+          }
+          const symbols = [...new Set(changes.map((c) => c.symbol))];
+          const list = changes.map((c) => `${c.symbol} ${money(c.expect.stopPrice)} → ${money(c.stopPrice)}`).join(", ");
+          const queued = await submitOrder({ type: "stops.update", target: {}, params: { changes } }, code, {
+            symbol: null,
+            symbols,
+            summary: `move ${changes.length === 1 ? "a stop" : `${changes.length} stops`} (${list})`,
+          });
+          if (queued) stopsDialog.close();
+        },
+      },
+      h("h2", { text: "Update stops at Webull" }),
+      h("p", {
+        class: "note",
+        text: "Each stop moved to 2 ATR under the high close since purchase (or the price, when higher), rounded down to $0.05. Each keeps its shares. Raises are ticked; a lowering is offered only for a stop flagged tight. One code sends them all.",
+      }),
+      h(
+        "div",
+        { class: "table-wrap" },
+        h(
+          "table",
+          { class: "stop-updates-table" },
+          h("thead", {}, h("tr", {}, ...["", "Symbol", "Account", "Shares", "Stop now", "New stop", ""].map((t) => h("th", { text: t })))),
+          h("tbody", {}, ...lines.map((l) => l.tr))
+        )
+      ),
+      field("Authenticator code", code),
+      h("div", { class: "modal-buttons" }, h("button", { type: "button", class: "link-button", text: "Cancel", onclick: () => stopsDialog.close() }), send),
+      error
+    );
+    refresh();
+    stopsDialog.replaceChildren(form);
+    stopsDialog.showModal();
+    code.focus();
+  }
+
+  /** "Update stops" for the Webull panel; null when there is nothing to move. */
+  function stopUpdatesButton() {
+    const n = stopUpdates().length;
+    if (n === 0) return null;
+    return h("button", {
+      type: "button",
+      class: "stop-updates-button",
+      text: `Update stops (${n})`,
+      title: "Move the Webull stops to their 2 ATR trail, rounded down to $0.05, under one authenticator code",
+      onclick: openStopUpdates,
+    });
   }
 
   /**
@@ -2162,7 +2306,7 @@
     const fund = h("input", { type: "checkbox" });
     const attach = h("input", { type: "checkbox" });
     const trail = row ? trailFor(row) : null;
-    const atrStop = row?.atr > 0 && last !== null ? last - STOP_ATR_MULTIPLE * row.atr : trail?.suggested ?? null;
+    const atrStop = row?.atr > 0 && last !== null ? stopFloor(last - STOP_ATR_MULTIPLE * row.atr) : trail?.suggested ?? null;
     const stop = numberInput(presetStop ?? (atrStop !== null && atrStop > 0 ? atrStop.toFixed(2) : null), { placeholder: "stop" });
     if (presetStop !== null) attach.checked = true;
     // "Apply it to the whole position": offered when the account has exactly one
@@ -2430,7 +2574,7 @@
       );
     });
     el.replaceChildren(
-      h("div", { class: "section-header" }, h("h3", { class: "section-title", text: "Webull" }), h("span", { class: "note", text: state.readAt ? `read ${ago(state.readAt)}` : "" })),
+      h("div", { class: "section-header" }, h("h3", { class: "section-title", text: "Webull" }), h("span", { class: "note", text: state.readAt ? `read ${ago(state.readAt)}` : "" }), stopUpdatesButton()),
       ...(problem ? [problem] : []),
       ...accounts
     );
@@ -3834,7 +3978,7 @@
     // the rest. Measured over the filtered set: a hidden row must not set the scale.
     const span = Math.min(50, Math.max(5, ...shown.map((r) => Math.abs(r.pctFromBasis ?? 0))));
     const editable = canEditHoldings();
-    const symbolPending = (symbol) => pendingOps.filter((p) => isHoldingsOp(p) && p.symbol === symbol);
+    const symbolPending = (symbol) => pendingOps.filter((p) => isHoldingsOp(p) && pendsOn(p, symbol));
     // Sent orders only, and the pill says why it is still there: Webull has it, the page doesn't yet.
     const pendingTitle = (symbol) => (symbolPending(symbol).every(orderSent) ? "Sent to Webull. Shown here after the next Webull read." : null);
 
@@ -3951,6 +4095,13 @@
   const STAGNANT_MAX_PROFIT_PCT = 2;
   const STOP_ATR_MULTIPLE = 2;
   const STOP_ATR_BAND = 0.1;
+  /**
+   * Stops are set on a nickel, rounded down (the user's rule, 2026-11-05):
+   * 3.32 becomes 3.30, 3.349 too, 3.35 stays. The epsilon keeps a float like
+   * 1.15 * 20 = 22.999… from flooring a nickel too far.
+   */
+  const STOP_INCREMENT = 0.05;
+  const stopFloor = (n) => Math.round(Math.floor(n / STOP_INCREMENT + 1e-6) * STOP_INCREMENT * 100) / 100;
 
   /**
    * What `holdings check` would say about this position, as state rather than
@@ -4066,7 +4217,8 @@
 
   /**
    * Where a STOP_ATR_MULTIPLE trailing stop sits for a row: under its high close
-   * since purchase, or today's price when that is higher. Null with no ATR or
+   * since purchase, or today's price when that is higher, rounded down to the
+   * nickel a stop is set on (`stopFloor`). Null with no ATR or
    * no quote. `drop` is how far the price is under that reference, in ATRs,
    * rounded down, for the past-trail sentences.
    */
@@ -4078,7 +4230,7 @@
     return {
       fromHigh,
       reference,
-      suggested: reference - STOP_ATR_MULTIPLE * row.atr,
+      suggested: stopFloor(reference - STOP_ATR_MULTIPLE * row.atr),
       drop: Math.floor(((reference - row.price) / row.atr) * 10) / 10,
       atr: row.atr,
       price: row.price,

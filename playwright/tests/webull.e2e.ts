@@ -194,6 +194,55 @@ test.describe("orders", () => {
     await expect(page.locator("#webull-panel").getByRole("button", { name: "Sell BIL to cover" })).toHaveCount(0);
   });
 
+  test("Update stops lists every trail move, nickel-rounded, and sends them under one code", async ({ page }) => {
+    const TSLA_STOP = {
+      id: "wb-00000002",
+      symbol: "TSLA",
+      count: 2,
+      stopPrice: 230,
+      webull: { account: "margin", orderId: "ORDER-0002", clientOrderId: "ewclient0002", orderType: "STOP_LOSS", timeInForce: "GTC", limitPrice: null, placedAt: "2026-10-20T15:00:00.000Z" },
+    };
+    await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [STOP, TSLA_STOP], orders: ON }, (c) => ({
+      ...c,
+      holdings: c.holdings.map((r) => (r.symbol === "AA" ? { ...r, stops: [39] } : r.symbol === "TSLA" ? { ...r, stops: [230] } : r)),
+    }));
+    await page.goto("/#/holdings");
+    await unlockWith(page, OPS_TOKEN);
+    const button = page.locator("#webull-panel").getByRole("button", { name: "Update stops (2)" });
+    await button.click();
+    const dialog = page.locator("dialog.stop-updates");
+    await expect(dialog).toBeVisible();
+    // TSLA: 255 - 2 x 9.68 = 235.64, set at 235.60, a raise, ticked.
+    // AA: 47 - 2 x 5 = 37.00, under its stop at 39 (flagged tight), so offered unticked.
+    await expect(dialog.getByLabel("New TSLA margin stop")).toHaveValue("235.60");
+    await expect(dialog.getByLabel("Move the TSLA margin stop")).toBeChecked();
+    await expect(dialog.getByLabel("New AA margin stop")).toHaveValue("37.00");
+    await expect(dialog.getByLabel("Move the AA margin stop")).not.toBeChecked();
+    await expect(dialog.getByRole("button", { name: "Move 1 stop" })).toBeVisible();
+
+    await dialog.getByLabel("Move the AA margin stop").check();
+    await dialog.getByLabel("New AA margin stop").fill("37.5");
+    await dialog.getByLabel("Authenticator code").fill("246810");
+    await dialog.getByRole("button", { name: "Move 2 stops" }).click();
+    await expect(dialog).toBeHidden();
+    await expect.poll(async () => (await queuedOps(page)).length).toBe(1);
+    const [sent] = await queuedOps(page);
+    expect(sent).toMatchObject({
+      type: "stops.update",
+      params: {
+        code: "246810",
+        changes: [
+          { account: "margin", symbol: "AA", clientOrderId: "ewclient0001", expect: { stopPrice: 39, quantity: 5 }, stopPrice: 37.5 },
+          { account: "margin", symbol: "TSLA", clientOrderId: "ewclient0002", expect: { stopPrice: 230, quantity: 2 }, stopPrice: 235.6 },
+        ],
+      },
+    });
+    // Both positions show the change pending, and the button has nothing left to offer.
+    await expect(positionRow(page, "AA").locator(".tag.pending")).toBeVisible();
+    await expect(positionRow(page, "TSLA").locator(".tag.pending")).toBeVisible();
+    await expect(page.locator("#webull-panel").getByRole("button", { name: /Update stops/ })).toHaveCount(0);
+  });
+
   test("places and moves a stop, with the code, and shows the watcher's result", async ({ page }) => {
     // The fixture's AA row carries its own stop at 38; make it the stop served here.
     await serveVault(page, { webull: WEBULL, holdingSources: AA_KEPT, stops: [STOP], orders: ON }, (c) => ({

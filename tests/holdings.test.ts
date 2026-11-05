@@ -159,9 +159,10 @@ describe("web/app.js mirrors the holdings thresholds", () => {
   });
 
   const copy = new Function(
-    `${appJs.slice(start, end)}\nreturn { holdingFlags, ABOVE_BASIS_THRESHOLD_PCT, STAGNANT_MIN_DAYS, STAGNANT_MAX_PROFIT_PCT, STOP_ATR_MULTIPLE, STOP_ATR_BAND };`
+    `${appJs.slice(start, end)}\nreturn { holdingFlags, stopFloor, ABOVE_BASIS_THRESHOLD_PCT, STAGNANT_MIN_DAYS, STAGNANT_MAX_PROFIT_PCT, STOP_ATR_MULTIPLE, STOP_ATR_BAND };`
   )() as {
     holdingFlags: (row: FlagRow, now?: number) => { kind: string; title: string }[];
+    stopFloor: (n: number) => number;
     ABOVE_BASIS_THRESHOLD_PCT: number;
     STAGNANT_MIN_DAYS: number;
     STAGNANT_MAX_PROFIT_PCT: number;
@@ -212,6 +213,13 @@ describe("web/app.js mirrors the holdings thresholds", () => {
     it("flags a position with no stop, unless it is ignored", () => {
       expect(stopKinds({})).toEqual(["no-stop"]);
       expect(stopKinds({ ignored: true })).toEqual([]);
+    });
+
+    it("rounds a suggested stop down to the nickel", () => {
+      expect([3.32, 3.35, 3.3, 3.349, 1.15, 0.07, 101.999].map(copy.stopFloor)).toEqual([3.3, 3.35, 3.3, 3.3, 1.15, 0.05, 101.95]);
+      const title = copy.holdingFlags({ pctFromBasis: 0, lastPurchaseDate: "2026-09-20", price: 100, atr: 3.17, stops: [], ignored: false }, NOW)[0].title;
+      // 100 - 6.34 = 93.66, set at 93.65.
+      expect(title).toContain("would put one near 93.65.");
     });
 
     it("suggests a stop on a position that has none, by the same trail", () => {

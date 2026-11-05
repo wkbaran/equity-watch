@@ -240,6 +240,7 @@ async function applyByType(op: Op, ctx: ApplyContext): Promise<Outcome> {
     case "stop.place":
     case "stop.replace":
     case "stop.cancel":
+    case "stops.update":
     case "cash.cover":
     case "cash.park":
     case "order.buy":

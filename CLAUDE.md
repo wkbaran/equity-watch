@@ -1362,6 +1362,19 @@ order was sent.
   Sent entries are kept out of `settlePending`'s drain watermark, or the next
   `ops pull` would retire them with an "applied" toast. With Webull reads failing,
   `readAt` stops moving and the pill stays until someone clicks Forget.
+- **`stops.update` is several `stop.replace`s under one code** (2026-11-05, the
+  Webull panel's Update stops). It branches off in `applyOrderOp` right after the
+  code is spent, before the single-account check, because its changes can span
+  accounts; each change gets that account check itself and then runs the real
+  `replace`, so the guards exist once. It never throws: some stops may already
+  have moved, and a retry would only find its code spent. Its target is `{}`
+  (`TARGET_KEY` null), and its pending entry carries `symbols` so every position
+  it touches shows "change pending" (`pendsOn`). Its message, like every order
+  message, carries no digits.
+- **Suggested stops are rounded down to the nickel** (`stopFloor`, the user's
+  rule, 2026-11-05), inside `trailFor`, so every suggestion on the page agrees.
+  It floors with an epsilon rather than rounding to cents first: 3.349 is 3.30,
+  and 1.15 / 0.05 = 22.999… must not become 1.10.
 - **The ticket's marketable limit is only set from a regular-session quote,**
   and never over a limit typed in the ticket or carried from the Add a lot form
   (`priceTyped`). Don't extend it to pre/post: that is when the quote lies (see

@@ -533,6 +533,12 @@
   dialog.ticket { width: min(26rem, calc(100vw - 32px)); }
   dialog.ticket h2 { font-size: 1.05rem; margin: 0 0 0.4rem; }
   dialog.ticket.with-chart { width: min(56rem, calc(100vw - 32px)); }
+  dialog.ticket.stop-updates { width: min(48rem, calc(100vw - 32px)); max-width: none; }
+  .stop-updates-table { width: 100%; border-collapse: collapse; }
+  .stop-updates-table :is(th, td) { padding: 4px 6px; text-align: left; white-space: nowrap; }
+  .stop-updates-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .stop-updates-table .price-input { width: 6.5rem; }
+  #webull-panel .section-header .stop-updates-button { margin-left: auto; }
   .ticket-chart { width: 100%; height: 340px; border: 0; border-radius: 6px; }
   /* A display rule here would beat [hidden] (see CLAUDE.md), hence :not([hidden]). */
   .quote-bar:not([hidden]) { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
