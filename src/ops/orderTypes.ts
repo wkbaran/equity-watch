@@ -8,6 +8,9 @@ export const ORDER_OP_TYPES = [
   "stop.place",
   "stop.replace",
   "stop.cancel",
+  // Several stop.replace changes under one authenticator code (the page's
+  // "Update stops" dialog). Each change keeps stop.replace's own guards.
+  "stops.update",
   "cash.cover",
   "cash.park",
   "order.buy",

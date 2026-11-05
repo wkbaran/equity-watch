@@ -257,6 +257,21 @@ same checks on the machine before anything reaches Webull.
      price. Only on a holding the sync keeps. Placing, moving and cancelling one
      works at any hour, weekends included (confirmed with Webull 2026-10-28); the
      stop itself only triggers in the regular session.
+   - **Update stops** (the Webull panel's button, with a count, shown when there is
+     something to move) lists every Webull stop whose 2 ATR trail differs from where
+     it sits: its account and shares, the stop now, the new stop, the move, and the
+     trail's arithmetic unrounded (`47.00 − 2 × 5.00 = 37.00 high close`). The new
+     stop is that result rounded down to $0.05, and every row starts ticked. A stop
+     can move **down** as well as up: the trail is measured from the high close since
+     purchase, which only rises, so a trail under the stop means the ATR has grown,
+     and the stop gives back to keep its two ATRs of room. Type over any new stop to
+     set your own (the row says "edited", and Reset puts the trail back); a price at
+     or over the market is flagged on its row and holds Send until fixed or unticked.
+     The ticked rows go as one `stops.update` under **one code**. Plain stops only: a
+     stop-limit or trailing stop is left to its own Move. Each change is judged as
+     its own `stop.replace` would be (still open, still as the page showed it, under
+     the last price), so one stale stop is refused alone and the rest still move; the
+     result names each.
    - **Sells and buys**: limit orders only, never market; a limit more than 20%
      the wrong side of the last price is refused as a likely typo.
    - **Buys**: Webull previews the cost, which must be under `ORDERS_MAX_VALUE`
@@ -423,7 +438,9 @@ Each row also shows two volatility figures and flags its stop:
   suggest lowering it, which a trailing stop never does. Not from basis either:
   that is the initial stop, and on a winner it would hand back the gains. The
   title says which reference it used, how many ATRs of room the stop has, and
-  where 2 ATR would put it. With no ATR or no quote, neither pill is judged; a
+  where 2 ATR would put it, rounded **down to the nickel** stops are set on
+  (3.32 → 3.30; 3.35 stays). Every suggested stop on the page is rounded the same
+  way. With no ATR or no quote, neither pill is judged; a
   price at or under the stop is always `stop tight`. On a Webull stop, the flagged
   stop's Move field starts at that 2 ATR price instead of the stop's own.
 - **`past trail`**: the price is already 2 ATR or more under its high close since

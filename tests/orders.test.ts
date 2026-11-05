@@ -257,6 +257,64 @@ describe("stops", () => {
     expect(client.cancelled).toEqual(["ewstop1"]);
   });
 
+  it("moves several stops, in several accounts, under one code, refusing only the stale one", async () => {
+    saveHoldingsStore(holdingsFile, {
+      ...store(),
+      holdings: [
+        { account: "margin", symbol: "AAA", source: "webull", linkedAt: "2026-10-01T00:00:00.000Z" },
+        { account: "roth", symbol: "BBB", source: "webull", linkedAt: "2026-10-01T00:00:00.000Z" },
+      ],
+    });
+    const byAccount: Record<string, { positions: WebullPosition[]; open: WebullOrder[] }> = {
+      "ID-margin": {
+        positions: [position("AAA", 10, 50), position("CCC", 5, 20)],
+        open: [working("ewstopA", "AAA", "SELL", "STOP_LOSS", 10, { stop: 44 }), working("ewstopC", "CCC", "SELL", "STOP_LOSS", 5, { stop: 17 })],
+      },
+      "ID-roth": { positions: [position("BBB", 3, 30)], open: [working("ewstopB", "BBB", "SELL", "STOP_LOSS", 3, { stop: 25 })] },
+    };
+    const client = fakeClient({ positions: [], cash: 1000 });
+    client.positions = (id) => Promise.resolve(byAccount[id].positions);
+    client.openOrders = (id) => Promise.resolve(byAccount[id].open);
+    const ctx = { ...context(client), accountIds: new Map([["margin", "ID-margin"], ["roth", "ID-roth"]]) };
+    const r = await applyOrderOp(
+      op("stops.update", {}, {
+        changes: [
+          { account: "margin", symbol: "AAA", clientOrderId: "ewstopA", expect: { stopPrice: 44, quantity: 10 }, stopPrice: 45.5 },
+          { account: "roth", symbol: "BBB", clientOrderId: "ewstopB", expect: { stopPrice: 25, quantity: 3 }, stopPrice: 26.15 },
+          { account: "margin", symbol: "CCC", clientOrderId: "ewstopC", expect: { stopPrice: 16, quantity: 5 }, stopPrice: 18 },
+        ],
+      }),
+      ctx
+    );
+    expect(r).toMatchObject({ ok: true, message: "Moved the stops: AAA, BBB. Not moved: CCC (that CCC order changed since the page loaded)." });
+    expect(r.message).not.toMatch(/\d/);
+    expect(client.replaced).toEqual([
+      { client_order_id: "ewstopA", quantity: "10", stop_price: "45.50" },
+      { client_order_id: "ewstopB", quantity: "3", stop_price: "26.15" },
+    ]);
+    // One code for the lot: it is spent, and stops count toward no limit.
+    expect(loadOrdersState(join(dir, "orders-state.json"))).toMatchObject({ usedTotpSteps: [stepOf(NOW)], sentToday: 0 });
+  });
+
+  it("refuses a malformed stops.update whole, and a duplicate stop in it", async () => {
+    const client = fakeClient({ positions: [position("AAA", 10, 50)], cash: 1000, open: [working("ewstop1", "AAA", "SELL", "STOP_LOSS", 10, { stop: 44 })] });
+    const ctx = context(client);
+    const change = { account: "margin", symbol: "AAA", clientOrderId: "ewstop1", expect: { stopPrice: 44, quantity: 10 }, stopPrice: 46 };
+    expect(await applyOrderOp(op("stops.update", {}, { changes: [] }, undefined, totpAt(SECRET, stepOf(NOW) - 1)), ctx)).toMatchObject({ ok: false });
+    expect(await applyOrderOp(op("stops.update", {}, { changes: [change, change] }), ctx)).toMatchObject({ ok: false, message: expect.stringContaining("twice") });
+    expect(await applyOrderOp(op("stops.update", {}, { changes: [{ ...change, expect: undefined }] }, undefined, totpAt(SECRET, stepOf(NOW) + 1)), ctx)).toMatchObject({ ok: false });
+    expect(client.replaced).toEqual([]);
+  });
+
+  it("refuses a stops.update change in an account orders may not use, and needs a fresh code", async () => {
+    const client = fakeClient({ positions: [position("AAA", 10, 50)], cash: 1000, open: [working("ewstop1", "AAA", "SELL", "STOP_LOSS", 10, { stop: 44 })] });
+    const change = { account: "roth", symbol: "AAA", clientOrderId: "ewstop1", expect: { stopPrice: 44, quantity: 10 }, stopPrice: 46 };
+    const r = await applyOrderOp(op("stops.update", {}, { changes: [change] }), context(client));
+    expect(r).toMatchObject({ ok: false, message: expect.stringContaining("Not moved: AAA (that account isn't one orders may be placed in)") });
+    const again = await applyOrderOp(op("stops.update", {}, { changes: [{ ...change, account: "margin" }] }), context(client));
+    expect(again).toMatchObject({ ok: false, message: expect.stringContaining("already used") });
+  });
+
   it("doesn't place twice when a crash left the order already at Webull", async () => {
     const client = fakeClient({ positions: [position("AAA", 10, 50)], cash: 1000 });
     const o = op("stop.place", { account: "margin", symbol: "AAA" }, { quantity: 5, stopPrice: 45 });

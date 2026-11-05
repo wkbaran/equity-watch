@@ -6,7 +6,8 @@
  * Every op passes the same gate first, in this order, and is refused at the
  * first that fails:
  *   1. WEBULL_ORDERS=on (the kill switch);
- *   2. a valid, unused authenticator code (params.code);
+ *   2. a valid, unused authenticator code (params.code), one per op even when
+ *      the op is `stops.update`, which carries several stop changes;
  *   3. an account WEBULL_ACCOUNTS maps and ORDERS_ACCOUNTS allows;
  *   4. under ORDERS_MAX_PER_DAY orders sent today (stops and cancels are free).
  * Then each type reads the account fresh from Webull (positions, cash, open
@@ -255,6 +256,12 @@ export async function applyOrderOp(op: Op, ctx: OrderContext): Promise<OrderOutc
   state.usedTotpSteps = [...used, verified.step].sort((a, b) => b - a).slice(0, 20);
   saveOrdersState(ctx.stateFile, state);
 
+  // Several stops, possibly in several accounts: each change gets the account
+  // check below on its own. Stops count toward no daily limit.
+  if (op.type === "stops.update") {
+    return updateStops(op, ctx);
+  }
+
   const label = stringField(op.target, "account")?.trim() ?? "";
   const accountId = ctx.accountIds.get(label);
   if (accountId === undefined || (ctx.config.accounts !== null && !ctx.config.accounts.has(label))) {
@@ -421,6 +428,90 @@ async function replace(op: Op, ctx: OrderContext, account: Account, symbol: stri
   };
   const placed = await ctx.client.replaceOrder(account.id, change);
   return ok(order.symbol, `Changed the ${order.symbol} order.`, `replaced ${target}: ${JSON.stringify(change)} -> order ${placed.orderId ?? order.orderId}`);
+}
+
+/** The most stop changes one `stops.update` takes, well inside the Lambda's 16 KB body limit. */
+export const MAX_STOP_UPDATES = 60;
+
+interface StopChange {
+  account: string;
+  symbol: string;
+  clientOrderId: string;
+  expect: { stopPrice: number; quantity: number };
+  stopPrice: number;
+}
+
+function parseStopChanges(params: unknown): StopChange[] | string {
+  const raw = field(params, "changes");
+  if (!Array.isArray(raw) || raw.length === 0) return "Not changed: no stop changes were sent.";
+  if (raw.length > MAX_STOP_UPDATES) return `Not changed: at most ${MAX_STOP_UPDATES} stops go in one update.`;
+  const out: StopChange[] = [];
+  for (const c of raw) {
+    const account = stringField(c, "account")?.trim() ?? "";
+    const symbol = stringField(c, "symbol")?.trim().toUpperCase() ?? "";
+    const clientOrderId = stringField(c, "clientOrderId")?.trim() ?? "";
+    const expectStop = numField(field(c, "expect"), "stopPrice");
+    const expectQty = numField(field(c, "expect"), "quantity");
+    const stopPrice = numField(c, "stopPrice");
+    if (!account || !symbol || !clientOrderId || expectStop === null || expectQty === null || stopPrice === null) {
+      return "Not changed: a stop change was missing its account, symbol, order, expected stop or new price.";
+    }
+    if (!(stopPrice > 0)) return `Not changed: the new ${symbol} stop needs a price above 0.`;
+    out.push({ account, symbol, clientOrderId, expect: { stopPrice: expectStop, quantity: expectQty }, stopPrice });
+  }
+  if (new Set(out.map((c) => `${c.account}\u0000${c.clientOrderId}`)).size !== out.length) {
+    return "Not changed: the same stop appears twice.";
+  }
+  return out;
+}
+
+/**
+ * `stops.update`: several stop.replace changes under the one code the gate
+ * already spent. Each change is judged as its own stop.replace would be (the
+ * order still open and still as the page showed it, under the last price), so
+ * one stale stop refuses that stop alone. Never throws: some stops may already
+ * have moved, and a retry would only find its code spent.
+ */
+async function updateStops(op: Op, ctx: OrderContext): Promise<OrderOutcome> {
+  const changes = parseStopChanges(op.params);
+  if (typeof changes === "string") return no(null, changes);
+  const store = loadHoldingsStore(ctx.holdingsFile);
+  const accounts = new Map<string, Promise<Account>>();
+  const moved: string[] = [];
+  const refused: string[] = [];
+  const details: string[] = [];
+  for (const c of changes) {
+    const accountId = ctx.accountIds.get(c.account);
+    let outcome: OrderOutcome;
+    if (accountId === undefined || (ctx.config.accounts !== null && !ctx.config.accounts.has(c.account))) {
+      outcome = no(c.symbol, "Not changed: that account isn't one orders may be placed in.");
+    } else {
+      try {
+        if (!accounts.has(c.account)) accounts.set(c.account, readAccount(ctx, c.account, accountId, store));
+        const account = await accounts.get(c.account)!;
+        const sub: Op = {
+          ...op,
+          type: "stop.replace",
+          target: { account: c.account, symbol: c.symbol, clientOrderId: c.clientOrderId },
+          expect: c.expect,
+          params: { stopPrice: c.stopPrice },
+        };
+        outcome = await replace(sub, ctx, account, c.symbol);
+      } catch (err) {
+        const refusedByWebull = err instanceof WebullError && err.status !== 0 && err.status !== 429 && err.status < 500;
+        outcome = no(c.symbol, refusedByWebull ? "Not changed: Webull refused it." : "Not changed: Webull couldn't be reached. Try it again.", err instanceof Error ? err.message : String(err));
+        // A failed read stays failed for the rest of this account's changes.
+      }
+    }
+    (outcome.ok ? moved : refused).push(outcome.ok ? c.symbol : `${c.symbol} (${outcome.message.replace(/^Not changed: /, "").replace(/\.$/, "")})`);
+    details.push(`${c.account} ${c.symbol}: ${outcome.detail}`);
+  }
+  const parts = [
+    moved.length > 0 ? `Moved ${moved.length === 1 ? "the stop" : "the stops"}: ${moved.join(", ")}.` : "No stops were moved.",
+    refused.length > 0 ? `Not moved: ${refused.join("; ")}.` : "",
+  ].filter(Boolean);
+  const message = parts.join(" ");
+  return moved.length > 0 ? ok(null, message, details.join("\n")) : no(null, message, details.join("\n"));
 }
 
 async function cancel(op: Op, ctx: OrderContext, account: Account, symbol: string | null): Promise<OrderOutcome> {
