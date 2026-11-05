@@ -1580,8 +1580,14 @@ look simplifiable and aren't:
   adds the lot twice. The sync runs with the login expired, too, and never sees a
   booked buy again.
 - **Recorded in `addLot` and on the sync's trial store**, so every manual path gets
-  it and a holding the store refuses part-way records nothing. Adopt, link and
+  it and a holding the store refuses part-way records nothing. Link and
   `holdings import` deliberately record nothing: they aren't purchases.
+- **Adopt records the fills from the last 7 days** (`ADOPT_PURCHASE_DAYS`,
+  2026-11-05). It used to record nothing, which missed the commonest buy of all: a
+  symbol not already held, bought in the Webull app, reaches the record *only*
+  through Adopt (the sync books buys on webull holdings, never on unmatched
+  positions). CHTR's buy moved no alert that way. Older fills and the
+  average-cost fallback lot (dated today whatever its age) still record nothing.
 - **The `lot.add` message says the alert moves "later in this check" with no "10%"**:
   holdings messages are public and must carry no digit.
 - **Rejections settle; quote failures wait.** A level equal to the live price fails

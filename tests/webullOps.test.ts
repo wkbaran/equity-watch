@@ -106,6 +106,30 @@ describe("holding.adopt", () => {
       booked: { "ORDER-0001": 4, "ORDER-0002": 6 },
     });
     expect(s.webull?.accounts[0].unmatched).toEqual([]);
+    // Fills months old are history, not a purchase.
+    expect(s.pendingPurchases).toBeUndefined();
+  });
+
+  it("records a recent fill as a purchase, so cover moves the alert", async () => {
+    const s0 = store();
+    s0.webull!.accounts[0].unmatched[0].adopt[1].purchaseDate = "2026-10-24";
+    saveHoldingsStore(holdingsFile, s0);
+    const r = await apply({ type: "holding.adopt", target: { account: "roth", symbol: "NEW" }, expect: { count: 10 } });
+    expect(r.ok).toBe(true);
+    expect(loadHoldingsStore(holdingsFile).pendingPurchases).toEqual([
+      { symbol: "NEW", price: 21.67, purchaseDate: "2026-10-24", recordedAt: "2026-10-25T15:00:00.000Z", source: "webull" },
+    ]);
+  });
+
+  it("records no purchase for the average-cost fallback lot", async () => {
+    const s0 = store();
+    const u = s0.webull!.accounts[0].unmatched[0];
+    u.adopt = [{ count: 10, basisPerShare: 21, purchaseDate: "2026-10-25", orderId: null }];
+    u.fallback = "fills don't explain it";
+    saveHoldingsStore(holdingsFile, s0);
+    const r = await apply({ type: "holding.adopt", target: { account: "roth", symbol: "NEW" }, expect: { count: 10 } });
+    expect(r.ok).toBe(true);
+    expect(loadHoldingsStore(holdingsFile).pendingPurchases).toBeUndefined();
   });
 
   it("refuses when Webull's count changed since the page loaded", async () => {

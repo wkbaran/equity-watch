@@ -22,9 +22,19 @@
  */
 
 import { holdingKey, type Holding, type HoldingsStore, type WebullAccountState } from "../holdings/models.js";
+import { recordPurchase } from "../holdings/purchaseAlert.js";
 import { loadHoldingsStore, saveHoldingsStore } from "../holdings/store.js";
 import type { Op, Outcome } from "./apply.js";
 import { stringField } from "./validate.js";
+import { marketDate } from "../marketHours.js";
+
+/**
+ * How far back an adopted fill still counts as a purchase. A symbol new to the
+ * record reaches it only through Adopt, so a buy made in the Webull app of a
+ * symbol not already held arrives here, not as a sync buy. Older fills are the
+ * position's history, not a decision made now, and move no alert.
+ */
+export const ADOPT_PURCHASE_DAYS = 7;
 
 const SHARE_EPSILON = 1e-6;
 /** A ticker as Webull and Schwab write one: BRK.B, BF-B. */
@@ -110,6 +120,13 @@ export function applyWebullHoldingOp(op: Op, holdingsFile: string, now: Date): O
           ...(planned.orderId !== null ? { orderId: planned.orderId } : {}),
         });
       });
+      // A recent fill is a purchase (purchaseAlert.ts). The average-cost fallback isn't one: it is dated today whatever its age.
+      const since = marketDate(new Date(now.getTime() - ADOPT_PURCHASE_DAYS * 86_400_000));
+      for (const planned of entry.adopt) {
+        if (planned.orderId !== null && planned.purchaseDate >= since) {
+          recordPurchase(store, { symbol, price: planned.basisPerShare, purchaseDate: planned.purchaseDate, recordedAt: now.toISOString(), source: "webull" });
+        }
+      }
       upsertHolding(store, { account, symbol, source: "webull", linkedAt: store.webull.readAt, booked: { ...entry.booked } });
       // It is a holding now, not a proposal: the next sync recomputes the rest.
       state!.unmatched = state!.unmatched.filter((u) => u.symbol !== symbol);

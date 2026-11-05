@@ -51,8 +51,11 @@ Every new lot sets the symbol's price alert to **10% above what the lot cost**
   side refuses the new level; the check output says so.
 - Symbols in `ignoreSymbols` (BIL) are skipped. A lot already sold off by the time
   it runs is skipped too.
-- **Adopting or linking** a Webull position is not a purchase and moves nothing;
-  neither does `holdings import`.
+- **Adopting** a Webull position counts the fills from the last 7 days as
+  purchases (2026-11-05): a symbol bought in the Webull app that the record didn't
+  hold arrives only through Adopt, so this is how its buy moves the alert. Older
+  fills, and the one lot at Webull's average cost that Adopt falls back to, are
+  history and move nothing. **Linking** moves nothing, nor does `holdings import`.
 - **The move closes the symbol's open revisit entries** (2026-11-05), like the same
   edit or add from the page, so `holdings cover` takes a `--revisits-file`. The buy
   has usually closed them already; see
