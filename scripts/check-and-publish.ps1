@@ -156,8 +156,8 @@ if ($code -eq $EXIT_LOGIN_EXPIRED) {
 }
 
 # Webull's positions and cash into holdings.json (docs/HOLDINGS.md#syncing-from-webull),
-# after the page's queued Adopt/Link ops and before cover, so a new buy gets its
-# starting alert in the same run. Exits 0 when Webull isn't set up.
+# after the page's queued Adopt/Link ops and before cover, so a new buy's price
+# alert moves to 10% above it in the same run. Exits 0 when Webull isn't set up.
 $code = Invoke-Logged "holdings sync" "node" @($cli, "holdings", "sync")
 if ($code -ne 0) {
     Write-Log "Continuing with the check anyway."

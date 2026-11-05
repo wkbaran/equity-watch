@@ -1533,6 +1533,27 @@ Round *before* comparing any level against a live price. `100 * 1.1` is
 rounds straight back onto it — producing an alert at exactly the live price,
 which has no side to fire on and `addAlert` rejects.
 
+## A new lot moves the price alert, but only through `holdings cover`
+
+Since 2026-11-04 every lot bought (`lot.add`, `holdings add-lot`, a Webull sync buy)
+sets the symbol's static alert to 10% above the lot's price, removing any volume
+condition, or adds one (src/holdings/purchaseAlert.ts, docs/HOLDINGS.md). Things that
+look simplifiable and aren't:
+
+- **The lot only records a `pendingPurchase`; `holdings cover` moves the alert.**
+  Don't move the alert inline in the `lot.add` handler. It needs a quote after
+  `addLot` has written the lot, and a throw there (or `schwabAuth`'s `process.exit`
+  with no credentials) stops the drain before the result is logged, so the retry
+  adds the lot twice. The sync runs with the login expired, too, and never sees a
+  booked buy again.
+- **Recorded in `addLot` and on the sync's trial store**, so every manual path gets
+  it and a holding the store refuses part-way records nothing. Adopt, link and
+  `holdings import` deliberately record nothing: they aren't purchases.
+- **The `lot.add` message says the alert moves "later in this check" with no "10%"**:
+  holdings messages are public and must carry no digit.
+- **Rejections settle; quote failures wait.** A level equal to the live price fails
+  the same way every run.
+
 ## Things that exist once, and the reason each one has to
 
 A consolidation pass on 2026-09-21 collapsed several copies. If you find

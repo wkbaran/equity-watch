@@ -269,6 +269,21 @@ export interface HoldingsStore {
   removedLots?: RemovedLot[];
   /** Absent in stores written before 2026-10-07, which recorded no sales. */
   sales?: Sale[];
+  /**
+   * Purchases whose price alert hasn't been moved yet (src/holdings/purchaseAlert.ts),
+   * at most one per symbol. `holdings cover` applies and clears them. Absent when none wait.
+   */
+  pendingPurchases?: PendingPurchase[];
+}
+
+/** A lot bought, waiting for `holdings cover` to set the symbol's alert 10% above its price. */
+export interface PendingPurchase {
+  symbol: string;
+  /** Per share: the lot's basis. */
+  price: number;
+  purchaseDate: string;
+  recordedAt: string;
+  source: "manual" | "webull";
 }
 
 export function emptyHoldingsStore(): HoldingsStore {

@@ -3,6 +3,7 @@ import type { MarketData } from "../alerts/engine.js";
 import { computeBasis, saleStoryTime, type HoldingsStore, type Lot, type Sale, type SaleLot, type Stop, type StopHit } from "./models.js";
 import { loadHoldingsStore, saveHoldingsStore } from "./store.js";
 import type { HoldingsNotifier } from "./notify.js";
+import { recordPurchase } from "./purchaseAlert.js";
 import { localDateString } from "../timezone.js";
 
 /**
@@ -129,6 +130,9 @@ export function addLot(
     ...(input.account !== undefined ? { account: input.account } : {}),
   };
   store.lots.push(lot);
+  // A lot added by hand is a purchase: `holdings cover` moves the symbol's
+  // alert to 10% above it (src/holdings/purchaseAlert.ts).
+  recordPurchase(store, { symbol: lot.symbol, price: lot.basisPerShare, purchaseDate: lot.purchaseDate, recordedAt: lot.createdAt, source: "manual" });
   saveHoldingsStore(path, store);
   return lot;
 }

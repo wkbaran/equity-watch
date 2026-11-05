@@ -47,6 +47,7 @@ import { listAlerts, loadAlerts, removeAlert, saveAlerts } from "./alerts/store.
 import { queueStopOuts, stopOutEntries } from "./alerts/stopOuts.js";
 import { addLot, addStop, checkHoldings, fillStopAtrs } from "./holdings/engine.js";
 import { coverCandidates, coverLevel } from "./holdings/cover.js";
+import { applyPendingPurchases, describePendingOutcome, purchaseLevel, purchaseTarget } from "./holdings/purchaseAlert.js";
 import { computeBasis, heldSymbolsOf, type HoldingsStore, type Sale } from "./holdings/models.js";
 import { ConsoleHoldingsNotifier } from "./holdings/notify.js";
 import { writeHoldingsAlertReport } from "./holdings/report.js";
@@ -1679,6 +1680,7 @@ function cmdHoldingsAddLot(opts: HoldingsAddLotOpts): void {
     purchaseDate: opts.date,
   });
   console.log(`Added lot ${lot.id}: ${lot.count} ${lot.symbol} @ ${lot.basisPerShare} on ${lot.purchaseDate}.`);
+  console.log(`Its price alert moves to 10% above the purchase at the next \`holdings cover\` (each scheduled check runs it).`);
   printClosed(closeRevisitsForSymbol(opts.revisitsFile, lot.symbol, { change: "lot.add" }));
 }
 
@@ -1882,8 +1884,10 @@ interface HoldingsCoverOpts extends CommonOpts {
 }
 
 /**
- * Creates a starting alert for every held position that has none, at 10%
- * above basis or just clear of the current price, whichever is higher.
+ * First moves (or adds) the price alert of every symbol with a lot bought since
+ * the last run to 10% above that lot's price (src/holdings/purchaseAlert.ts).
+ * Then creates a starting alert for every held position still without one, at
+ * 10% above basis or the current price, whichever is higher.
  */
 async function cmdHoldingsCover(opts: HoldingsCoverOpts): Promise<void> {
   const store = loadHoldingsStore(opts.holdingsFile);
@@ -1892,12 +1896,37 @@ async function cmdHoldingsCover(opts: HoldingsCoverOpts): Promise<void> {
   const ignored = ignoredSymbols(loadTuningConfig(opts.config));
 
   const held = [...new Set(store.lots.map((l) => l.symbol))].sort();
-  const candidates = coverCandidates(store, loadAlerts(opts.alertsFile), ignored);
   const skippedIgnored = held.filter((s) => isIgnored(s, ignored));
 
+  // New lots first (src/holdings/purchaseAlert.ts): a purchase sets its own
+  // level, so a fresh buy is no longer a candidate for the sweep below.
+  const pending = store.pendingPurchases ?? [];
+  if (pending.length > 0) {
+    if (opts.dryRun) {
+      const alerts = loadAlerts(opts.alertsFile);
+      for (const p of pending) {
+        const level = purchaseLevel(p.price);
+        const target = purchaseTarget(alerts, p.symbol, level);
+        console.log(
+          `  ${p.symbol}: purchase at ${p.price} would ${target === null ? "add an alert" : `move alert ${target.id} (${describeAlertCondition(target)})`} at ${level}`
+        );
+      }
+    } else {
+      for (const o of await applyPendingPurchases(opts.holdingsFile, opts.alertsFile, buildMarketData(opts), ignored)) {
+        console.log(`  ${describePendingOutcome(o)}`);
+      }
+    }
+  }
+
+  // A dry run wrote no purchase alert, so leave those symbols out rather than plan them twice.
+  const planned = new Set(opts.dryRun ? pending.map((p) => p.symbol.toUpperCase()) : []);
+  const candidates = coverCandidates(loadHoldingsStore(opts.holdingsFile), loadAlerts(opts.alertsFile), ignored).filter(
+    (s) => !planned.has(s.toUpperCase())
+  );
   if (candidates.length === 0) {
     console.log(
       `All ${held.length} held symbol(s) already have a live alert` +
+        (planned.size > 0 ? `, would get one from a purchase` : "") +
         (skippedIgnored.length > 0 ? ` or are on the ignore list (${skippedIgnored.join(", ")})` : "") +
         "."
     );
@@ -3185,7 +3214,10 @@ function buildProgram(): Command {
     withHoldingsCommon(cmd).option("--revisits-file <path>", "Path to the revisit-queue JSON store", "revisits.json");
 
   withHoldingsCommon(holdingsCmd.command("cover"))
-    .description("Create a starting alert for each held position that has none (10% above basis, or just above price)")
+    .description(
+      "Move each newly bought symbol's price alert to 10% above the lot's price, then create a starting alert " +
+        "for each held position that has none (10% above basis, or just above price)"
+    )
     .option("--alerts-file <path>", "Path to the alerts JSON store", "alerts.json")
     .option(...configOption("supplies ignoreSymbols"))
     .option("--dry-run", "Print the plan without writing anything")

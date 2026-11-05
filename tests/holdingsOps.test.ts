@@ -305,19 +305,19 @@ describe("holdings ops", () => {
 
   it("adds a lot", async () => {
     const r = await apply({ type: "lot.add", params: { symbol: "nvda", count: 4, basisPerShare: 120.5, purchaseDate: "2026-09-12", account: "margin" } });
-    expect(r).toMatchObject({ ok: true, symbol: "NVDA", alertId: null, message: "Added a lot of NVDA." });
+    expect(r).toMatchObject({ ok: true, symbol: "NVDA", alertId: null, message: "Added a lot of NVDA. Its price alert moves above the purchase price later in this check." });
     expect(loadHoldingsStore(holdingsFile).lots.at(-1)).toMatchObject({ symbol: "NVDA", count: 4, basisPerShare: 120.5, purchaseDate: "2026-09-12", account: "margin" });
   });
 
   it("a lot added with a stop for a new position just adds the stop", async () => {
     const r = await apply({ type: "lot.add", params: { symbol: "nvda", count: 4, basisPerShare: 120.5, stopPrice: 100 } });
-    expect(r).toMatchObject({ ok: true, symbol: "NVDA", message: "Added a lot of NVDA and set its stop." });
+    expect(r).toMatchObject({ ok: true, symbol: "NVDA", message: "Added a lot of NVDA and set its stop. Its price alert moves above the purchase price later in this check." });
     expect(loadHoldingsStore(holdingsFile).stops.filter((s) => s.symbol === "NVDA")).toMatchObject([{ stopPrice: 100, count: null }]);
   });
 
   it("a lot added with a stop on an existing position replaces its stop instead of adding alongside", async () => {
     const r = await apply({ type: "lot.add", params: { symbol: "aapl", count: 2, basisPerShare: 200, stopPrice: 160, stopCount: 12 } });
-    expect(r).toMatchObject({ ok: true, message: "Added a lot of AAPL and set its stop." });
+    expect(r).toMatchObject({ ok: true, message: "Added a lot of AAPL and set its stop. Its price alert moves above the purchase price later in this check." });
     const aaplStops = loadHoldingsStore(holdingsFile).stops.filter((s) => s.symbol === "AAPL");
     expect(aaplStops).toMatchObject([{ stopPrice: 160, count: 12 }]);
     // The MSFT stop is untouched.
