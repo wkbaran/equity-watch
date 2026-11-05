@@ -1371,6 +1371,13 @@ order was sent.
   (`TARGET_KEY` null), and its pending entry carries `symbols` so every position
   it touches shows "change pending" (`pendsOn`). Its message, like every order
   message, carries no digits.
+  - **Every row starts ticked, lowerings included** (the user's call). The trail
+    hangs off the high close since purchase, which never falls, so a trail under
+    the stop is the ATR growing, and the user wants that applied. Don't gate
+    lowerings on the `stop tight` flag again (the first cut did).
+  - **The arithmetic is shown unrounded, the stop rounded** (`trailFor` returns
+    `raw` beside the floored `suggested`). The two disagreeing by a few cents is
+    the point, not a bug.
 - **Suggested stops are rounded down to the nickel** (`stopFloor`, the user's
   rule, 2026-11-05), inside `trailFor`, so every suggestion on the page agrees.
   It floors with an epsilon rather than rounding to cents first: 3.349 is 3.30,

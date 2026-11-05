@@ -208,20 +208,46 @@ test.describe("orders", () => {
     }));
     await page.goto("/#/holdings");
     await unlockWith(page, OPS_TOKEN);
-    const button = page.locator("#webull-panel").getByRole("button", { name: "Update stops (2)" });
+    // A bare count, like every count on the page.
+    const button = page.locator("#webull-panel").getByRole("button", { name: "Update stops 2" });
     await button.click();
     const dialog = page.locator("dialog.stop-updates");
     await expect(dialog).toBeVisible();
-    // TSLA: 255 - 2 x 9.68 = 235.64, set at 235.60, a raise, ticked.
-    // AA: 47 - 2 x 5 = 37.00, under its stop at 39 (flagged tight), so offered unticked.
+    const aa = dialog.locator("tbody tr", { hasText: "AA" }).first();
+    const tsla = dialog.locator("tbody tr", { hasText: "TSLA" });
+    // The arithmetic is shown unrounded; the stop it sets is rounded down to the nickel.
+    // TSLA: 255 - 2 x 9.68 = 235.64, set at 235.60, up from 230.
+    await expect(tsla.locator("td.calc")).toContainText("255.00 − 2 × 9.68 = 235.64");
     await expect(dialog.getByLabel("New TSLA margin stop")).toHaveValue("235.60");
-    await expect(dialog.getByLabel("Move the TSLA margin stop")).toBeChecked();
+    await expect(tsla.locator("td.move")).toHaveText("+5.60");
+    // AA: 47 - 2 x 5 = 37.00, under its stop at 39: the ATR has grown, so it moves down. Ticked too.
     await expect(dialog.getByLabel("New AA margin stop")).toHaveValue("37.00");
-    await expect(dialog.getByLabel("Move the AA margin stop")).not.toBeChecked();
-    await expect(dialog.getByRole("button", { name: "Move 1 stop" })).toBeVisible();
+    await expect(aa.locator("td.move")).toHaveText("−2.00");
+    await expect(dialog.getByLabel("Move the TSLA margin stop")).toBeChecked();
+    await expect(dialog.getByLabel("Move the AA margin stop")).toBeChecked();
+    await expect(dialog.getByLabel("Tick every stop")).toBeChecked();
+    await expect(dialog.locator(".stop-updates-summary")).toHaveText("1 up, 1 down");
 
+    // A typed price is marked edited and can be put back.
+    await expect(aa.locator(".tag.edited")).toBeHidden();
+    await dialog.getByLabel("New AA margin stop").fill("37.5");
+    await expect(aa.locator(".tag.edited")).toBeVisible();
+    await expect(aa.locator("td.move")).toHaveText("−1.50");
+    await aa.getByRole("button", { name: "Reset" }).click();
+    await expect(dialog.getByLabel("New AA margin stop")).toHaveValue("37.00");
+    await expect(aa.locator(".tag.edited")).toBeHidden();
+
+    // A stop at or over the price can't be sent: the row says why and Send waits.
+    await dialog.getByLabel("New AA margin stop").fill("50");
+    await expect(aa.locator(".row-error")).toHaveText("Must be under the price, 46.34.");
+    await expect(dialog.getByRole("button", { name: "Move 2 stops" })).toBeDisabled();
+    // Unticking the row sets it aside, and the rest can go.
+    await dialog.getByLabel("Move the AA margin stop").uncheck();
+    await expect(aa.locator(".row-error")).toBeHidden();
+    await expect(dialog.getByRole("button", { name: "Move 1 stop" })).toBeEnabled();
     await dialog.getByLabel("Move the AA margin stop").check();
     await dialog.getByLabel("New AA margin stop").fill("37.5");
+
     await dialog.getByLabel("Authenticator code").fill("246810");
     await dialog.getByRole("button", { name: "Move 2 stops" }).click();
     await expect(dialog).toBeHidden();

@@ -2010,11 +2010,12 @@
 
   /**
    * The Webull stops whose 2 ATR trail (nickel-floored) differs from where they
-   * sit. A raise is always offered, since a trailing stop moves up as the high
-   * close does. A lowering only for a position flagged "stop tight", and
-   * unticked, since the trail never lowers. Plain stops only: a stop-limit's
-   * limit would be left behind, and a trailing stop moves itself. A symbol with
-   * an order change already pending is left out until it lands.
+   * sit, in either direction. The trail is measured from the high close since
+   * purchase, which only rises, so a trail under the stop means the ATR has
+   * grown: volatility is up, and the stop moves down to keep its two ATRs of
+   * room (the user's rule, 2026-11-05). Plain stops only: a stop-limit's limit
+   * would be left behind, and a trailing stop moves itself. A symbol with an
+   * order change already pending is left out until it lands.
    */
   function stopUpdates() {
     if (!ordersOn()) return [];
@@ -2025,59 +2026,130 @@
       const trail = trailFor(row);
       if (trail === null || !(trail.suggested > 0) || trail.suggested >= row.price) continue;
       if (pendingOps.some((p) => isOrderOpType(p.type) && pendsOn(p, row.symbol))) continue;
-      const tight = stopFlags(row).some((f) => f.kind === "stop-tight");
       const stops = (vaultData?.stops ?? []).filter(
         (s) => s.symbol === row.symbol && s.webull?.clientOrderId && s.webull.orderType === "STOP_LOSS" && accounts.includes(s.webull.account)
       );
       for (const s of stops) {
-        const to = trail.suggested;
-        if (Math.abs(to - s.stopPrice) < 0.005) continue;
-        const raise = to > s.stopPrice;
-        if (raise || tight) out.push({ stop: s, row, trail, to, raise });
+        if (Math.abs(trail.suggested - s.stopPrice) < 0.005) continue;
+        out.push({ stop: s, row, trail });
       }
     }
     return out.sort((a, b) => a.row.symbol.localeCompare(b.row.symbol) || a.stop.webull.account.localeCompare(b.stop.webull.account));
   }
 
+  /** "+5.60" / "−2.00": a stop's move, signed, with a real minus sign. */
+  const signedMove = (d) => `${d >= 0 ? "+" : "−"}${money(Math.abs(d))}`;
+
   let stopsDialog = null;
 
-  /** The dialog: every change listed, each tickable and editable, sent as one stops.update under one code. */
+  /**
+   * The dialog: one row per stop, every one ticked, its new price prefilled
+   * with the nickel-floored trail and free to overwrite. Sent as one
+   * stops.update under one code.
+   */
   function openStopUpdates() {
     const updates = stopUpdates();
     if (updates.length === 0) return notice("Every Webull stop already sits at its 2 ATR trail.", true);
     if (stopsDialog === null) {
-      stopsDialog = h("dialog", { class: "modal ticket stop-updates", "aria-label": "Update stops" });
+      stopsDialog = h("dialog", { class: "modal ticket stop-updates", "aria-labelledby": "stop-updates-title" });
       document.body.append(stopsDialog);
     }
+    const error = h("p", { class: "form-error", role: "alert" });
+    const send = h("button", { type: "submit" });
+    const summary = h("span", { class: "note stop-updates-summary", "aria-live": "polite" });
+    const all = h("input", { type: "checkbox", "aria-label": "Tick every stop" });
+
     const lines = updates.map((u) => {
       const s = u.stop;
-      const check = h("input", { type: "checkbox", "aria-label": `Move the ${s.symbol} ${s.webull.account} stop` });
-      check.checked = u.raise;
-      const price = numberInput(u.to.toFixed(2), { class: "price-input", "aria-label": `New ${s.symbol} ${s.webull.account} stop` });
-      const under = u.trail.fromHigh ? `high close ${money(u.trail.reference)}` : `price ${money(u.trail.reference)}`;
-      const why = `${u.raise ? "raise" : "lower"} · 2 × ATR ${u.trail.atr.toFixed(2)} under ${under}`;
+      const name = `${s.symbol} ${s.webull.account}`;
+      const suggested = u.trail.suggested.toFixed(2);
+      const check = h("input", { type: "checkbox", "aria-label": `Move the ${name} stop` });
+      check.checked = true;
+      const price = numberInput(suggested, { class: "price-input", "aria-label": `New ${name} stop` });
+      const move = h("td", { class: "num move" });
+      const edited = h("span", { class: "tag edited", text: "edited", hidden: true });
+      const reset = h("button", {
+        type: "button",
+        class: "inline-link",
+        text: "Reset",
+        title: `Back to the trail, ${suggested}`,
+        hidden: true,
+        onclick: () => {
+          price.value = suggested;
+          refresh();
+          price.focus();
+        },
+      });
+      const problem = h("div", { class: "row-error", hidden: true });
+      const under = u.trail.fromHigh ? "high close" : "price";
+      const calc = h(
+        "td",
+        { class: "calc", title: `${STOP_ATR_MULTIPLE} ATR under the ${under === "price" ? "price, which is above the high close since purchase" : "high close since purchase"}, rounded down to $0.05` },
+        h("span", { class: "calc-math", text: `${money(u.trail.reference)} − ${STOP_ATR_MULTIPLE} × ${money(u.trail.atr)} = ${money(u.trail.raw)}` }),
+        h("span", { class: "muted", text: ` ${under}` })
+      );
+      // What you act on comes first (now, new, move), so it stays in view on a
+      // phone; the arithmetic behind the suggestion goes last.
       const tr = h(
         "tr",
-        { class: u.raise ? "raise" : "lower" },
-        h("td", {}, check),
-        h("td", {}, h("strong", { text: s.symbol })),
-        h("td", { text: s.webull.account }),
-        h("td", { class: "num", text: s.count === null ? "all" : String(s.count) }),
-        h("td", { class: "num", text: money(s.stopPrice) }),
-        h("td", {}, price),
-        h("td", { class: "muted", text: why })
+        {},
+        h("td", { class: "pick" }, check),
+        h(
+          "td",
+          { class: "sym-cell" },
+          h("strong", { text: s.symbol }),
+          h("div", { class: "muted sub-line", text: `${s.webull.account} · ${s.count === null ? "all" : s.count} ${s.count === 1 ? "share" : "shares"}` })
+        ),
+        h("td", { class: "num now", text: money(s.stopPrice) }),
+        h("td", { class: "new-stop" }, price, h("div", { class: "sub-line edit-line" }, edited, reset), problem),
+        move,
+        calc
       );
-      return { u, check, price, tr };
+      /** The row's state from what is typed now: the price to send, or why it can't be. */
+      const read = () => {
+        const p = positive(price.value);
+        const bad = p === null ? "Enter a price above 0." : p >= u.row.price ? `Must be under the price, ${money(u.row.price)}.` : null;
+        return { p, bad };
+      };
+      const show = () => {
+        const { p, bad } = read();
+        const isEdited = price.value.trim() !== suggested && p !== Number(suggested);
+        edited.hidden = !isEdited;
+        reset.hidden = !isEdited;
+        problem.hidden = !(check.checked && bad);
+        problem.textContent = bad ?? "";
+        price.setAttribute("aria-invalid", check.checked && bad ? "true" : "false");
+        move.textContent = p === null ? "" : signedMove(p - s.stopPrice);
+        move.className = `num move ${p === null ? "" : p > s.stopPrice ? "up" : p < s.stopPrice ? "down" : ""}`;
+        price.disabled = !check.checked;
+        tr.classList.toggle("off", !check.checked);
+      };
+      return { u, check, price, read, show, tr };
     });
-    const code = codeInput();
-    const error = h("span", { class: "form-error" });
-    const send = h("button", { type: "submit" });
-    const refresh = () => {
-      const n = lines.filter((l) => l.check.checked).length;
-      send.textContent = n === 1 ? "Move 1 stop" : `Move ${n} stops`;
-      send.disabled = n === 0;
+
+    function refresh() {
+      for (const l of lines) l.show();
+      const on = lines.filter((l) => l.check.checked);
+      const bad = on.filter((l) => l.read().bad !== null).length;
+      const up = on.filter((l) => !l.read().bad && l.read().p > l.u.stop.stopPrice).length;
+      const down = on.filter((l) => !l.read().bad && l.read().p < l.u.stop.stopPrice).length;
+      all.checked = on.length === lines.length;
+      all.indeterminate = on.length > 0 && on.length < lines.length;
+      send.textContent = on.length === 1 ? "Move 1 stop" : `Move ${on.length} stops`;
+      send.disabled = on.length === 0 || bad > 0;
+      summary.textContent =
+        on.length === 0 ? "Nothing ticked." : bad > 0 ? `${bad} to fix before sending.` : [up ? `${up} up` : "", down ? `${down} down` : ""].filter(Boolean).join(", ");
+    }
+    for (const l of lines) {
+      l.check.onchange = refresh;
+      l.price.oninput = refresh;
+    }
+    all.onchange = () => {
+      for (const l of lines) l.check.checked = all.checked;
+      refresh();
     };
-    for (const l of lines) l.check.onchange = refresh;
+
+    const code = codeInput();
     const form = h(
       "form",
       {
@@ -2085,19 +2157,16 @@
           e.preventDefault();
           error.textContent = "";
           const chosen = lines.filter((l) => l.check.checked);
+          const wrong = chosen.find((l) => l.read().bad !== null);
           if (chosen.length === 0) return (error.textContent = "Tick at least one stop.");
-          const changes = [];
-          for (const { u, price } of chosen) {
-            const p = positive(price.value);
-            const s = u.stop;
-            const bad = p === null ? `Enter a ${s.symbol} stop price above 0.` : p >= u.row.price ? `A ${s.symbol} sell stop must be under its price, ${money(u.row.price)}.` : null;
-            if (bad !== null) {
-              error.textContent = bad;
-              price.focus();
-              return;
-            }
-            changes.push({ account: s.webull.account, symbol: s.symbol, clientOrderId: s.webull.clientOrderId, expect: { stopPrice: s.stopPrice, quantity: s.count }, stopPrice: p });
+          if (wrong) {
+            wrong.price.focus();
+            return (error.textContent = `${wrong.u.stop.symbol}: ${wrong.read().bad}`);
           }
+          const changes = chosen.map(({ u, read }) => {
+            const s = u.stop;
+            return { account: s.webull.account, symbol: s.symbol, clientOrderId: s.webull.clientOrderId, expect: { stopPrice: s.stopPrice, quantity: s.count }, stopPrice: read().p };
+          });
           const symbols = [...new Set(changes.map((c) => c.symbol))];
           const list = changes.map((c) => `${c.symbol} ${money(c.expect.stopPrice)} → ${money(c.stopPrice)}`).join(", ");
           const queued = await submitOrder({ type: "stops.update", target: {}, params: { changes } }, code, {
@@ -2108,23 +2177,43 @@
           if (queued) stopsDialog.close();
         },
       },
-      h("h2", { text: "Update stops at Webull" }),
+      h("h2", { id: "stop-updates-title", text: "Update stops at Webull" }),
       h("p", {
         class: "note",
-        text: "Each stop moved to 2 ATR under the high close since purchase (or the price, when higher), rounded down to $0.05. Each keeps its shares. Raises are ticked; a lowering is offered only for a stop flagged tight. One code sends them all.",
+        text:
+          `Each new stop is ${STOP_ATR_MULTIPLE} ATR under the high close since purchase (or the price, when higher), rounded down to $0.05. ` +
+          "A stop moves down when the ATR has grown, to keep its room. Type over any price to set your own. Shares stay as they are.",
       }),
       h(
         "div",
-        { class: "table-wrap" },
+        { class: "table-wrap stop-updates-wrap" },
         h(
           "table",
           { class: "stop-updates-table" },
-          h("thead", {}, h("tr", {}, ...["", "Symbol", "Account", "Shares", "Stop now", "New stop", ""].map((t) => h("th", { text: t })))),
+          h(
+            "thead",
+            {},
+            h(
+              "tr",
+              {},
+              h("th", { class: "pick" }, all),
+              h("th", { class: "sym-cell", text: "Stop" }),
+              h("th", { class: "num", text: "Now" }),
+              h("th", { class: "new-stop", text: "New stop" }),
+              h("th", { class: "num", text: "Move" }),
+              h("th", { class: "calc", text: `${STOP_ATR_MULTIPLE} ATR trail` })
+            )
+          ),
           h("tbody", {}, ...lines.map((l) => l.tr))
         )
       ),
-      field("Authenticator code", code),
-      h("div", { class: "modal-buttons" }, h("button", { type: "button", class: "link-button", text: "Cancel", onclick: () => stopsDialog.close() }), send),
+      h(
+        "div",
+        { class: "stop-updates-foot" },
+        field("Authenticator code", code),
+        summary,
+        h("div", { class: "modal-buttons" }, h("button", { type: "button", class: "link-button", text: "Cancel", onclick: () => stopsDialog.close() }), send)
+      ),
       error
     );
     refresh();
@@ -2133,17 +2222,21 @@
     code.focus();
   }
 
-  /** "Update stops" for the Webull panel; null when there is nothing to move. */
+  /** "Update stops" for the Webull panel, with a bare count; null when there is nothing to move. */
   function stopUpdatesButton() {
     const n = stopUpdates().length;
     if (n === 0) return null;
-    return h("button", {
-      type: "button",
-      class: "stop-updates-button",
-      text: `Update stops (${n})`,
-      title: "Move the Webull stops to their 2 ATR trail, rounded down to $0.05, under one authenticator code",
-      onclick: openStopUpdates,
-    });
+    return h(
+      "button",
+      {
+        type: "button",
+        class: "stop-updates-button",
+        title: `Move ${n === 1 ? "the Webull stop that is" : `the ${n} Webull stops that are`} off the ${STOP_ATR_MULTIPLE} ATR trail, under one authenticator code`,
+        onclick: openStopUpdates,
+      },
+      "Update stops ",
+      h("span", { class: "button-count", text: String(n) })
+    );
   }
 
   /**
@@ -4231,6 +4324,7 @@
       fromHigh,
       reference,
       suggested: stopFloor(reference - STOP_ATR_MULTIPLE * row.atr),
+      raw: reference - STOP_ATR_MULTIPLE * row.atr,
       drop: Math.floor(((reference - row.price) / row.atr) * 10) / 10,
       atr: row.atr,
       price: row.price,

@@ -257,15 +257,21 @@ same checks on the machine before anything reaches Webull.
      price. Only on a holding the sync keeps. Placing, moving and cancelling one
      works at any hour, weekends included (confirmed with Webull 2026-10-28); the
      stop itself only triggers in the regular session.
-   - **Update stops** (the Webull panel's button, shown when there is something to
-     move) lists every Webull stop whose 2 ATR trail differs from where it sits,
-     with its account, shares, current stop and an editable new price, and sends
-     the ticked ones as one `stops.update` under **one code**. Raises are listed
-     ticked; a lowering only for a position flagged `stop tight`, unticked, since a
-     trailing stop never lowers. Plain stops only: a stop-limit or trailing stop is
-     left to its own Move. Each change is judged as its own `stop.replace` would be
-     (still open, still as the page showed it, under the last price), so one stale
-     stop is refused alone and the rest still move; the result names each.
+   - **Update stops** (the Webull panel's button, with a count, shown when there is
+     something to move) lists every Webull stop whose 2 ATR trail differs from where
+     it sits: its account and shares, the stop now, the new stop, the move, and the
+     trail's arithmetic unrounded (`47.00 − 2 × 5.00 = 37.00 high close`). The new
+     stop is that result rounded down to $0.05, and every row starts ticked. A stop
+     can move **down** as well as up: the trail is measured from the high close since
+     purchase, which only rises, so a trail under the stop means the ATR has grown,
+     and the stop gives back to keep its two ATRs of room. Type over any new stop to
+     set your own (the row says "edited", and Reset puts the trail back); a price at
+     or over the market is flagged on its row and holds Send until fixed or unticked.
+     The ticked rows go as one `stops.update` under **one code**. Plain stops only: a
+     stop-limit or trailing stop is left to its own Move. Each change is judged as
+     its own `stop.replace` would be (still open, still as the page showed it, under
+     the last price), so one stale stop is refused alone and the rest still move; the
+     result names each.
    - **Sells and buys**: limit orders only, never market; a limit more than 20%
      the wrong side of the last price is refused as a likely typo.
    - **Buys**: Webull previews the cost, which must be under `ORDERS_MAX_VALUE`
