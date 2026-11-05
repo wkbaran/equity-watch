@@ -336,6 +336,8 @@ export function triggerAction(entry: RevisitEntry, currentLevel: number | null =
 export interface StoryLine {
   at: string;
   text: string;
+  /** A purchase, sale or stop sale (`holdingLines`), which the page sets apart. Absent on every other beat. */
+  trade?: true;
 }
 
 export interface TickerStory {
@@ -459,7 +461,7 @@ function holdingLines(symbol: string, events: HoldingEvent[]): StoryLine[] {
             ? `${seller} part of your ${symbol} position: ${saleText(sold)}${stopDetail}`
             : `you trimmed your ${symbol} position`;
     everHeld = true;
-    lines.push({ at, text: `${shortDate(at)}: ${text}.` });
+    lines.push({ at, text: `${shortDate(at)}: ${text}.`, trade: true });
   }
   return lines;
 }

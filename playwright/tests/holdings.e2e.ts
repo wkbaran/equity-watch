@@ -343,6 +343,19 @@ test("an expanded position ends with its story, and one with no story has no ban
   await expect(band).toBeVisible();
   await expect(band.locator("li").first()).toBeVisible();
   await expect(band).toContainText("you bought AA");
+  // Trades stand out: bold, in the signal colour; an alert beat stays plain.
+  const bought = band.locator("li", { hasText: "you bought AA" });
+  await expect(bought).toHaveClass("trade");
+  await expect(bought).toHaveCSS("font-weight", "700");
+  await expect(band.locator("li:not(.trade)").first()).toHaveCSS("font-weight", "400");
+  const signal = await page.evaluate(() => {
+    const probe = document.body.appendChild(document.createElement("span"));
+    probe.style.color = "var(--signal)";
+    const c = getComputedStyle(probe).color;
+    probe.remove();
+    return c;
+  });
+  await expect(bought).toHaveCSS("color", signal);
 
   // TSLA has never fired, so it has no story yet.
   await positionRow(page, "AA").locator("td").nth(2).click();

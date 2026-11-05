@@ -609,6 +609,18 @@ describe("holdings in the story", () => {
     ]);
   });
 
+  it("marks buys, sales and closes as trades, and nothing else", () => {
+    const story = tickerStory("TGT", [entry()], {
+      heldSymbols: new Set(["TGT"]),
+      holdingEvents: [add("l1", "2026-09-11T15:00:00.000Z"), remove("l1", "2026-09-16T15:00:00.000Z")],
+    });
+    expect(story.lines.map((l) => [l.text, l.trade === true])).toEqual([
+      ["Sep 10: TGT crossed above 110.", false],
+      ["Sep 11: you bought TGT.", true],
+      ["Sep 16: you closed your TGT position.", true],
+    ]);
+  });
+
   it("tells lots bought or removed together as one beat", () => {
     const at = "2026-09-11T15:00:00.000Z";
     const gone = "2026-09-12T15:00:00.000Z";

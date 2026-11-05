@@ -3199,11 +3199,14 @@
     return h("div", { class: "alert-col" }, h("strong", { class: "form-title", text: "Alert" }), ...body);
   }
 
+  /** One story beat. Buys, sales and stop sales stand out (`StoryLine.trade`); a vault sealed before the flag has none. */
+  const storyItem = (l) => h("li", { class: l.trade === true ? "trade" : null, text: l.text });
+
   /** The position's story as the panel's last band, or nothing when it has none yet (one fire and no trade). */
   function storyColumn(symbol) {
     const story = storyFor(symbol);
     if (!story) return null;
-    return h("div", { class: "story-col story" }, h("ol", {}, ...story.lines.map((l) => h("li", { text: l.text }))));
+    return h("div", { class: "story-col story" }, h("ol", {}, ...story.lines.map(storyItem)));
   }
 
   function positionDetail(symbol) {
@@ -4941,7 +4944,7 @@
           "div",
           { class: "story" },
           h("div", { class: "headline" }, ...linkLeadingSymbol(story.summary, story.symbol)),
-          h("ol", {}, ...story.lines.map((l) => h("li", { text: l.text })))
+          h("ol", {}, ...story.lines.map(storyItem))
         )
       ),
     ];
