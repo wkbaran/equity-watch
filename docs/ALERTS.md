@@ -279,12 +279,17 @@ symbol's story tells once however many entries it closed:
 | Adding an alert, of any kind | "you added an alert, "price crosses above 60"" |
 | Removing an alert | "you removed the alert "sma200 (1D) is crossed"" |
 | Editing a lot | "you edited a MSFT lot" |
-| Adding, changing or removing a stop | "you set a MSFT stop" / "changed your…" / "removed your…" |
-| Buying or selling (lot added or removed, position removed) | nothing extra: the story already tells those from the lots |
+| Adding, changing or removing a stop (entries closed before 2026-11-05 only) | "you set a MSFT stop" / "changed your…" / "removed your…" |
+| Buying or selling (lot added or removed, position removed, or booked by `holdings sync`) | nothing extra: the story already tells those from the lots |
+| The purchase move `holdings cover` makes for a new lot | told as the alert edit or add it is ("you raised the level 50 to 61") |
 
 A change on a symbol with nothing open in the queue closes nothing, so it isn't
-told. Entries closed before 2026-10-05 have no `closedBy` and tell only a level move. `holdings cover` and `holdings import` don't close entries: they run on
-their own, or in bulk, and are not decisions about a symbol.
+told. That is why the purchase move is usually silent: the buy that caused it has
+normally closed the entries already, so it is told only when a fire lands between
+the buy and the check that moves the alert. Entries closed before 2026-10-05 have
+no `closedBy` and tell only a level move. The `holdings cover` *sweep* (a starting
+alert for an uncovered position) and `holdings import` don't close entries: they
+run on their own, or in bulk, and are not decisions about a symbol.
 
 ## Moving-average alerts
 

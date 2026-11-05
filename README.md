@@ -238,18 +238,18 @@ even after you move or delete the alert:
 
 **7. The story is the part a flat list hides.** Two fires with the re-level between
 them, which is the chase the queue exists to make visible, and your own buys and sales
-threaded through it, so you can see what you did around each fire. "Holding AA" on a
+threaded through it (in bold, so they stand out from the fires), so you can see what you did around each fire. "Holding AA" on a
 fire means you held it *then*. Stories are published only inside the encrypted
 holdings vault, so they appear once editing is unlocked and never on the public page.
 
-![A story: AA has fired 2 times since Sep 20, walking its level from 43 up to 55, with 1 still open, followed by the dated sequence: started watching, bought, added to the position, fired while held, the re-level, and fired again](docs/images/story.png)
+![A story: AA has fired 2 times since Sep 20, walking its level from 43 up to 55, with 1 still open, followed by the dated sequence: started watching, bought and added to the position (both in bold), fired while held, the re-level, and fired again](docs/images/story.png)
 
 **8. You decide, from the page this time.** With editing unlocked, the alert's drawer
 carries an edit form, price and volume together. (The queue row's *Suggest level* and
 *Apply* from step 4 are the shortcut when you agree with what it proposes; this is
 for when you don't.)
 
-![The alert edit form: a Level field, a Fires on select, a Volume mode select, a volume amount field, a window select, a Queue edit button, and a note that the edit is applied at the next scheduled check and rejected if the alert changes before then](docs/images/alert-edit.png)
+![The alert edit form: a Level field, a Fires on select, a Volume mode select, a volume amount field, a window select, Queue edit and Remove alert buttons, and a note that the edit is applied at the next scheduled check and rejected if the alert changes before then](docs/images/alert-edit.png)
 
 **9. Nothing pushes to the machine, so the page says when.** *Queue edit* posts the op
 and the row says what it is waiting for, from the scheduler's own next-run time:

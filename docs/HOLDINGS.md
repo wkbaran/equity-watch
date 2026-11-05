@@ -53,6 +53,10 @@ Every new lot sets the symbol's price alert to **10% above what the lot cost**
   it runs is skipped too.
 - **Adopting or linking** a Webull position is not a purchase and moves nothing;
   neither does `holdings import`.
+- **The move closes the symbol's open revisit entries** (2026-11-05), like the same
+  edit or add from the page, so `holdings cover` takes a `--revisits-file`. The buy
+  has usually closed them already; see
+  [ALERTS.md](ALERTS.md#editing-and-removing) for what the story says.
 
 Nothing changes in `alerts.json` when the lot arrives. The lot records a pending
 purchase in `holdings.json` (`pendingPurchases`), and `holdings cover` applies it
@@ -193,6 +197,12 @@ booked, and a partly filled order books its new shares on a later run. Fills are
 applied only when they account exactly for the change in shares, and never sell
 more than is held along the way. Anything else (a split, history that hasn't
 caught up) is flagged on the page and nothing is applied to that holding.
+
+A buy or sale the sync books closes the symbol's open revisit entries, the same as
+adding or selling a lot from the page (2026-11-05): a trade made in the Webull app
+is a decision about the symbol too. A stop filling is not, and closes nothing; it
+queues its own stop-out entry instead. Neither does a stop the sync mirrors from the
+app, since no stop change closes entries.
 
 ### Stops are Webull orders
 
@@ -520,7 +530,8 @@ not known to be a discretionary exit; sales before 2026-10-08 can't be told.
 position, with nothing recorded. Use it for a lot entered by mistake.
 
 An expanded position ends with its **Story** band: the alerts on that symbol
-woven together with your buys and sales, once it has one.
+woven together with your buys and sales, once it has one. The buys, sales and stop
+sales are set in bold in the signal colour, so the trades stand out from the fires.
 
 None of it is in the published document. The site has no login by default, so
 `dashboard.json` carries no share count, basis, market value or stop; the page reads

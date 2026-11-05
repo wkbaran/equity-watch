@@ -409,7 +409,10 @@ with 1 still open.
 
 Your position is part of the thread. Each lot bought (on its purchase date) and each
 lot removed (when it was removed) is a beat of its own, so the alert history and your
-trades read side by side:
+trades read side by side. On the page those beats (buys, sales, stop sales) are bold
+in the signal colour (2026-11-05): `holdingLines` marks them `trade: true` on the
+`StoryLine`, and every other beat has no flag. A vault sealed before the flag shows
+them plain until the next publish.
 
 ```
   Sep 17: WAT crossed above 425, then fell back below it the same day.
