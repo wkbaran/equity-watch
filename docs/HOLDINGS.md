@@ -244,7 +244,7 @@ same checks on the machine before anything reaches Webull.
    `ORDERS_TOTP_SECRET`. Run it in your own terminal: the secret is half of what
    places an order.
 3. In `.env`: `WEBULL_ORDERS=on`, and if wanted `ORDERS_MAX_VALUE` (the largest
-   buy, default $2,000), `ORDERS_MAX_PER_DAY` (default 10) and `ORDERS_ACCOUNTS`
+   buy, default $5,000; Move to BIL is exempt), `ORDERS_MAX_PER_DAY` (default 10) and `ORDERS_ACCOUNTS`
    (labels that may trade; default all mapped).
 4. Start the watcher: `COMPOSE_PROFILES=orders` in `docker/.env` (with `mcp` if
    that's on too: `mcp,orders`), then `docker compose ... up -d`. Without Docker,
@@ -336,8 +336,8 @@ same checks on the machine before anything reaches Webull.
      buy orders buys a share at BIL's last price. With no BIL in the account, that price
      is the other account's, else a Schwab quote taken by the sync, else the last one
      stored. Regular or extended hours, no BIL buy
-     already working; buys as many whole shares as that cash covers at the ask, up
-     to `ORDERS_MAX_VALUE` (the result says when it was capped).
+     already working; buys as many whole shares as that cash covers at the ask.
+     `ORDERS_MAX_VALUE` does not apply: the cash is the limit.
    - **Change or cancel**: the order must still look as the page showed it.
      A sell stop mirrored onto a kept position is moved and cancelled from that
      position's Stops band, and is left out of the panel's open orders.

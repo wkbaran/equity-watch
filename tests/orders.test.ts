@@ -38,7 +38,7 @@ describe("TOTP", () => {
 
 describe("ordersConfig", () => {
   it("is off unless WEBULL_ORDERS=on, with defaults for the limits", () => {
-    expect(ordersConfig({})).toMatchObject({ enabled: false, totpSecret: null, maxValue: 2000, maxPerDay: 10, accounts: null });
+    expect(ordersConfig({})).toMatchObject({ enabled: false, totpSecret: null, maxValue: 5000, maxPerDay: 10, accounts: null });
     expect(ordersConfig({ WEBULL_ORDERS: "ON", ORDERS_MAX_VALUE: "$5,000", ORDERS_ACCOUNTS: "margin, roth" })).toMatchObject({ enabled: true, maxValue: 5000 });
     expect(() => ordersConfig({ ORDERS_MAX_PER_DAY: "lots" })).toThrow(/ORDERS_MAX_PER_DAY/);
   });
@@ -353,12 +353,13 @@ describe("Move to BIL", () => {
     expect(client.placed[0].orders[0]).toMatchObject({ symbol: "BIL", side: "BUY", order_type: "LIMIT", quantity: "11", limit_price: "91.51", time_in_force: "DAY", support_trading_session: "CORE" });
   });
 
-  it("caps at ORDERS_MAX_VALUE, and buys BIL in an account that holds none", async () => {
+  it("ignores ORDERS_MAX_VALUE, and buys BIL in an account that holds none", async () => {
     const client = fakeClient({ positions: [], cash: 10_000 });
     const r = await applyOrderOp(op("cash.park", { account: "margin" }), context(client));
-    expect(r).toMatchObject({ ok: true, message: expect.stringContaining("capped") });
-    // 2000 / 91.51 = 21.9.
-    expect(client.placed[0].orders[0]).toMatchObject({ symbol: "BIL", quantity: "21" });
+    expect(r).toMatchObject({ ok: true });
+    expect(r.message).not.toContain("capped");
+    // 10000 / 91.51 = 109.3, past the 2000 limit the test context sets.
+    expect(client.placed[0].orders[0]).toMatchObject({ symbol: "BIL", quantity: "109" });
   });
 
   it("goes out in extended hours after the close, and refuses a wide spread there", async () => {

@@ -2339,7 +2339,7 @@
       h("button", {
         type: "button",
         text: "Move to BIL",
-        title: "Buys as many whole BIL shares as the spare cash allows, a limit at the ask, up to the largest order allowed. Regular or extended hours (04:00-20:00 New York).",
+        title: "Buys as many whole BIL shares as the spare cash allows, a limit at the ask. Regular or extended hours (04:00-20:00 New York).",
         onclick: () => submitOrder({ type: "cash.park", target: { account: account.label }, params: {} }, code, { symbol: "BIL", summary: `move spare cash in ${account.label} to BIL` }),
       })
     );

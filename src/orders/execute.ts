@@ -571,8 +571,10 @@ async function cover(op: Op, ctx: OrderContext, account: Account): Promise<Order
 
 /**
  * "Move to BIL": as many whole shares of the cash equivalent as the cash buys
- * at the ask, less what working buy orders already have, and no more than
- * ORDERS_MAX_VALUE. Never borrows: whole shares at the ask fit inside the cash.
+ * at the ask, less what working buy orders already have. Never borrows: whole
+ * shares at the ask fit inside the cash. ORDERS_MAX_VALUE does not apply (the
+ * user's call, 2026-11-11): the cash is the limit, and capping it left cash
+ * unparked that the button then offered to park in a second order.
  */
 async function park(op: Op, ctx: OrderContext, account: Account): Promise<OrderOutcome> {
   const symbol = parking(ctx, account)?.symbol ?? ctx.cashEquivalents[0];
@@ -593,16 +595,13 @@ async function park(op: Op, ctx: OrderContext, account: Account): Promise<OrderO
     .filter((o) => o.side === "BUY")
     .reduce((sum, o) => sum + Math.max(0, o.totalQuantity - o.filledQuantity) * (o.limitPrice ?? 0), 0);
   const spare = account.balance.cash - committed;
-  const affordable = Math.floor(spare / ask + 1e-9);
-  const allowed = Math.floor(ctx.config.maxValue / ask + 1e-9);
-  const quantity = Math.min(affordable, allowed);
+  const quantity = Math.floor(spare / ask + 1e-9);
   if (quantity < 1) {
     return no(symbol, `Not sent: the spare cash doesn't buy a whole ${symbol} share.`, `cash ${account.balance.cash}, in buy orders ${committed.toFixed(2)}, ask ${ask}`);
   }
   const order = newOrder(clientOrderId(op.id, "park"), symbol, "BUY", "LIMIT", quantity, { limit: ask }, "DAY", bilSession(ctx.now()));
   const { placed, already } = await placeOnce(ctx, account, [order]);
-  const capped = allowed < affordable ? " (capped at the largest order allowed)" : "";
-  return ok(symbol, `Buying ${symbol} with the spare cash${capped}.`, `${sentText([order], placed, already)}; cash ${account.balance.cash}, in buy orders ${committed.toFixed(2)}`);
+  return ok(symbol, `Buying ${symbol} with the spare cash.`,`${sentText([order], placed, already)}; cash ${account.balance.cash}, in buy orders ${committed.toFixed(2)}`);
 }
 
 async function sell(op: Op, ctx: OrderContext, account: Account, symbol: string | null): Promise<OrderOutcome> {
