@@ -2278,6 +2278,28 @@ interface HoldingsSyncOpts extends WebullOpts, CommonOpts {
 }
 
 /**
+ * BIL's price from Schwab when no account holds any, so the page can still
+ * offer Move to BIL. Best effort: no Schwab set up, an expired login or a
+ * failed quote all give null, and the sync falls back to the last price stored.
+ */
+async function quoteUnheldCashEquivalent(opts: CommonOpts, snapshots: WebullAccountSnapshot[], cashEquivalents: string[]): Promise<number | null> {
+  const symbol = cashEquivalents[0];
+  const set = new Set(cashEquivalents);
+  if (symbol === undefined || schwabCredentials(opts) === null) {
+    return null;
+  }
+  if (snapshots.some((s) => s.positions.some((p) => set.has(p.symbol) && p.quantity > 0 && p.lastPrice > 0))) {
+    return null;
+  }
+  try {
+    const price = (await buildMarketData(opts).getQuotes([symbol])).get(symbol)?.lastPrice ?? null;
+    return price !== null && price > 0 ? price : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Reads every mapped Webull account and brings the webull holdings in line
  * (docs/WEBULL_SYNC_PLAN.md). Runs in the scheduled script after `ops pull`,
  * so it exits 0, saying so, when Webull isn't set up yet: a run without a key
@@ -2360,7 +2382,8 @@ async function cmdHoldingsSync(opts: HoldingsSyncOpts): Promise<void> {
   }
 
   const store = loadHoldingsStore(opts.holdingsFile);
-  const plan = planWebullSync(store, snapshots, { cashEquivalents: new Set(cashEquivalents), today: localDateString(now), lowCash });
+  const cashEquivalentPrice = await quoteUnheldCashEquivalent(opts, snapshots, cashEquivalents);
+  const plan = planWebullSync(store, snapshots, { cashEquivalents: new Set(cashEquivalents), today: localDateString(now), lowCash, cashEquivalentPrice });
   if (opts.dryRun) {
     console.log(`Dry run against Webull (${client.host}): nothing is written.\n`);
     for (const line of renderSyncPlan(plan, cashEquivalents)) {

@@ -175,6 +175,23 @@ describe("planWebullSync", () => {
     expect(plan.accounts[0].skipped.map((s) => s.symbol)).toEqual(["AAA 260116C"]);
   });
 
+  it("prices BIL for an account holding none: another account's, then the quote, then the last stored", () => {
+    const empty: HoldingsStore = { lots: [], stops: [], alertState: [] };
+    const price = (plan: ReturnType<typeof planWebullSync>, label: string) => plan.accounts.find((a) => a.label === label)?.cash?.cashEquivalentPrice;
+
+    const fromOther = planWebullSync(empty, [snapshot("margin", [position("BIL", 10, 91, 91.5)]), snapshot("roth", [])], { ...OPTIONS, cashEquivalentPrice: 90 });
+    expect(price(fromOther, "roth")).toBe(91.5);
+
+    const quoted = planWebullSync(empty, [snapshot("margin", []), snapshot("roth", [])], { ...OPTIONS, cashEquivalentPrice: 91.4 });
+    expect([price(quoted, "margin"), price(quoted, "roth")]).toEqual([91.4, 91.4]);
+
+    const stored: HoldingsStore = { ...empty, webull: { readAt: "", accounts: [{ ...quoted.accounts[0] } as never] } };
+    const unquoted = planWebullSync(stored, [snapshot("roth", [])], { ...OPTIONS, cashEquivalentPrice: null });
+    expect(price(unquoted, "roth")).toBe(91.4);
+
+    expect(price(planWebullSync(empty, [snapshot("roth", [])], OPTIONS), "roth")).toBeNull();
+  });
+
   it("syncs a webull holding from the fills after it was linked only", () => {
     const store: HoldingsStore = {
       lots: [lot("AAA", 10, 50, "roth")],

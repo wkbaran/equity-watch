@@ -310,18 +310,26 @@ export function syncChanges(local: Side, webullCount: number, fills: Fill[]): { 
   return { changes: [], flags };
 }
 
-function cashSummary(snapshot: WebullAccountSnapshot, cashEquivalents: Set<string>): CashSummary | null {
+const heldEquivalents = (snapshot: WebullAccountSnapshot, cashEquivalents: Set<string>) =>
+  snapshot.positions.filter((p) => cashEquivalents.has(p.symbol) && p.quantity > 0 && p.lastPrice > 0);
+
+/**
+ * `fallbackPrice` is BIL's price for an account that holds none. Without it an
+ * account that had spent all its BIL had no price, and the page hid Move to BIL
+ * exactly when there was cash to park (2026-11-11).
+ */
+function cashSummary(snapshot: WebullAccountSnapshot, cashEquivalents: Set<string>, fallbackPrice: number | null): CashSummary | null {
   if (snapshot.balance === null || !Number.isFinite(snapshot.balance.cash)) {
     return null;
   }
-  const held = snapshot.positions.filter((p) => cashEquivalents.has(p.symbol) && p.quantity > 0);
+  const held = heldEquivalents(snapshot, cashEquivalents);
   const equivalents = held.reduce((sum, p) => sum + p.quantity * p.lastPrice, 0);
   return {
     cash: snapshot.balance.cash,
     settledCash: snapshot.balance.settledCash,
     unsettledCash: snapshot.balance.unsettledCash,
     cashEquivalents: equivalents,
-    cashEquivalentPrice: held[0]?.lastPrice ?? null,
+    cashEquivalentPrice: held[0]?.lastPrice ?? fallbackPrice,
     total: snapshot.balance.cash + equivalents,
   };
 }
@@ -403,10 +411,32 @@ export interface PlanOptions {
   today: string;
   /** Low-water mark for cash + BIL, by account label (WEBULL_LOW_CASH). */
   lowCash?: Map<string, number>;
+  /**
+   * A quoted price for the first cash equivalent, for when no account holds
+   * any. Used only after another account's position; the last stored price is
+   * the final fallback, so an expired Schwab login doesn't hide Move to BIL.
+   */
+  cashEquivalentPrice?: number | null;
+}
+
+/** BIL's price for an account holding none: another account's, the quote, then the last one stored. */
+function fallbackEquivalentPrice(store: HoldingsStore, snapshots: WebullAccountSnapshot[], options: PlanOptions): number | null {
+  for (const snap of snapshots) {
+    const held = heldEquivalents(snap, options.cashEquivalents)[0];
+    if (held !== undefined) {
+      return held.lastPrice;
+    }
+  }
+  if (options.cashEquivalentPrice != null && options.cashEquivalentPrice > 0) {
+    return options.cashEquivalentPrice;
+  }
+  const stored = (store.webull?.accounts ?? []).map((a) => a.cash?.cashEquivalentPrice ?? null).find((p) => p !== null && p > 0);
+  return stored ?? null;
 }
 
 export function planWebullSync(store: HoldingsStore, snapshots: WebullAccountSnapshot[], options: PlanOptions): SyncPlan {
   const records = new Map((store.holdings ?? []).map((h) => [holdingKey(h.account, h.symbol), h]));
+  const equivalentPrice = fallbackEquivalentPrice(store, snapshots, options);
   const accounts: AccountPlan[] = [];
   const webullSymbols = new Set<string>();
 
@@ -490,7 +520,7 @@ export function planWebullSync(store: HoldingsStore, snapshots: WebullAccountSna
     plans.sort((a, b) => a.symbol.localeCompare(b.symbol));
     const openOrders = openOrdersOf(snap.openOrders);
     const previousOpen = store.webull?.accounts.find((a) => a.label === snap.label)?.openOrders ?? [];
-    const cash = cashSummary(snap, options.cashEquivalents);
+    const cash = cashSummary(snap, options.cashEquivalents, equivalentPrice);
     const lowCash = options.lowCash?.get(snap.label) ?? null;
     accounts.push({
       label: snap.label,

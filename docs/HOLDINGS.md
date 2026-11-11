@@ -333,7 +333,9 @@ same checks on the machine before anything reaches Webull.
    - **Sell BIL to cover**: margin account, cash below zero, regular or extended
      hours, no BIL sale already working; sells `ceil(-cash / bid)` whole shares.
    - **Move to BIL**: shown beside an account's cash when the cash not already in
-     buy orders buys a share at BIL's last price. Regular or extended hours, no BIL buy
+     buy orders buys a share at BIL's last price. With no BIL in the account, that price
+     is the other account's, else a Schwab quote taken by the sync, else the last one
+     stored. Regular or extended hours, no BIL buy
      already working; buys as many whole shares as that cash covers at the ask, up
      to `ORDERS_MAX_VALUE` (the result says when it was capped).
    - **Change or cancel**: the order must still look as the page showed it.
